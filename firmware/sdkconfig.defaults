@@ -1,0 +1,29 @@
+# Waveshare ESP32-S3-Touch-LCD-4.3 (ESP32-S3N16R8)
+# Settings carried over from the aclock project, which runs on the same board.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# 16 MB flash
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# 8 MB octal PSRAM. Running code and read-only data from PSRAM keeps the
+# RGB panel fed while flash is busy.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
+CONFIG_SPIRAM_RODATA=y
+
+# CPU and cache
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP32S3_DATA_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_32B=y
+
+# Logs go to UART0, which is the CH343P USB-to-UART port.
+# The native USB port is kept free for TinyUSB.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# GT911 touch
+CONFIG_ESP_LCD_TOUCH_MAX_POINTS=5

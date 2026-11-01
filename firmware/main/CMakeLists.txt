@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "i2c.c"
+        "waveshare_rgb_lcd_port.c"
+        "waveshare_touch_port.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_lcd
+        espressif__esp_lcd_touch_gt911
+)

@@ -21,6 +21,25 @@ Board: [Waveshare ESP32-S3-Touch-LCD-4.3](https://www.waveshare.com/esp32-s3-tou
 - **Host library:** Node.js (probably)
 - **Web front end:** Optional, see below
 
+## Project Status
+
+- The firmware is set up as an ESP-IDF project. It uses the aclock display, touch and I2C drivers unchanged: it draws a test pattern into the framebuffers and logs touches.
+- Next: replace the framebuffers with the custom bounce-buffer renderer.
+
+## Building the Firmware
+
+- **ESP-IDF location:** ESP-IDF v6.0 is installed at `C:\esp\v6.0\esp-idf`, with tools in `C:\Espressif`.
+- **To build from PowerShell** (from `firmware/`):
+
+  ```powershell
+  Remove-Item Env:MSYSTEM -ErrorAction SilentlyContinue   # idf.py refuses to run if it sees Git Bash's MSYS variable
+  . C:\Espressif\tools\Microsoft.v6.0.PowerShell_profile.ps1
+  idf.py build                 # or: idf.py -p COMx flash monitor
+  ```
+
+- **Settings:** Board settings live in `firmware/sdkconfig.defaults`. `sdkconfig` is generated and gitignored, so make lasting changes in the defaults file.
+- **Logs:** Logs go to UART0, which is the CH343P port. ESP-IDF also mirrors them to the native USB port (USB-Serial-JTAG, the default secondary console). That mirror has to be turned off once TinyUSB takes over the native port.
+
 ## Rendering
 
 All rendering is custom. Do **not** use LVGL.
@@ -75,6 +94,7 @@ Files in `../aclock/clock/main/`:
 Proposed:
 
 ```
+docs/       Specs (protocol.md)
 firmware/   ESP-IDF project for the device
 host/       Node.js client library (USB vendor bulk/WebUSB, mode 1)
 web/        Optional web front end for configuring the device
@@ -96,6 +116,8 @@ web/        Optional web front end for configuring the device
 Build mode 1 first. Keep modes 2 and 3 in mind so the design doesn't block them, but don't build them yet.
 
 ## Communication
+
+**Protocol spec:** [`docs/protocol.md`](docs/protocol.md). This file is the source of truth for the message formats. Keep the firmware, `host/` and the spec in sync.
 
 **Mode 1: USB vendor bulk interface with WebUSB**
 - Runs on the native USB port using ESP-IDF's TinyUSB component (`esp_tinyusb`). The CH343P UART port stays for flashing and logs.
@@ -121,6 +143,15 @@ Build mode 1 first. Keep modes 2 and 3 in mind so the design doesn't block them,
   - Make it a composite device from the start, so modes 2 and 3 can add standard HID keyboard and/or USB MIDI interfaces beside the vendor interface.
   - Button events can go over the vendor interface's bulk IN endpoint; a separate HID interface isn't needed for mode 1.
 
+**Rendering button images on the host:** [node-buttonImage](https://github.com/toptensoftware/node-buttonImage), another toptensoftware library (`@toptensoftware/node-buttonImage`).
+- **Rendering:** It draws icons and buttons from SVG with text labels. Use the `ButtonImage` class (which keeps per-state caching) or `drawButton(w, h, options)`.
+- **Stock icons:** It has a built-in set of stock icons, referenced as `svgFile: "#name"` (mostly Material Icons). These are handy as test content.
+- **Output:** It returns **raw RGB (3 channels, no alpha)**. The `host/` library has to turn that into rle565.
+- **Alpha mismatch:** The device draws icons over the stock face with alpha, but this library's output has none. Options:
+  - Add RGBA output to node-buttonImage.
+  - Render with `backColor` matched to the face colour so the icon area blends in.
+  - Use `NO_FASCIA` and render the whole key.
+
 **Web front end**: Still undecided. Two options:
 - Hosted on the device itself (Wi-Fi)
 - Hosted on a public website that talks to the device over WebUSB, as VIA/QMK do over WebHID
@@ -143,8 +174,14 @@ Build mode 1 first. Keep modes 2 and 3 in mind so the design doesn't block them,
 
 - Buttons sit in a 5x3 grid (15 buttons per page), like a Stream Deck 15.
 - Several pages of buttons are stored on the device. The user swipes left/right between them.
-- A thin status bar at the top shows the time and other status. It does not move with the swipe.
+- A thin status bar at the top will show the time and other status. It does not move with the swipe.
 - There may be pager buttons at the bottom. They don't move with the swipe either.
+- **For now, leave the status bar and pager areas blank.** Their content is designed later, but the bounce fill should still treat them as fixed bands.
+- **Button faces:**
+  - Each key is a stock button face built into the firmware, as an rle565 image with normal and pressed versions that can be tinted.
+  - The host's icon and an optional label are drawn on top of the face.
+  - Leave gaps between the keys.
+  - Icons are small, about 96x96 down to 80x80, which keeps uploads small. Sizes are still to be tuned on the hardware, so keep them as firmware constants and report them to the host; don't hard-code them anywhere else.
 
 ### Swipe feel
 
@@ -177,7 +214,6 @@ There are no full-screen framebuffers. The display is composed scanline by scanl
 
 ### More to come
 
-- USB protocol details (message framing, image upload, button events)
 - How pages and buttons are stored and configured for modes 2 and 3
 
 ## Conventions
