@@ -24,11 +24,19 @@ Board: [Waveshare ESP32-S3-Touch-LCD-4.3](https://www.waveshare.com/esp32-s3-tou
 ## Project Status
 
 - The firmware is set up as an ESP-IDF project, using the aclock display, touch and I2C drivers.
-- The display driver now has a bounce-buffer mode with no framebuffers. `main.c` runs a test pattern through it:
-  - Fixed status and pager bands.
-  - Scrolling colour bars in the page area.
-  - A touch crosshair.
-  - FPS and fill-time stats logged once a second.
+- The display runs in bounce-buffer mode with no framebuffers.
+- Paging and swiping work across 3 test pages, which are coloured placeholders with no real keys yet.
+- Firmware modules (`firmware/main/`):
+  - **`screen.c/.h`:** Owns the page buffers in PSRAM (800x400 RGB565, about 625 KB each) and the bounce fill. The fill copies each page-area line from the one or two pages in view, at the scroll position latched at frame start. The status and pager bands are blank placeholders. At each frame start it notifies a task.
+  - **`swipe.c/.h`:** Gesture and animation, run in a task woken each frame. Floating point is fine there, but not in the ISR.
+    - Dragging follows the finger 1:1 after a 10 px slop, with rubber-banding past the ends.
+    - On release, a flick (>400 px/s, measured over the last 80 ms) goes to the next page boundary; a slow release goes to whichever page is mostly in view, springing back if needed.
+    - The glide is a critically damped spring (`SPRING_RESPONSE_S`, 0.3 s). It leaves at the finger's speed, covers most of the distance fast, and settles with a short tail, taking about the same time for any distance, like iOS. The start speed is capped so it never overshoots.
+    - The earlier cubic ease-out is still available with `GLIDE_SPRING 0`. It felt a bit constant-speed and sluggish across the wide landscape page.
+    - Touching the screen mid-glide catches the page.
+    - Tuning constants are at the top of the file.
+  - **`main.c`:** Draws the test pages, wires touch to swipe, and logs FPS and the worst bounce-fill time once a second.
+- The touch poll rate is now 100 Hz (it was 50 Hz in aclock).
 
 ## Building the Firmware
 
@@ -60,7 +68,7 @@ The aclock project (`../aclock/clock/`) runs on this same board and is known to 
   - 16 MB flash
   - Octal PSRAM at 80 MHz, with `SPIRAM_FETCH_INSTRUCTIONS`, `SPIRAM_RODATA` and malloc support
   - 240 MHz CPU
-  - 32 KB data cache with 32-byte lines
+  - Data cache: aclock used 32 KB with 32-byte lines. **ControlBlock uses 64 KB with 64-byte lines** to speed up the bounce fill's reads from PSRAM.
   - `ESP_LCD_TOUCH_MAX_POINTS=5`
 
   Prefer distilling these into an `sdkconfig.defaults` rather than copying the full `sdkconfig`. Leave out aclock's custom partition table setting.
@@ -218,7 +226,22 @@ There are no full-screen framebuffers. The display is composed scanline by scanl
 
 ### Open concerns
 
-- **Touch polling rate:** The aclock touch driver polls at 50 Hz, which is likely too coarse for a smooth 1:1 drag. Consider polling faster, using the GT911 interrupt, and/or smoothing or predicting the finger position per frame.
+- **Touch polling rate:** Polling is now at 100 Hz. If dragging still looks steppy, consider the GT911 interrupt and/or smoothing or predicting the finger position per frame.
+- **Fill time:** Reading pages from PSRAM in the bounce fill must stay well under the ~490 µs per 15-line chunk; aim for under about 250 µs. Watch the logged "slowest fill".
+  - **Measured costs for one 15-line chunk (24 KB):**
+    - Copied cold from PSRAM: ~272 µs standalone, ~285 µs in the ISR.
+    - Copied after a preload, or from cache: ~62–68 µs, the same as copying from internal RAM.
+    - A cache preload takes ~260 µs to complete in the background.
+  - **What's in place:**
+    - 64 KB data cache with 64-byte lines.
+    - At the end of each fill, the next chunk's page data is preloaded into cache with `Cache_Start_DCache_Preload`, the same call the stock driver uses. The switch is `SCREEN_CACHE_PRELOAD` in `screen.c`.
+    - The preload covers one contiguous range only. Mid-swipe it covers the page that fills more of the screen, and the rest of the chunk is read cold.
+  - **Result on hardware:**
+    - Slowest fill is ~71 µs at rest (about 14% of core 0) and ~190–200 µs mid-swipe, against the 492 µs budget.
+    - The first stats line after boot reads high; it includes startup.
+  - **Write fast fill loops:**
+    - Solid fills must use 32-bit stores; see `fill_px`. A per-pixel 16-bit loop cost ~350 µs per chunk, because the default build is `-Og` (debug optimisation).
+    - Any per-pixel work in the ISR needs the same care. `CONFIG_COMPILER_OPTIMIZATION_PERF` is an option if needed.
 
 ### More to come
 

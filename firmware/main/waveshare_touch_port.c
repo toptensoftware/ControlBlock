@@ -95,7 +95,9 @@ static void touch_task(void *arg)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(20)); // 50Hz poll
+        // 100 Hz poll, for smooth dragging. Polling faster than the GT911
+        // updates is harmless: the driver keeps the last reading.
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 

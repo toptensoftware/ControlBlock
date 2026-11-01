@@ -1,6 +1,8 @@
 idf_component_register(
     SRCS
         "main.c"
+        "screen.c"
+        "swipe.c"
         "i2c.c"
         "waveshare_rgb_lcd_port.c"
         "waveshare_touch_port.c"
@@ -11,5 +13,7 @@ idf_component_register(
         esp_driver_i2c
         esp_hw_support
         esp_lcd
+        esp_rom
+        esp_timer
         espressif__esp_lcd_touch_gt911
 )

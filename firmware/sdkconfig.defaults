@@ -18,8 +18,10 @@ CONFIG_SPIRAM_RODATA=y
 
 # CPU and cache
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-CONFIG_ESP32S3_DATA_CACHE_32KB=y
-CONFIG_ESP32S3_DATA_CACHE_LINE_32B=y
+# 64-byte cache lines halve the cache misses when the bounce fill reads page
+# buffers from PSRAM. 64-byte lines need the 64 KB data cache.
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 
 # Logs go to UART0, which is the CH343P USB-to-UART port.
 # The native USB port is kept free for TinyUSB.
