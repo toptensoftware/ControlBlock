@@ -28,6 +28,25 @@ static volatile bool s_swap_pending = false;
 
 static PFNBUFFERREADY s_ready_cb  = NULL;
 
+// Bounce-buffer mode: the user callback fills each bounce buffer directly.
+static PFNFILLLINES s_fill_cb  = NULL;
+static void        *s_fill_ctx = NULL;
+
+_Static_assert(DISPLAY_V_RES % DISPLAY_BOUNCE_BUFFER_LINES == 0,
+               "Bounce buffer must divide the screen into whole chunks");
+
+// Called from the LCD DMA ISR each time a bounce buffer needs refilling.
+// The bounce buffer is always a whole number of lines, so convert the
+// driver's pixel position into a line number.
+IRAM_ATTR static bool on_bounce_empty(esp_lcd_panel_handle_t panel, void *bounce_buf,
+                                      int pos_px, int len_bytes, void *user_ctx)
+{
+    return s_fill_cb((uint16_t *)bounce_buf,
+                     pos_px / DISPLAY_H_RES,
+                     len_bytes / (DISPLAY_H_RES * (int)sizeof(uint16_t)),
+                     s_fill_ctx);
+}
+
 // Called when the entire frame has been passed through the bounce buffer.
 IRAM_ATTR static bool on_frame_buf_complete(esp_lcd_panel_handle_t panel,
                                              const esp_lcd_rgb_panel_event_data_t *edata,
@@ -46,9 +65,14 @@ IRAM_ATTR static bool on_frame_buf_complete(esp_lcd_panel_handle_t panel,
     return false;
 }
 
-esp_err_t display_init(PFNBUFFERREADY ready_cb)
+// Shared setup for both modes. With fill_cb set, the panel runs without
+// frame buffers and fill_cb supplies every line. Otherwise the driver
+// allocates two PSRAM frame buffers.
+static esp_err_t display_init_common(PFNBUFFERREADY ready_cb, PFNFILLLINES fill_cb, void *fill_ctx)
 {
     s_ready_cb  = ready_cb;
+    s_fill_cb   = fill_cb;
+    s_fill_ctx  = fill_ctx;
 
     i2c_device_config_t dev_cfg = {};
     dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
@@ -72,9 +96,13 @@ esp_err_t display_init(PFNBUFFERREADY ready_cb)
     panel_config.timings.vsync_front_porch       = 8;
     panel_config.timings.flags.pclk_active_neg   = 1;
     panel_config.data_width                      = DISPLAY_DATA_WIDTH;
-    panel_config.num_fbs                         = 2;
     panel_config.bounce_buffer_size_px           = DISPLAY_BOUNCE_BUFFER_SIZE;
-    panel_config.flags.fb_in_psram               = 1;
+    if (fill_cb) {
+        panel_config.flags.no_fb                 = 1;
+    } else {
+        panel_config.num_fbs                     = 2;
+        panel_config.flags.fb_in_psram           = 1;
+    }
     panel_config.hsync_gpio_num                  = DISPLAY_IO_RGB_HSYNC;
     panel_config.vsync_gpio_num                  = DISPLAY_IO_RGB_VSYNC;
     panel_config.de_gpio_num                     = DISPLAY_IO_RGB_DE;
@@ -101,17 +129,33 @@ esp_err_t display_init(PFNBUFFERREADY ready_cb)
 
     // Register callbacks before init — the DMA engine starts on init.
     esp_lcd_rgb_panel_event_callbacks_t cbs = {};
-    cbs.on_frame_buf_complete = on_frame_buf_complete;
+    if (fill_cb)
+        cbs.on_bounce_empty = on_bounce_empty;
+    else
+        cbs.on_frame_buf_complete = on_frame_buf_complete;
     ESP_ERROR_CHECK(esp_lcd_rgb_panel_register_event_callbacks(s_panel, &cbs, NULL));
 
     ESP_LOGI(TAG, "Initialize RGB LCD panel");
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
 
-    // Retrieve the two PSRAM frame buffer pointers allocated by the driver.
-    ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(s_panel, 2, (void **)&s_fb[0], (void **)&s_fb[1]));
-    ESP_LOGI(TAG, "Frame buffers: fb0=%p  fb1=%p", s_fb[0], s_fb[1]);
+    if (!fill_cb) {
+        // Retrieve the two PSRAM frame buffer pointers allocated by the driver.
+        ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(s_panel, 2, (void **)&s_fb[0], (void **)&s_fb[1]));
+        ESP_LOGI(TAG, "Frame buffers: fb0=%p  fb1=%p", s_fb[0], s_fb[1]);
+    }
 
     return ESP_OK;
+}
+
+esp_err_t display_init(PFNBUFFERREADY ready_cb)
+{
+    return display_init_common(ready_cb, NULL, NULL);
+}
+
+esp_err_t display_init_bounce(PFNFILLLINES fill_cb, void *ctx)
+{
+    assert(fill_cb);
+    return display_init_common(NULL, fill_cb, ctx);
 }
 
 void display_get_frame_buffers(uint16_t **fb0, uint16_t **fb1)

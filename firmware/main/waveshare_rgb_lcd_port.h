@@ -16,7 +16,8 @@
 #define DISPLAY_V_RES               (480)
 #define DISPLAY_PIXEL_CLOCK_HZ      (25 * 1000 * 1000)
 #define DISPLAY_DATA_WIDTH          (16)
-#define DISPLAY_BOUNCE_BUFFER_SIZE  (DISPLAY_H_RES * 15)
+#define DISPLAY_BOUNCE_BUFFER_LINES (15)
+#define DISPLAY_BOUNCE_BUFFER_SIZE  (DISPLAY_H_RES * DISPLAY_BOUNCE_BUFFER_LINES)
 #define DISPLAY_IO_RGB_DISP         ((gpio_num_t)(-1))
 #define DISPLAY_IO_RGB_VSYNC        (GPIO_NUM_3)
 #define DISPLAY_IO_RGB_HSYNC        (GPIO_NUM_46)
@@ -49,6 +50,21 @@ typedef bool (*PFNBUFFERREADY)(uint16_t *freed_fb);
 // RGB DMA engine.  ready_cb (may be NULL) is called from the vsync ISR after
 // each display_set_framebuffer() swap completes.
 esp_err_t display_init(PFNBUFFERREADY ready_cb);
+
+// Bounce-buffer mode: no frame buffers. The driver calls fill_cb from the
+// LCD DMA ISR whenever it needs more pixels:
+//   dest:  where to write `count` full lines (DISPLAY_H_RES pixels each, RGB565)
+//   y:     first line to fill. y == 0 means a new frame is starting.
+//   count: number of lines, always DISPLAY_BOUNCE_BUFFER_LINES
+// Lines arrive in order, a frame at a time. fill_cb runs in ISR context: keep
+// it fast, put it in IRAM, and only touch data in internal RAM or PSRAM.
+// Returns true if a higher-priority task was woken.
+typedef bool (*PFNFILLLINES)(uint16_t *dest, int y, int count, void *ctx);
+
+// Initialize the display in bounce-buffer mode (see PFNFILLLINES).
+// Use instead of display_init(). The frame buffer functions below don't
+// apply in this mode.
+esp_err_t display_init_bounce(PFNFILLLINES fill_cb, void *ctx);
 
 esp_err_t display_enable_backlight(bool enable);
 

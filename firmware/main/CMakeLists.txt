@@ -9,6 +9,7 @@ idf_component_register(
     REQUIRES
         esp_driver_gpio
         esp_driver_i2c
+        esp_hw_support
         esp_lcd
         espressif__esp_lcd_touch_gt911
 )

@@ -23,8 +23,12 @@ Board: [Waveshare ESP32-S3-Touch-LCD-4.3](https://www.waveshare.com/esp32-s3-tou
 
 ## Project Status
 
-- The firmware is set up as an ESP-IDF project. It uses the aclock display, touch and I2C drivers unchanged: it draws a test pattern into the framebuffers and logs touches.
-- Next: replace the framebuffers with the custom bounce-buffer renderer.
+- The firmware is set up as an ESP-IDF project, using the aclock display, touch and I2C drivers.
+- The display driver now has a bounce-buffer mode with no framebuffers. `main.c` runs a test pattern through it:
+  - Fixed status and pager bands.
+  - Scrolling colour bars in the page area.
+  - A touch crosshair.
+  - FPS and fill-time stats logged once a second.
 
 ## Building the Firmware
 
@@ -73,7 +77,8 @@ Files in `../aclock/clock/main/`:
 - `i2c.c/.h`: Shared I2C bus (SDA=GPIO8, SCL=GPIO9, 400 kHz)
 
 **Display** (`display_*`):
-- `display_init(ready_cb)` sets up the RGB panel at 25 MHz pixel clock with a 15-line bounce buffer.
+- `display_init(ready_cb)` sets up the RGB panel at 25 MHz pixel clock with a 15-line bounce buffer (framebuffer mode).
+- `display_init_bounce(fill_cb, ctx)` is the bounce-buffer mode added for ControlBlock; see "Rendering approach" below. At 25 MHz each 15-line chunk must be filled in about 490 µs, and a frame takes about 16.4 ms (~61 fps).
 - The driver allocates two full 800x480 RGB565 framebuffers in PSRAM. Get them with `display_get_frame_buffers()`.
 - Double-buffered flow:
   1. Draw into the back buffer.
@@ -198,7 +203,10 @@ The swipe must be very smooth and feel like the iPhone home screen. **Not** like
 
 There are no full-screen framebuffers. The display is composed scanline by scanline in the RGB panel's bounce-buffer fill callback.
 
-- **Panel setup:** Configure the RGB panel with `num_fbs = 0` and an `on_bounce_empty` callback. This is a change from aclock's double-buffered driver, which swaps framebuffers at vsync.
+- **Panel setup:** `display_init_bounce(fill_cb, ctx)` sets `flags.no_fb = 1` and registers `on_bounce_empty`.
+  - Plain `num_fbs = 0` would still allocate one framebuffer, so `no_fb` is what's needed.
+  - `fill_cb(dest, y, count, ctx)` receives whole lines (15 at a time) in order. `y == 0` marks the start of a new frame; latch per-frame state such as the swipe offset there.
+  - The original framebuffer mode (`display_init`) is kept for debugging.
 - **Page buffers:** Each page is pre-rendered with rle565 into its own off-screen RGB565 buffer in PSRAM. Each buffer covers only the page area (800 wide x the page area height).
 - **Filling each line:** The fill routine checks which band the line is in:
   - **Status bar band:** Copy from the status bar buffer.
