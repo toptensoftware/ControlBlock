@@ -11,6 +11,9 @@ export default async function ()
             "../main/page_compositor.cpp",
             "../main/screen_view.cpp",
             "../main/status_bar.cpp",
+            "../main/image_store.cpp",
+            "../main/key_layout.cpp",
+            "../main/protocol.cpp",
             "../../rle565/src/rle565.c",
         ],
         includePath: [

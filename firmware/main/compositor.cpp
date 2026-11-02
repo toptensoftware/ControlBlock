@@ -49,7 +49,7 @@ static void comp_task(void *arg)
     }
 }
 
-esp_err_t comp_init(comp_get_page_t get_page, void *ctx)
+esp_err_t comp_init(comp_get_page_t get_page, comp_is_retired_t is_retired, void *ctx)
 {
     const size_t size = SCREEN_PAGE_W * SCREEN_PAGE_H * sizeof(uint16_t);
     uint16_t *buffers[COMP_BUFFERS];
@@ -68,7 +68,7 @@ esp_err_t comp_init(comp_get_page_t get_page, void *ctx)
         ESP_LOGE(TAG, "Out of internal RAM allocating the render cell");
         return ESP_ERR_NO_MEM;
     }
-    s_comp.Init(buffers, cell, get_page, ctx);
+    s_comp.Init(buffers, cell, get_page, is_retired, ctx);
 
     s_reset_done  = xSemaphoreCreateBinary();
     s_reset_mutex = xSemaphoreCreateMutex();
@@ -119,6 +119,19 @@ void comp_reset(void)
     xTaskNotify(s_task, WAKE_WORK, eSetBits);
     xSemaphoreTake(s_reset_done, portMAX_DELAY);
     xSemaphoreGive(s_reset_mutex);
+}
+
+uint32_t comp_request_sweep(void)
+{
+    uint32_t gen = s_comp.RequestSweep();
+    if (s_task)
+        xTaskNotify(s_task, WAKE_WORK, eSetBits);
+    return gen;
+}
+
+uint32_t comp_swept(void)
+{
+    return s_comp.Swept();
 }
 
 void comp_get_stats(comp_stats_t *stats)

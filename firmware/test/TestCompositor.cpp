@@ -287,6 +287,69 @@ Fact("Compositor Change During A Build Is Picked Up Next")
     Assert(w.ShowsModel(1));
 }
 
+// ---------------------------------------------------------------------------
+// Sweeps: dropping references to retired images (docs/image-assets.md)
+
+Fact("Compositor Sweep Forgets Records Of Retired Images")
+{
+    World w(2);
+    Boot(w, 0);                         // the front and an idle copy hold page 0's images
+    w.ChangeKeys(0, 0x0007, 0);
+    w.RunFrames(6);
+    Assert(w.ShowsModel(0));
+
+    // Keys 0-2's old images are now only in records (the old front, the copy)
+    w.RetireUnused();
+    Assert(w.RetiredPending() > 0);
+    uint32_t gen = w.comp.Swept();
+    w.RunFrames(2);                     // World checks nothing references them, then frees them
+    Assert(w.comp.Swept() != gen);
+    Assert(w.RetiredPending() == 0);
+    Assert(w.images_freed > 0);
+
+    // New images reuse the freed addresses: the forgotten records mustn't
+    // match them
+    w.ChangeKeys(0, 0x0007, 0);
+    w.RunFrames(8);
+    w.CheckSettledOn(0);
+}
+
+Fact("Compositor Sweep Drops A Job Whose Snapshot Uses A Retired Image")
+{
+    World w(2);
+    Boot(w, 0);
+    w.key_cost_us = 4000;               // slow: the job takes a few frames
+    w.ChangeKeys(0, ALL_KEYS, COMP_FLUSH);
+    w.RunFrame();
+    Assert(w.comp.JobPage() == 0);
+
+    // The client changes them all again, so the snapshot's images are no
+    // longer in the model, and retires them
+    w.ChangeKeys(0, ALL_KEYS, COMP_FLUSH);
+    w.RetireUnused();
+    w.RunFrames(2);
+    Assert(w.RetiredPending() == 0);    // swept and freed (checked unreferenced)
+
+    w.key_cost_us = 600;
+    w.RunFrames(10);
+    w.CheckSettledOn(0);
+}
+
+Fact("Compositor Sweep Of A Shown Key Redraws It")
+{
+    World w(1);
+    Boot(w, 0);
+    w.key_cost_us = 20000;              // the update can't start before the sweep
+    w.ChangeKeys(0, 1 << 4, 0);
+    w.RetireUnused();                   // key 4's old images are still on screen
+    w.RunFrames(3);
+    Assert(w.RetiredPending() == 0);
+
+    w.key_cost_us = 600;
+    w.RunFrames(10);
+    w.CheckSettledOn(0);
+}
+
 Fact("Compositor Keys With No Images Draw Background")
 {
     World w(1);

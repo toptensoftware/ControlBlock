@@ -38,8 +38,10 @@ static inline bool rec_eq(const CompRecord &a, const CompRecord &b)
     return a.known && b.known && a.bg == b.bg && a.fg == b.fg;
 }
 
-void PageCompositor::Init(uint16_t *const buffers[COMP_BUFFERS], uint16_t *cell, comp_get_page_t get_page, void *ctx)
+void PageCompositor::Init(uint16_t *const buffers[COMP_BUFFERS], uint16_t *cell, comp_get_page_t get_page,
+                          comp_is_retired_t is_retired, void *ctx)
 {
+    m_is_retired = is_retired;
     m_cell = cell;
 
     const size_t pixels = SCREEN_PAGE_W * SCREEN_PAGE_H;
@@ -147,6 +149,15 @@ void PageCompositor::PageChanged(int page, uint32_t flags)
 void PageCompositor::RequestReset()
 {
     port::AtomicStore(&m_reset_request, 1);
+}
+
+uint32_t PageCompositor::RequestSweep()
+{
+    uint32_t v;
+    do
+        v = port::AtomicLoad(&m_sweep_request);
+    while (!port::AtomicCompareExchange(&m_sweep_request, v, v + 1));
+    return v + 1;
 }
 
 void PageCompositor::GetStats(comp_stats_t *st)
@@ -348,18 +359,10 @@ void comp_clear_rows(uint16_t *cell, int stride, int y0, int y1)
 
 bool comp_image_is_opaque(const void *img, size_t size)
 {
-    if (!check_image_header(img, size) ||
-        get_image_width(img) != COMP_KEY_SIZE || get_image_height(img) != COMP_KEY_SIZE)
-        return false;
-
-    uint32_t *px = (uint32_t *)malloc(COMP_KEY_SIZE * COMP_KEY_SIZE * sizeof(uint32_t));
-    if (!px)
-        return false;
-    bool opaque = decode_image_argb8888(img, size, NULL, px, 0, false);
-    for (int i = 0; opaque && i < COMP_KEY_SIZE * COMP_KEY_SIZE; i++)
-        opaque = (px[i] >> 24) == 0xFF;
-    free(px);
-    return opaque;
+    bool opaque = false;
+    return check_image_header(img, size) &&
+           get_image_width(img) == COMP_KEY_SIZE && get_image_height(img) == COMP_KEY_SIZE &&
+           check_image(img, size, &opaque) && opaque;
 }
 
 // Rows of a key slice copied per fill gap: smaller with two pages in view,
@@ -671,10 +674,48 @@ PageCompositor::StepResult PageCompositor::IdleStep()
     return StepResult::Wait;
 }
 
+// Sweep: forget retired images. Records that use one become unknown (an
+// unknown key is redrawn before its buffer is offered again; the pixels on
+// screen stay as they are). A job whose snapshot uses one is dropped: the
+// client no longer uses retired images, so the next snapshot won't either.
+void PageCompositor::DoSweep()
+{
+    if (!m_is_retired)
+        return;
+    auto retired = [this](const void *img) { return img && m_is_retired(img, m_ctx); };
+
+    for (int b = 0; b < COMP_BUFFERS; b++) {
+        for (int k = 0; k < COMP_KEYS; k++) {
+            CompRecord &r = m_buf[b].rec[k];
+            if (!r.known || !(retired(r.bg) || retired(r.fg)))
+                continue;
+            r.known = false;
+            // A page on screen with a key forgotten needs a look, even if
+            // the change that retired the image was already taken
+            for (int i = 0; i < m_fi.shown_count; i++)
+                if (m_fi.shown[i].buf == b)
+                    m_pending |= page_bit(m_fi.shown[i].page);
+        }
+    }
+
+    if (m_job.page != COMP_NO_PAGE) {
+        for (int k = 0; k < COMP_KEYS; k++) {
+            if (retired(m_job.snap[k].bg) || retired(m_job.snap[k].fg)) {
+                DropJob();
+                memset(m_job.snap, 0, sizeof(m_job.snap));
+                break;
+            }
+        }
+    }
+}
+
 // Reload: forget every page and image. The buffers on screen stay on screen,
 // belonging to no page, as the fallback until the new page is ready.
 void PageCompositor::DoReset()
 {
+    // Every reference goes, so any sweep asked for so far is done too
+    uint32_t sweep = port::AtomicLoad(&m_sweep_request);
+
     EndJob();
     memset(m_job.snap, 0, sizeof(m_job.snap));
     for (int b = 0; b < COMP_BUFFERS; b++)
@@ -691,6 +732,7 @@ void PageCompositor::DoReset()
     m_pending = m_pending_flush = 0;
 
     RefreshFrame();
+    port::AtomicStore(&m_sweep_done, sweep);
     port::AtomicStore(&m_reset_request, 0);
 }
 
@@ -710,6 +752,15 @@ PageCompositor::StepResult PageCompositor::Step(int64_t now_us, bool gap)
     if (port::AtomicLoad(&m_reset_request)) {
         DoReset();
         return StepResult::ResetDone;
+    }
+
+    // A sweep: the request is loaded before the images are checked, so every
+    // image flagged before it was made is seen
+    uint32_t sweep = port::AtomicLoad(&m_sweep_request);
+    if (sweep != port::AtomicLoad(&m_sweep_done)) {
+        DoSweep();
+        port::AtomicStore(&m_sweep_done, sweep);
+        return StepResult::Run;
     }
 
     // Changed bits: changed before flush, the reverse of the order

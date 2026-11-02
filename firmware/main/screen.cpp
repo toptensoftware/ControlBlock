@@ -29,7 +29,7 @@ static_assert(STATUS_BAR_BACKGROUND == COMP_BACKGROUND, "status bar and page are
 
 #define BUDGET_CYCLES     (DISPLAY_BOUNCE_BUDGET_US * CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)
 
-static int s_num_pages;
+static volatile int s_num_pages;    // latched by the ISR at frame start
 
 // Written by the app, latched by the ISR at the start of each frame.
 static volatile int             s_scroll;
@@ -213,6 +213,12 @@ esp_err_t screen_init(int num_pages)
 int screen_page_count(void)
 {
     return s_num_pages;
+}
+
+void screen_set_page_count(int num_pages)
+{
+    if (num_pages >= 1 && num_pages <= SCREEN_MAX_PAGES)
+        s_num_pages = num_pages;
 }
 
 void screen_set_scroll(int scroll_px)

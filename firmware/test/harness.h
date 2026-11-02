@@ -72,6 +72,14 @@ public:
     // Whole-layout reload: comp reset, free every old image, new model
     void Reload();
 
+    // Retire every image the model no longer uses and ask for a sweep. Once
+    // the sweep is done (checked each frame), the images are checked to be
+    // unreferenced, poisoned and freed; the next new images reuse their
+    // addresses straight away, so a stale record would compare equal.
+    void RetireUnused();
+    int  RetiredPending() const { return m_retired.GetCount(); }
+    uint32_t images_freed = 0;
+
     // --- Display ---
 
     int     scroll = 0;
@@ -118,9 +126,14 @@ public:
 private:
     struct Version { const void *bg, *fg; };
     struct Batch { uint32_t mask; bool flush; int version[COMP_KEYS]; };
+    struct Retired { void *img; uint32_t sweep; };
 
     static bool GetPage(int page, comp_key_t keys[COMP_KEYS], void *ctx);
+    static bool IsRetired(const void *img, void *ctx);
     static void PreemptHook(void *ctx);
+    void CollectSwept();
+    bool InModel(const void *img) const;
+    void Release(void *img);            // poison, and keep for reuse
 
     // One compositor step at `now`; returns the time after it
     int64_t DoStep(int64_t now, bool gap, PageCompositor::StepResult *result);
@@ -136,6 +149,9 @@ private:
     uint16_t *m_cell;                                        // the compositor's render cell
     uint16_t *m_shadow[COMP_BUFFERS] = {};                   // check_gap_writes snapshots
     SimpleLib::List<void *> m_images;                        // copies to free
+    SimpleLib::List<void *> m_reuse;                         // freed copies, handed out again first
+    SimpleLib::List<Retired> m_retired;                      // waiting for a sweep
+    bool m_sweep_requested = false;                          // records on screen may be unknown
     SimpleLib::List<Version> m_history[TEST_MAX_PAGES][COMP_KEYS];
     int  m_shown_version[TEST_MAX_PAGES][COMP_KEYS];
     SimpleLib::List<Batch> m_batches[TEST_MAX_PAGES];       // changes not yet fully shown

@@ -42,7 +42,7 @@ FUZZ_SEEDS=200 mk config=release run     # long fuzz soak
 ## Repository Layout
 
 ```
-docs/              Specs: protocol.md, page-compositor.md, status-bar.md (screen-buffers.md is partly superseded)
+docs/              Specs: protocol.md, image-assets.md, page-compositor.md, status-bar.md (screen-buffers.md is partly superseded)
 firmware/          ESP-IDF project for the device (C++)
   assets/          Generated binaries embedded in the firmware (test_keys.bin, ui.bin)
   test/            Host unit tests
@@ -108,7 +108,7 @@ The fill runs in ISR context:
 - 5x3 keys per page, 128x128 cells, several pages swiped left/right. Page area 800x440. Black background throughout.
 - **Pager bar disabled** (`SCREEN_PAGER_H 0`); set it to 20 to bring it back (the key gap adjusts). The status bar must stay at least 15 lines tall (`static_assert` in `screen.cpp`).
 - **Swipe feel:** very smooth, like the iPhone home screen. No LVGL-style spring-back, no overshoot.
-- **Key faces:** a stock rle565 face built into the firmware (normal and pressed, tintable), with the host's icon and an optional label on top.
+- **Key images:** each key names four host images by ID: normal bg/fg and pressed bg/fg (the device swaps to the pressed pair itself). Faces, icons and labels are all drawn by the host; labels are baked in. No stock face, tint or font in the firmware. Spec: [`docs/image-assets.md`](docs/image-assets.md).
 - **Icon size:** about 80–96 px square, still being tuned. Keep sizes as firmware constants reported to the host (GET_INFO); don't hard-code them elsewhere.
 
 ## Rendering
@@ -125,8 +125,9 @@ All custom. Do **not** use LVGL.
 - No driver needed: MS OS 2.0 descriptors (WinUSB) and WebUSB BOS descriptors (see TinyUSB's `webusb_serial` example). Linux needs a udev rule. Fallback if troublesome: CDC-ACM.
 - Clients: Node.js (`usb` package) and browsers (WebUSB), same protocol.
 - Composite device from the start, so modes 2 and 3 can add HID keyboard/MIDI interfaces.
-- Images go rle565-encoded and are cached on the device, so the host only resends what changed.
-- **Host-side key images:** [node-buttonImage](https://github.com/toptensoftware/node-buttonImage) renders icons/buttons from SVG to RGBA (stock icons `svgFile: "#name"` make handy test content); `host/` encodes to rle565 with alpha and the device blends it over the stock face. Keys drawn entirely by the host are sent with `NO_FASCIA`.
+- Vendor bulk carries every mode-1 message (not split with HID: one interface keeps uploads and key definitions in order).
+- Images go rle565-encoded under host-chosen 32-bit IDs (0 = none; a CRC makes a good one) and stay on the device, so the host only resends what changed. Uploading to an existing ID replaces it everywhere; freeing is deferred while keys still use the image. See [`docs/image-assets.md`](docs/image-assets.md).
+- **Host-side key images:** [node-buttonImage](https://github.com/toptensoftware/node-buttonImage) renders faces and icons from SVG to RGBA (stock icons `svgFile: "#name"` make handy test content); `host/` encodes them to rle565 with alpha, 128x128 with transparent padding.
 - **Web front end:** undecided: hosted on the device (Wi-Fi) or a public site using WebUSB.
 
 ## Open Items

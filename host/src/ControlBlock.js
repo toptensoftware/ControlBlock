@@ -1,0 +1,339 @@
+// A connection to a ControlBlock over its USB vendor interface (mode 1).
+// Works on any WebUSB USBDevice: the `usb` package's in Node (see open()),
+// or navigator.usb's in a browser. Spec: docs/protocol.md.
+//
+// Requests are pipelined: each method sends at once and resolves when its
+// response arrives (responses come back in order, matched by seq).
+// Events: "key" ({ page, key, action, lost, timeMs }), "pageChanged"
+// ({ page, cause }), "error" (the read loop failed), "close".
+
+import { Emitter } from "./Emitter.js";
+import {
+    USB_VID, USB_PID, INTERFACE, ENDPOINT, PROTOCOL_VERSION, REQ_RESET_STREAM,
+    PUT_IMAGE_PREFIX, KEYDEF_SIZE, Flags, Msg, Status,
+    encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys,
+    decodeInfo, decodeQuery, decodeEvent, statusName,
+} from "./protocol.js";
+
+const READ_SIZE        = 4096;      // a multiple of the 64-byte packet size
+// node usb only: an idle read is cancelled after this and the loop reads
+// again. The device ends every burst with a short or zero-length packet, so
+// a read in progress completes when the data stops; only idle reads time out.
+const READ_TIMEOUT_MS  = 5000;
+const DEFAULT_TIMEOUT  = 5000;      // per request
+
+function typeName(type)
+{
+    for (const [name, value] of Object.entries(Msg))
+        if (value === type)
+            return name;
+    return `0x${type.toString(16)}`;
+}
+
+export class ControlBlockError extends Error
+{
+    constructor(type, status)
+    {
+        super(`${typeName(type)} failed: ${statusName(status)}`);
+        this.type = type;
+        this.status = status;
+    }
+}
+
+export class ControlBlock extends Emitter
+{
+    // `device`: a WebUSB USBDevice. Call connect() before anything else.
+    constructor(device, { timeoutMs = DEFAULT_TIMEOUT } = {})
+    {
+        super();
+        this.device    = device;
+        this.timeoutMs = timeoutMs;
+        this.info      = null;
+        this.connected = false;
+        this._parser   = new MessageParser();
+        this._pending  = new Map();     // seq -> { type, resolve, reject, timer }
+        this._seq      = 0;
+        this._writes   = Promise.resolve();
+    }
+
+    // Node: find a ControlBlock (by serial, or the first with our VID/PID),
+    // connect and return it
+    static async open({ serial, vendorId = USB_VID, productId = USB_PID, ...options } = {})
+    {
+        const { usb } = await import("usb");
+        const device = serial
+            ? await usb.findDeviceBySerial(serial)
+            : await usb.findDeviceByIds(vendorId, productId);
+        if (!device)
+            throw new Error("No ControlBlock found");
+        const cb = new ControlBlock(device, options);
+        await cb.connect();
+        return cb;
+    }
+
+    // Claim the interface, reset the stream and read the device's info
+    async connect()
+    {
+        const d = this.device;
+        if (!d.opened)
+            await d.open();
+        let config = null;
+        try { config = d.configuration; } catch { /* not configured yet */ }
+        if (!config || config.configurationValue !== 1)
+            await d.selectConfiguration(1);
+        await d.claimInterface(INTERFACE);
+        this.connected = true;
+
+        await this.resetStream();
+        this._readLoop();
+        this.info = await this.getInfo();
+        if (this.info.protocolVersion !== PROTOCOL_VERSION)
+            throw new Error(`Device speaks protocol ${this.info.protocolVersion}, expected ${PROTOCOL_VERSION}`);
+        return this.info;
+    }
+
+    async close()
+    {
+        if (!this.connected)
+            return;
+        this.connected = false;
+        this._failAll(new Error("Connection closed"));
+        try { await this.device.releaseInterface(INTERFACE); } catch { }
+        try { await this.device.close(); } catch { }
+        this.emit("close");
+    }
+
+    // RESET_STREAM: the device drops any partial message and upload. Every
+    // request waiting here fails. Responses already on their way are
+    // ignored (no request waits for their seq).
+    async resetStream()
+    {
+        this._failAll(new Error("Stream reset"));
+        const reset = () => this.device.controlTransferOut({
+            requestType: "vendor",
+            recipient:   "interface",
+            request:     REQ_RESET_STREAM,
+            value:       0,
+            index:       INTERFACE,
+        }, new Uint8Array(0));      // optional in WebUSB, but node usb needs it
+        // After any writes already queued, so it lands between messages
+        const p = this._writes.then(reset);
+        this._writes = p.catch(() => { });
+        const r = await p;
+        if (r.status !== "ok")
+            throw new Error(`RESET_STREAM failed: ${r.status}`);
+    }
+
+    // --- Requests ---
+
+    // Send a request; resolves to { status, data } (data after the status)
+    request(type, payload = new Uint8Array(0))
+    {
+        if (!this.connected)
+            return Promise.reject(new Error("Not connected"));
+        const seq = this._nextSeq();
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => this._timeout(seq), this.timeoutMs);
+            this._pending.set(seq, { type, resolve, reject, timer });
+            this._write(encodeMessage(type, seq, payload)).catch(err => this._fail(seq, err));
+        });
+    }
+
+    // A request that must succeed: resolves to its data, or throws a
+    // ControlBlockError
+    async call(type, payload)
+    {
+        const r = await this.request(type, payload);
+        if (r.status !== Status.OK)
+            throw new ControlBlockError(type, r.status);
+        return r.data;
+    }
+
+    async ping(data = new Uint8Array(0))
+    {
+        return this.call(Msg.PING, data);
+    }
+
+    async getInfo()
+    {
+        this.info = decodeInfo(await this.call(Msg.GET_INFO));
+        return this.info;
+    }
+
+    // Clear every key and image; one empty page
+    async reset()
+    {
+        await this.call(Msg.RESET);
+    }
+
+    async setBacklight(on)
+    {
+        await this.call(Msg.SET_BACKLIGHT, Uint8Array.of(on ? 1 : 0));
+    }
+
+    // Upload (or replace) an rle565 image under `id`, in pipelined chunks
+    async putImage(id, data)
+    {
+        if (!data.length)
+            throw new Error("Empty image");
+        const chunk = this._maxPayload() - PUT_IMAGE_PREFIX;
+        const sends = [];
+        for (let offset = 0; offset < data.length; offset += chunk)
+            sends.push(this.call(Msg.PUT_IMAGE, encodePutImage(id, data.length, offset, data.subarray(offset, offset + chunk))));
+        await Promise.all(sends);
+    }
+
+    // The ID goes at once; the memory once no key uses it
+    async freeImages(ids)
+    {
+        await Promise.all(this._idBatches(ids).map(b => this.call(Msg.FREE_IMAGES, encodeIds(b))));
+    }
+
+    // One bool per ID: is it on the device?
+    async queryImages(ids)
+    {
+        const results = await Promise.all(this._idBatches(ids).map(b => this.call(Msg.QUERY_IMAGES, encodeIds(b))));
+        return results.flatMap(decodeQuery);
+    }
+
+    // Upload whichever of `images` ({ id, data }) the device doesn't have.
+    // Returns how many were uploaded.
+    async syncImages(images)
+    {
+        const list = [...images];
+        const present = await this.queryImages(list.map(i => i.id));
+        const missing = list.filter((_, i) => !present[i]);
+        await Promise.all(missing.map(i => this.putImage(i.id, i.data)));
+        return missing.length;
+    }
+
+    async setPageCount(count)
+    {
+        await this.call(Msg.SET_PAGE_COUNT, Uint8Array.of(count));
+        if (this.info)
+            this.info.pageCount = count;
+    }
+
+    // keys: [{ page, key, bg, fg, pressedBg, pressedFg, disabled, empty }]
+    // (image IDs, 0 or missing = none). Applied in one go, all or nothing.
+    async setKeys(keys)
+    {
+        const max = Math.floor((this._maxPayload() - 2) / KEYDEF_SIZE);
+        if (keys.length > max)
+            throw new Error(`Too many keys in one SET_KEYS (${keys.length}, max ${max})`);
+        await this.call(Msg.SET_KEYS, encodeKeys(keys));
+    }
+
+    async setPage(page, { animate = false } = {})
+    {
+        await this.call(Msg.SET_PAGE, Uint8Array.of(page, animate ? 1 : 0));
+    }
+
+    // --- Internals ---
+
+    _maxPayload()
+    {
+        return this.info?.maxPayload ?? 1024;
+    }
+
+    _idBatches(ids)
+    {
+        const per = Math.floor((this._maxPayload() - 2) / 4);
+        const batches = [];
+        for (let i = 0; i < ids.length; i += per)
+            batches.push(ids.slice(i, i + per));
+        return batches.length ? batches : [[]];
+    }
+
+    _nextSeq()
+    {
+        do
+            this._seq = (this._seq + 1) & 0xFFFF;
+        while (this._pending.has(this._seq));
+        return this._seq;
+    }
+
+    // Writes go out in order, one transfer at a time
+    _write(bytes)
+    {
+        const p = this._writes.then(async () => {
+            const r = await this.device.transferOut(ENDPOINT, bytes);
+            if (r.status !== "ok")
+                throw new Error(`transferOut: ${r.status}`);
+        });
+        this._writes = p.catch(() => { });
+        return p;
+    }
+
+    async _readLoop()
+    {
+        while (this.connected) {
+            let r;
+            try {
+                r = await this.device.transferIn(ENDPOINT, READ_SIZE, READ_TIMEOUT_MS);
+            } catch (err) {
+                if (!this.connected)
+                    break;
+                // Nothing to read yet: node usb reports a read timeout as
+                // "Cancelled" (other versions may say "timed out")
+                if (/time|cancel/i.test(String(err?.message ?? err)))
+                    continue;
+                this.emit("error", err);
+                await this.close();
+                break;
+            }
+            if (r.status === "stall") {
+                try { await this.device.clearHalt("in", ENDPOINT); } catch { }
+                continue;
+            }
+            if (r.data && r.data.byteLength)
+                this._onBytes(new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength));
+        }
+    }
+
+    _onBytes(bytes)
+    {
+        for (const msg of this._parser.push(bytes)) {
+            if (msg.flags & Flags.EVENT) {
+                const ev = decodeEvent(msg);
+                if (ev)
+                    this.emit(ev.type, ev);
+                continue;
+            }
+            const p = this._pending.get(msg.seq);
+            if (!(msg.flags & Flags.RESPONSE) || !p || p.type !== msg.type)
+                continue;               // stale (from before a stream reset)
+            this._pending.delete(msg.seq);
+            clearTimeout(p.timer);
+            const status = msg.payload.length >= 2 ? msg.payload[0] | msg.payload[1] << 8 : Status.BAD_LENGTH;
+            p.resolve({ status, data: msg.payload.subarray(4) });
+        }
+    }
+
+    _fail(seq, err)
+    {
+        const p = this._pending.get(seq);
+        if (!p)
+            return;
+        this._pending.delete(seq);
+        clearTimeout(p.timer);
+        p.reject(err);
+    }
+
+    _failAll(err)
+    {
+        for (const seq of [...this._pending.keys()])
+            this._fail(seq, err);
+    }
+
+    // A response didn't come: the stream is out of step, so start afresh
+    _timeout(seq)
+    {
+        const p = this._pending.get(seq);
+        if (!p)
+            return;
+        this._fail(seq, new Error(`${typeName(p.type)} timed out`));
+        if (this.connected)
+            this.resetStream().catch(err => this.emit("error", err));
+    }
+}

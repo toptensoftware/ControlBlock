@@ -8,8 +8,14 @@
 
 // Allocate the 3 page buffers in PSRAM, fill each with COMP_BACKGROUND,
 // mark every record unknown, and start the compositor task (core 1).
-// Call before the display starts.
-esp_err_t comp_init(comp_get_page_t get_page, void *ctx);
+// Call before the display starts. `is_retired` may be NULL (no sweeps).
+esp_err_t comp_init(comp_get_page_t get_page, comp_is_retired_t is_retired, void *ctx);
+
+// Drop references to retired images at the next key boundary (see
+// PageCompositor::RequestSweep). Returns a generation; comp_swept() reaches
+// it (compare as int32_t) once done. Any task.
+uint32_t comp_request_sweep(void);
+uint32_t comp_swept(void);
 
 // Page `page`'s target has changed. Wakes the compositor task.
 // flags: COMP_FLUSH holds the page back until all its changes are drawn;

@@ -5,6 +5,8 @@
 
 using namespace SimpleLib;
 
+#define COPY_HEADER 16      // a copy's capacity, before it (keeps it 16-byte aligned)
+
 // ---------------------------------------------------------------------------
 // Test images
 
@@ -60,7 +62,7 @@ World::World(int num_pages_, uint32_t seed) : rng(seed), num_pages(num_pages_)
 
     m_cell = (uint16_t *)malloc(COMP_KEY_SIZE * COMP_KEY_SIZE * sizeof(uint16_t));
 
-    comp.Init(m_buffers, m_cell, GetPage, this);
+    comp.Init(m_buffers, m_cell, GetPage, IsRetired, this);
     comp.SetPreemptHook(PreemptHook, this);
     NewModel();
 }
@@ -68,6 +70,8 @@ World::World(int num_pages_, uint32_t seed) : rng(seed), num_pages(num_pages_)
 World::~World()
 {
     FreeImages();
+    for (int i = 0; i < m_reuse.GetCount(); i++)
+        free((uint8_t *)m_reuse[i] - COPY_HEADER);
     for (int b = 0; b < COMP_BUFFERS; b++) {
         free(m_buffers[b]);
         free(m_shadow[b]);
@@ -84,11 +88,26 @@ bool World::GetPage(int page, comp_key_t keys[COMP_KEYS], void *ctx)
     return true;
 }
 
-// A private copy, so every key version has its own pointer
+// A copy's capacity is kept just before it, so released copies can be reused
+static uint32_t &CopyCapacity(void *img) { return *(uint32_t *)((uint8_t *)img - COPY_HEADER); }
+
+// A private copy, so every key version has its own pointer. Released copies
+// are reused first (newest first), as a real allocator might.
 const void *World::Copy(const void *img)
 {
     uint32_t size = get_image_packed_size(img);
-    void *p = malloc(size);
+    void *p = nullptr;
+    for (int i = m_reuse.GetCount() - 1; i >= 0 && !p; i--) {
+        if (CopyCapacity(m_reuse[i]) >= size) {
+            p = m_reuse[i];
+            m_reuse.RemoveAt(i);
+        }
+    }
+    if (!p) {
+        uint8_t *block = (uint8_t *)malloc(size + COPY_HEADER);
+        p = block + COPY_HEADER;
+        CopyCapacity(p) = size;
+    }
     memcpy(p, img, size);
     m_images.Add(p);
     return p;
@@ -98,10 +117,77 @@ const void *World::Copy(const void *img)
 void World::FreeImages()
 {
     for (int i = 0; i < m_images.GetCount(); i++) {
-        memset(m_images[i], 0xDD, get_image_packed_size(m_images[i]));
-        free(m_images[i]);
+        memset(m_images[i], 0xDD, CopyCapacity(m_images[i]));
+        free((uint8_t *)m_images[i] - COPY_HEADER);
     }
     m_images.Clear();
+    m_retired.Clear();
+}
+
+void World::Release(void *img)
+{
+    memset(img, 0xDD, CopyCapacity(img));
+    m_images.Remove(img);
+    m_reuse.Add(img);
+    images_freed++;
+}
+
+bool World::InModel(const void *img) const
+{
+    for (int p = 0; p < num_pages; p++)
+        for (int k = 0; k < COMP_KEYS; k++)
+            if (model[p][k].bg == img || model[p][k].fg == img)
+                return true;
+    return false;
+}
+
+bool World::IsRetired(const void *img, void *ctx)
+{
+    World *w = (World *)ctx;
+    for (int i = 0; i < w->m_retired.GetCount(); i++)
+        if (w->m_retired[i].img == img)
+            return true;
+    return false;
+}
+
+void World::RetireUnused()
+{
+    int first = m_retired.GetCount();
+    for (int i = 0; i < m_images.GetCount(); i++)
+        if (!InModel(m_images[i]) && !IsRetired(m_images[i], this))
+            m_retired.Add(Retired{ m_images[i], 0 });
+    if (m_retired.GetCount() == first)
+        return;
+
+    // Flag first, then request: the sweep must see the flags
+    m_sweep_requested = true;
+    uint32_t gen = comp.RequestSweep();
+    for (int i = first; i < m_retired.GetCount(); i++)
+        m_retired.GetBuffer()[i].sweep = gen;      // operator[] returns a copy
+}
+
+// Free retired images whose sweep is done, checking nothing references them
+void World::CollectSwept()
+{
+    uint32_t done = comp.Swept();
+    for (int i = m_retired.GetCount() - 1; i >= 0; i--) {
+        if ((int32_t)(done - m_retired[i].sweep) < 0)
+            continue;
+        void *img = m_retired[i].img;
+        for (int b = 0; b < COMP_BUFFERS; b++)
+            for (int k = 0; k < COMP_KEYS; k++) {
+                const CompRecord &r = comp.GetRecord(b, k);
+                Check(!r.known || (r.bg != img && r.fg != img));
+            }
+        if (comp.JobPage() != COMP_NO_PAGE)
+            for (int k = 0; k < COMP_KEYS; k++)
+                Check(comp.JobSnapshot()[k].bg != img && comp.JobSnapshot()[k].fg != img);
+        if (const comp_key_t *key = comp.DrawingKey())
+            Check(key->bg != img && key->fg != img);
+        Check(!InModel(img));
+        m_retired.RemoveAt(i);
+        Release(img);
+    }
 }
 
 void World::SetKey(int page, int k, const void *bg, const void *fg, uint32_t flags)
@@ -207,6 +293,7 @@ void World::RunFrame()
         for (int i = 0; i < 100 && r != PageCompositor::StepResult::Wait && now < fill_end + CHUNK_US; i++)
             now = DoStep(now, false, &r);
     }
+    CollectSwept();
 }
 
 int64_t World::DoStep(int64_t now, bool gap, PageCompositor::StepResult *result)
@@ -353,11 +440,18 @@ void World::CheckFrame()
             continue;           // last frame's buffer after a reload
 
         // Every key shows a version the client set, never older than one
-        // shown before
-        int now_version[COMP_KEYS];
+        // shown before. A sweep may have made a record unknown (its images
+        // were retired); its pixels are still what was drawn, but which
+        // version they are can't be told.
+        int  now_version[COMP_KEYS];
+        bool known[COMP_KEYS];
         for (int k = 0; k < COMP_KEYS; k++) {
             const CompRecord &r = comp.GetRecord(shown[i], k);
-            Check(r.known);
+            known[k] = r.known;
+            if (!r.known) {
+                Check(m_sweep_requested);       // a frame start can land mid-sweep
+                continue;
+            }
             int v = FindVersion(page, k, r);
             Check(v >= 0);
             Check(v >= m_shown_version[page][k]);
@@ -371,7 +465,7 @@ void World::CheckFrame()
             const Batch &bt = batches[j];
             int total = 0, shown_new = 0;
             for (int k = 0; k < COMP_KEYS; k++) {
-                if (!(bt.mask & (1u << k)))
+                if (!(bt.mask & (1u << k)) || !known[k])
                     continue;
                 total++;
                 shown_new += now_version[k] >= bt.version[k];
@@ -380,7 +474,7 @@ void World::CheckFrame()
                 Check(!bt.flush);
                 partial_frames++;
             }
-            if (shown_new == total)
+            if (total > 0 && shown_new == total)
                 batches.RemoveAt(j);
         }
 

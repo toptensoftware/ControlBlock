@@ -10,6 +10,12 @@ idf_component_register(
         "status.cpp"
         "compositor.cpp"
         "page_compositor.cpp"
+        "image_store.cpp"
+        "key_layout.cpp"
+        "model.cpp"
+        "protocol.cpp"
+        "host_link.cpp"
+        "usb.cpp"
         "swipe.cpp"
         "i2c.cpp"
         "ch422g.cpp"
@@ -24,6 +30,7 @@ idf_component_register(
         "../assets/test_keys.bin"
         "../assets/ui.bin"
     REQUIRES
+        esp_app_format
         esp_driver_gpio
         esp_driver_i2c
         esp_hw_support
@@ -32,4 +39,5 @@ idf_component_register(
         esp_rom
         esp_timer
         espressif__esp_lcd_touch_gt911
+        espressif__esp_tinyusb
 )

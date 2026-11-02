@@ -12,6 +12,10 @@ esp_err_t screen_init(int num_pages);
 
 int screen_page_count(void);
 
+// Change the number of pages (1..SCREEN_MAX_PAGES); takes effect at the next
+// frame start. swipe_set_page_count() calls it along with the swipe bounds.
+void screen_set_page_count(int num_pages);
+
 // Horizontal scroll position of the page area, in pixels: page i is fully
 // in view at i * SCREEN_PAGE_W. Values before the first page or past the last
 // are allowed (rubber-banding) and show background there. If a page in view

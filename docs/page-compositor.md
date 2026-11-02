@@ -234,9 +234,18 @@ Deferring a reload until a swipe settles stays as in `screen-buffers.md`; that's
 // lock. Return false if the page doesn't exist. Called on the compositor task.
 typedef bool (*comp_get_page_t)(int page, comp_key_t keys[COMP_KEYS], void *ctx);
 
+// Client: is `img` retired (to be freed once a sweep has run)? Called on
+// the compositor task during a sweep, without the client's lock.
+typedef bool (*comp_is_retired_t)(const void *img, void *ctx);
+
 // Allocate the 3 page buffers in PSRAM, fill each with COMP_BACKGROUND,
 // mark every record unknown, and start the compositor task (core 1).
-esp_err_t comp_init(comp_get_page_t get_page, void *ctx);
+esp_err_t comp_init(comp_get_page_t get_page, comp_is_retired_t is_retired, void *ctx);
+
+// Drop references to retired images at the next key boundary. Returns a
+// generation; comp_swept() reaches it (compare as int32_t) once done.
+uint32_t comp_request_sweep(void);
+uint32_t comp_swept(void);
 
 // Page `page`'s target has changed. Wakes the compositor task.
 // flags: COMP_FLUSH holds the page back until all its changes are drawn;
@@ -284,6 +293,7 @@ Making sure an image isn't referenced before it's freed is **the client's job**,
 - **Records count** even though they're never followed: a freed address that's reused for a different image would compare equal, and the key wouldn't be redrawn.
 - **Changing an image in place** (same address, new pixels) is the same as freeing it.
 - **`comp_reset()`** drops every reference at once. That's the simple way to free a whole layout.
+- **Freeing single images:** a non-blocking sweep request, `comp_request_sweep()`/`comp_swept()`, drops references to retired images at a key boundary. Records that use them become unknown, and a job whose snapshot uses them is dropped. See [image-assets.md, Compositor references](image-assets.md#compositor-references).
 
 ## Concurrency
 

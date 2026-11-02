@@ -86,6 +86,11 @@ typedef struct {
 // lock. Return false if the page doesn't exist. Called on the compositor task.
 typedef bool (*comp_get_page_t)(int page, comp_key_t keys[COMP_KEYS], void *ctx);
 
+// Client: is `img` retired (no longer in the model, to be freed after a
+// sweep)? Called on the compositor task during a sweep; it must not take the
+// lock get_page takes. See docs/image-assets.md, Compositor references.
+typedef bool (*comp_is_retired_t)(const void *img, void *ctx);
+
 // Grow [*y0, *y1) by the cell rows a 128x128 rle565 image draws (rle565
 // stores only rows firstRow to firstRow + rowCount). Start with *y0 == *y1
 // for an empty span.
@@ -122,8 +127,9 @@ public:
     // `buffers`: COMP_BUFFERS page buffers, SCREEN_PAGE_W x SCREEN_PAGE_H.
     // `cell`: COMP_KEY_SIZE x COMP_KEY_SIZE pixels to render keys into
     // (internal RAM on the device). Fills the buffers with COMP_BACKGROUND
-    // and marks every record unknown.
-    void Init(uint16_t *const buffers[COMP_BUFFERS], uint16_t *cell, comp_get_page_t get_page, void *ctx);
+    // and marks every record unknown. `is_retired` may be NULL (no sweeps).
+    void Init(uint16_t *const buffers[COMP_BUFFERS], uint16_t *cell, comp_get_page_t get_page,
+              comp_is_retired_t is_retired, void *ctx);
 
     // --- Bounce fill, at frame start (ISR) ---
 
@@ -146,6 +152,13 @@ public:
     // Ask for a whole-layout reload. Step() does it at the next key
     // boundary (once a key being copied is finished) and returns ResetDone.
     void RequestReset();
+
+    // Drop every reference to images `is_retired` says are retired: records
+    // become unknown, and a job whose snapshot uses one is dropped. Done by
+    // Step() at the next key boundary. Flag the images retired first. Returns
+    // a generation; Swept() reaches it (compare as int32_t) once it's done.
+    uint32_t RequestSweep();
+    uint32_t Swept() const { return port::AtomicLoad(&m_sweep_done); }
 
     // --- Compositor task ---
 
@@ -173,6 +186,8 @@ public:
     const uint16_t *GetBuffer(int buf) const { return m_buf[buf].px; }
     int  DrawingBuffer() const { return m_drawing; }    // buffer being drawn into, or -1
     int  JobPage() const { return m_job.page; }
+    const comp_key_t *JobSnapshot() const { return m_job.snap; }
+    const comp_key_t *DrawingKey() const { return m_key.active ? &m_key.content : nullptr; }
     uint32_t TotalKeys() const { return m_total_keys; }         // keys finished
     uint32_t TotalRenders() const { return m_total_renders; }   // keys rendered into the cell
     uint32_t TotalSlices() const { return m_total_slices; }     // slices copied
@@ -236,6 +251,7 @@ private:
     bool       PickJob();
     StepResult IdleStep();
     void       DoReset();
+    void       DoSweep();
 
     void Preempt() { if (m_preempt) m_preempt(m_preempt_ctx); }
 
@@ -246,6 +262,8 @@ private:
     uint32_t       m_changed = 0;           // pages changed (atomic)
     uint32_t       m_changed_flush = 0;     // ...with COMP_FLUSH (atomic)
     uint32_t       m_reset_request = 0;     // atomic
+    uint32_t       m_sweep_request = 0;     // atomic: sweeps asked for
+    uint32_t       m_sweep_done = 0;        // atomic: the request count at the last sweep
     const uint16_t *m_px[COMP_BUFFERS] = {};
     bool           m_ready = false;
 
@@ -254,6 +272,7 @@ private:
 
     // --- Compositor task only ---
     comp_get_page_t m_get_page = nullptr;
+    comp_is_retired_t m_is_retired = nullptr;
     void           *m_ctx = nullptr;
     Buffer          m_buf[COMP_BUFFERS] = {};
     FrameInfo       m_fi = {};              // copy of m_frame

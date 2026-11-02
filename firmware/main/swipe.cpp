@@ -31,10 +31,19 @@ static const char *TAG = "swipe";
 
 #define PAGE_W ((float)SCREEN_PAGE_W)
 
+typedef enum {
+    EV_TOUCH,
+    EV_PAGE_COUNT,      // arg = count
+    EV_GO_TO_PAGE,      // arg = page
+} event_kind_t;
+
 typedef struct {
+    event_kind_t     kind;
     TOUCH_EVENT_TYPE type;
     int              x;
     int64_t          time_us;
+    int              arg;
+    bool             animate;
 } swipe_event_t;
 
 typedef struct {
@@ -55,6 +64,11 @@ static int           s_num_pages;
 static state_t s_state = STATE_IDLE;
 static float   s_pos;                 // scroll position, px. Page i rests at i * PAGE_W
 static volatile int s_page;           // page at rest, or the glide target
+
+// Page changes, reported once settled
+static void  (*s_page_cb)(int page, int cause);
+static int   s_reported;              // last page reported (or the boot page)
+static int   s_cause = SWIPE_CAUSE_USER;
 
 // Drag
 static int   s_down_x;
@@ -240,11 +254,51 @@ static void on_release(int64_t now)
         target = (int)lroundf(s_pos / PAGE_W);
     }
 
+    s_cause = SWIPE_CAUSE_USER;
     glide_to(clamp_page(target), velocity, now);
+}
+
+// Rest on `page` straight away
+static void jump_to(int page)
+{
+    s_page  = page;
+    s_pos   = page * PAGE_W;
+    s_state = STATE_IDLE;
+}
+
+static void set_page_count(int count)
+{
+    if (count < 1 || count > SCREEN_MAX_PAGES)
+        return;
+    s_num_pages = count;
+    screen_set_page_count(count);
+    status_set_pill_count(count);
+    if (s_page >= count) {
+        s_cause = SWIPE_CAUSE_HOST;
+        jump_to(count - 1);
+    }
+}
+
+static void handle_command(const swipe_event_t *ev)
+{
+    if (ev->kind == EV_PAGE_COUNT) {
+        set_page_count(ev->arg);
+    } else if (ev->kind == EV_GO_TO_PAGE) {
+        // The host wins over a drag in progress
+        s_cause = SWIPE_CAUSE_HOST;
+        if (ev->animate)
+            glide_to(clamp_page(ev->arg), 0, ev->time_us);
+        else
+            jump_to(clamp_page(ev->arg));
+    }
 }
 
 static void handle_event(const swipe_event_t *ev)
 {
+    if (ev->kind != EV_TOUCH) {
+        handle_command(ev);
+        return;
+    }
     switch (ev->type) {
     case TOUCH_DOWN:
         s_sample_count = 0;
@@ -304,7 +358,44 @@ static void swipe_task(void *arg)
         int scroll = (int)lroundf(s_pos);
         screen_set_scroll(scroll);
         status_set_selected_pill(screen_page_most_in_view(scroll, s_num_pages));
+
+        if (s_state == STATE_IDLE && s_page != s_reported) {
+            s_reported = s_page;
+            if (s_page_cb)
+                s_page_cb(s_page, s_cause);
+        }
     }
+}
+
+static void send_event(const swipe_event_t *ev)
+{
+    if (xQueueSend(s_queue, ev, 0) != pdTRUE) {
+        static int dropped;
+        ESP_LOGW(TAG, "event queue full, dropped %d events", ++dropped);
+    }
+}
+
+void swipe_set_page_count(int count)
+{
+    swipe_event_t ev = {};
+    ev.kind = EV_PAGE_COUNT;
+    ev.arg  = count;
+    send_event(&ev);
+}
+
+void swipe_go_to_page(int page, bool animate)
+{
+    swipe_event_t ev = {};
+    ev.kind    = EV_GO_TO_PAGE;
+    ev.arg     = page;
+    ev.animate = animate;
+    ev.time_us = esp_timer_get_time();
+    send_event(&ev);
+}
+
+void swipe_set_page_changed_cb(void (*cb)(int page, int cause))
+{
+    s_page_cb = cb;
 }
 
 esp_err_t swipe_init(void)
@@ -325,11 +416,12 @@ void swipe_touch(uint8_t id, TOUCH_EVENT_TYPE type, uint16_t x, uint16_t y)
 {
     if (id != 0)        // paging follows the first finger only
         return;
-    swipe_event_t ev = { .type = type, .x = x, .time_us = esp_timer_get_time() };
-    if (xQueueSend(s_queue, &ev, 0) != pdTRUE) {
-        static int dropped;
-        ESP_LOGW(TAG, "touch queue full, dropped %d events", ++dropped);
-    }
+    swipe_event_t ev = {};
+    ev.kind    = EV_TOUCH;
+    ev.type    = type;
+    ev.x       = x;
+    ev.time_us = esp_timer_get_time();
+    send_event(&ev);
 }
 
 int swipe_current_page(void)

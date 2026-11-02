@@ -22,6 +22,7 @@ namespace
         int  preempt_percent;           // frame starts mid-step
         int  preempt_client_percent;    // client changes mid-step
         bool reloads;
+        bool sweeps = false;            // retire unused images and sweep them
     };
 
     void Fuzz(uint32_t seed, const FuzzOptions &o)
@@ -54,6 +55,8 @@ namespace
                 if (!mask)
                     mask = 1u << r.Range(0, COMP_KEYS - 1);
                 w.ChangeKeys(page, mask, r.Chance(35) ? COMP_FLUSH : 0);
+                if (o.sweeps && r.Chance(30))
+                    w.RetireUnused();
             } else if (dice < 97 && o.reloads) {
                 w.Reload();
             } else {
@@ -68,6 +71,8 @@ namespace
         w.key_cost_us = 1500;
         w.RunFrames(30);
         w.CheckSettledOn(page);
+        if (o.sweeps)
+            Check(w.images_freed > 0);
     }
 
     // Seeds per fuzz test: a quick default, or FUZZ_SEEDS=<n> for a soak run
@@ -114,4 +119,14 @@ Fact("Compositor Fuzz Client Changes Mid Step")
 Fact("Compositor Fuzz One Page")
 {
     FuzzSeeds(4, FuzzOptions{ 1, 1500, 10, 5, true });
+}
+
+Fact("Compositor Fuzz Sweeps")
+{
+    FuzzSeeds(4, FuzzOptions{ 3, 2000, 0, 0, false, true });
+}
+
+Fact("Compositor Fuzz Sweeps With Preemption And Reloads")
+{
+    FuzzSeeds(4, FuzzOptions{ 3, 2000, 10, 5, true, true });
 }
