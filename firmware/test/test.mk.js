@@ -14,6 +14,7 @@ export default async function ()
             "../main/image_store.cpp",
             "../main/key_layout.cpp",
             "../main/protocol.cpp",
+            "../main/touch_router.cpp",
             "../../rle565/src/rle565.c",
         ],
         includePath: [

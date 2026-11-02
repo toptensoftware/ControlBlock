@@ -24,6 +24,11 @@ KeyLayout  *model_layout(void);
 bool model_get_page(int page, comp_key_t keys[COMP_KEYS], void *ctx);
 bool model_is_retired(const void *img, void *ctx);
 
+// Touch helpers (take the lock): does the key report presses, and show or
+// clear its pressed look
+bool model_key_active(int page, int key);
+void model_set_key_pressed(int page, int key, bool pressed);
+
 // Upload an image from memory under `id` (the device's own images: the
 // demo layout). Takes the lock.
 ImageResult model_put_image(uint32_t id, const void *data, uint32_t size);

@@ -28,7 +28,7 @@ await cb.setPageCount(2);
 await cb.setKeys([{ page: 0, key: 0, bg: face.id, fg: icon.id, pressedBg: face.id, pressedFg: icon.id }]);
 
 cb.on("pageChanged", e => console.log("page", e.page));
-cb.on("key", e => console.log("key", e.page, e.key, e.action));    // not sent by the firmware yet
+cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: KeyAction.PRESS / RELEASE / CANCEL
 ```
 
 - **Requests are pipelined:** every method returns a promise for its own response. A status other than OK throws a `ControlBlockError`.
@@ -36,5 +36,9 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // not sent b
   - It splits the image into chunks the device can take.
   - Uploading to an ID the device already has replaces the image everywhere it's used.
   - Use fixed IDs for images you replace, and content IDs (`keyImage`) for the rest.
+- **`setStatusText({ left, right })`:**
+  - It sets the status bar's texts. Only the fields given change, and `""` clears one.
+  - Each is at most 47 bytes of UTF-8 (the font is ASCII only for now). A longer or invalid text throws before anything is sent.
+  - The device has no clock: send the time yourself, e.g. `setStatusText({ right: "12:35" })`.
 - **`freeImages(ids)`:** the ID goes at once, and the memory once no key uses it.
 - **Browsers:** `ControlBlock` and `src/protocol.js` work on any WebUSB `USBDevice`, so you can pass `navigator.usb`'s. `src/images.js` is Node only (it uses sharp and the rle565 encoder).

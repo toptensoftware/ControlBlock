@@ -72,6 +72,21 @@ bool model_is_retired(const void *img, void *)
     return ImageStore::IsRetired(img);
 }
 
+bool model_key_active(int page, int key)
+{
+    model_lock();
+    bool active = s_layout.IsActive(page, key);
+    model_unlock();
+    return active;
+}
+
+void model_set_key_pressed(int page, int key, bool pressed)
+{
+    model_lock();
+    s_layout.SetPressed(page, key, pressed);
+    model_unlock();
+}
+
 ImageResult model_put_image(uint32_t id, const void *data, uint32_t size)
 {
     model_lock();

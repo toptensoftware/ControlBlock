@@ -20,39 +20,27 @@
 #include "screen.h"
 #include "swipe.h"
 #include "status.h"
-#include "test_keys.h"
 
 static const char *TAG = "controlblock";
 
-#define NUM_PAGES 3
+// The device boots with no pages, keys or status text: the host supplies
+// them all (docs/protocol.md). The only built-in content is the UI pack for
+// the status bar.
 
 // Boot-time stress run: the compositor drawing flat out while the display
 // runs, logging fills over budget. A quick device check after changing the
-// compositor, the bounce fill or anything that writes PSRAM. 0 = boot
-// straight in.
+// compositor, the bounce fill or anything that writes PSRAM. Off by default;
+// it embeds assets/test_keys.bin as its test images and builds with
+//     idf.py --preset debug -DCB_RUN_STRESS=ON build
+// (see main/CMakeLists.txt; use -DCB_RUN_STRESS=OFF to turn it off again).
+#ifndef RUN_STRESS
 #define RUN_STRESS  0
-
-// The demo layout uses the opaque faces (no clear before each key) or the
-// ones with transparent padding
-#define USE_OPAQUE_FACES 1
-
-// Mock status bar content
-#define MOCK_ACTIVITY "AppleTV"
-#define MOCK_TIME     "12.35am"
-
-// The demo's own image IDs (the host's RESET clears them)
-#define DEMO_FACE_ID(i, opaque) (0xDE000100u + ((opaque) ? 0x10u : 0u) + (uint32_t)(i))
-#define DEMO_ICON_ID(i)         (0xDE000200u + (uint32_t)(i))
-
-extern const uint8_t test_keys_start[] asm("_binary_test_keys_bin_start");
-extern const uint8_t test_keys_end[]   asm("_binary_test_keys_bin_end");
+#endif
 
 extern const uint8_t ui_start[] asm("_binary_ui_bin_start");
 extern const uint8_t ui_end[]   asm("_binary_ui_bin_end");
 
 static const BLOBPACK *s_ui;            // PSRAM copy (rle565 needs 4-byte alignment)
-static int             s_icon_count;
-static bool            s_opaque;        // the demo uses the opaque faces
 
 // Copy an embedded blobpack to PSRAM (rle565 needs 4-byte alignment)
 static BLOBPACK *load_pack(const uint8_t *start, const uint8_t *end)
@@ -64,9 +52,40 @@ static BLOBPACK *load_pack(const uint8_t *start, const uint8_t *end)
     return (BLOBPACK *)p;
 }
 
+// Where late fills were (see screen_stats_t), or "" if none
+static const char *late_fills(const screen_stats_t *st)
+{
+    static char text[96];
+    if (!st->overruns)
+        return "";
+    snprintf(text, sizeof(text), " [late: status %lu, 1 page %lu, 2 pages %lu; status drawing %lu]",
+             (unsigned long)st->late_status, (unsigned long)st->late_one_page,
+             (unsigned long)st->late_two_pages, (unsigned long)st->late_status_drawing);
+    return text;
+}
+
+#if RUN_STRESS
+
+#include "test_keys.h"
+
+#define NUM_PAGES 3
+
+// The demo faces are opaque (no clear before each key) or have transparent padding
+#define USE_OPAQUE_FACES 1
+
+// The stress run's own image IDs
+#define DEMO_FACE_ID(i, opaque) (0xDE000100u + ((opaque) ? 0x10u : 0u) + (uint32_t)(i))
+#define DEMO_ICON_ID(i)         (0xDE000200u + (uint32_t)(i))
+
+extern const uint8_t test_keys_start[] asm("_binary_test_keys_bin_start");
+extern const uint8_t test_keys_end[]   asm("_binary_test_keys_bin_end");
+
+static int  s_icon_count;
+static bool s_opaque;                   // the layout uses the opaque faces
+
 // ---------------------------------------------------------------------------
-// Demo layout: test_keys.bin's faces and icons, uploaded into the image store
-// as the host would, on 3 pages
+// Stress layout: test_keys.bin's faces and icons, uploaded into the image
+// store as the host would, on 3 pages
 
 static uint32_t face_id(int i) { return DEMO_FACE_ID(i, s_opaque); }
 static uint32_t icon_id(int i) { return DEMO_ICON_ID(i % s_icon_count); }
@@ -133,28 +152,6 @@ static void change_icons(int first, int last, int shift, uint32_t flags)
     model_unlock();
 }
 
-// Test changes, once a second, until a host app connects:
-//  - one key on the current page toggles pressed (incremental)
-//  - every 10 s, every key on every page changes icon, flushed on alternate
-//    bursts (incremental shows over a couple of frames, flush all at once)
-static void test_update(uint32_t tick)
-{
-    static bool pressed[NUM_PAGES][COMP_KEYS];
-    int page = swipe_current_page();
-
-    if (tick % 10 == 0) {
-        bool flush = tick % 20 == 0;
-        change_icons(0, NUM_PAGES - 1, (int)(tick / 10), flush ? COMP_FLUSH : 0);
-        ESP_LOGI(TAG, "test: all keys changed (%s)", flush ? "flush" : "incremental");
-    } else if (page < NUM_PAGES) {
-        int k = tick % COMP_KEYS;
-        pressed[page][k] = !pressed[page][k];
-        model_lock();
-        model_layout()->SetPressed(page, k, pressed[page][k]);
-        model_unlock();
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Stress run
 
@@ -168,18 +165,6 @@ typedef struct {
     screen_stats_t st;
     comp_stats_t   cs;
 } stress_result_t;
-
-// Where late fills were (see screen_stats_t), or "" if none
-static const char *late_fills(const screen_stats_t *st)
-{
-    static char text[96];
-    if (!st->overruns)
-        return "";
-    snprintf(text, sizeof(text), " [late: status %lu, 1 page %lu, 2 pages %lu; status drawing %lu]",
-             (unsigned long)st->late_status, (unsigned long)st->late_one_page,
-             (unsigned long)st->late_two_pages, (unsigned long)st->late_status_drawing);
-    return text;
-}
 
 typedef enum {
     STRESS_KEYS    = 0x01,      // change every key in view each round
@@ -277,7 +262,7 @@ static void run_stress(void)
     stress_run(&results[n++], "status bar only, mid-swipe", true, SCREEN_PAGE_W / 2, 0, STRESS_STATUS);
     stress_run(&results[n++], "opaque, mid, flush + status", true, SCREEN_PAGE_W / 2, COMP_FLUSH,
                STRESS_KEYS | STRESS_STATUS);
-    status_set_right(MOCK_TIME);
+    status_set_right("");
 
     // Image uploads (replaces) writing PSRAM while the keys using them redraw
     stress_run(&results[n++], "image replaces, at rest", true, 0, 0, STRESS_REPLACE);
@@ -292,25 +277,30 @@ static void run_stress(void)
         stress_log(&results[i]);
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+
+    // Back to the empty device a host finds (the same steps as RESET)
+    screen_set_page_count(1);
+    model_lock();
+    model_layout()->Clear();
+    model_unlock();
+    comp_reset();
+    model_lock();
+    model_store()->Reset();
+    model_unlock();
 }
+
+#endif  // RUN_STRESS
 
 // ---------------------------------------------------------------------------
 
-// Load ui.bin and start the status bar with mock content: an activity name,
-// a time and a pill per page (the swipe task keeps the selected one current)
+// Load ui.bin and start the status bar, empty: the host sets the texts, and
+// the swipe task sets the pills from the page count
 static esp_err_t init_status_bar(void)
 {
     s_ui = load_pack(ui_start, ui_end);
     if (!s_ui)
         return ESP_ERR_NO_MEM;
-    esp_err_t err = status_init(s_ui);
-    if (err != ESP_OK)
-        return err;
-
-    status_set_left(MOCK_ACTIVITY);
-    status_set_right(MOCK_TIME);
-    status_set_pill_count(NUM_PAGES);
-    return ESP_OK;
+    return status_init(s_ui);
 }
 
 // Internal RAM is the scarce one (USB, Wi-Fi and the display all want it)
@@ -341,29 +331,25 @@ extern "C" void app_main(void)
 
     ESP_ERROR_CHECK(comp_init(model_get_page, model_is_retired, NULL));
     ESP_ERROR_CHECK(model_init());
-    ESP_ERROR_CHECK(load_demo_images());
-    set_demo_layout(USE_OPAQUE_FACES);
-    ESP_ERROR_CHECK(screen_init(NUM_PAGES));
+    ESP_ERROR_CHECK(screen_init(1));        // the layout starts with one empty page
     ESP_ERROR_CHECK(display_enable_backlight(true));
 
-    if (RUN_STRESS) {
-        run_stress();
-        set_demo_layout(USE_OPAQUE_FACES);
-    }
+#if RUN_STRESS
+    ESP_ERROR_CHECK(load_demo_images());
+    screen_set_page_count(NUM_PAGES);
+    run_stress();
+#endif
 
     ESP_ERROR_CHECK(swipe_init());
     ESP_ERROR_CHECK(touch_init(on_touched));
     ESP_ERROR_CHECK(host_link_init());
     log_heap("after init");
 
-    uint32_t last_frames = 0, tick = 0;
+    uint32_t last_frames = 0;
     screen_stats_t st;
     comp_stats_t cs;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
-        if (!host_link_seen())
-            test_update(++tick);
-
         ImageStoreStats is;
         model_lock();
         model_store()->GetStats(&is);

@@ -11,6 +11,8 @@
 #include "compositor.h"
 #include "model.h"
 #include "protocol.h"
+#include "status.h"
+#include "status_bar.h"
 #include "swipe.h"
 #include "usb.h"
 #include "host_link.h"
@@ -28,6 +30,8 @@ static const char *TAG = "host";
 static_assert(SWIPE_CAUSE_USER == PAGE_CAUSE_USER && SWIPE_CAUSE_HOST == PAGE_CAUSE_HOST,
               "swipe causes are PAGE_CHANGED causes");
 
+static_assert(STATUS_TEXT_MAX == STATUS_BAR_TEXT_MAX, "protocol text limit is the status bar's");
+
 static Protocol     s_proto;
 static TaskHandle_t s_task;
 static char         s_serial[16];
@@ -44,6 +48,14 @@ static void   ph_set_page_count(int count, void *)           { swipe_set_page_co
 static void   ph_set_page(int page, bool animate, void *)    { swipe_go_to_page(page, animate); }
 static int    ph_current_page(void *)                        { return swipe_current_page(); }
 static void   ph_set_backlight(bool on, void *)              { display_enable_backlight(on); }
+static void   ph_set_status_text(int field, const char *text, void *)
+{
+    // Safe from this task: the status task does the drawing (internal RAM)
+    if (field == STATUS_TEXT_LEFT)
+        status_set_left(text);
+    else
+        status_set_right(text);
+}
 
 // --- Wakes (USB and swipe tasks) ---
 
@@ -56,6 +68,12 @@ static void wake(void)
 static void on_page_changed(int page, int cause)
 {
     s_proto.PostPageChanged(page, cause);
+    wake();
+}
+
+static void on_key(int page, int key, int action, uint32_t time_ms)
+{
+    s_proto.PostKey(page, key, action, time_ms);
     wake();
 }
 
@@ -104,6 +122,7 @@ esp_err_t host_link_init(void)
     h.set_page         = ph_set_page;
     h.current_page     = ph_current_page;
     h.set_backlight    = ph_set_backlight;
+    h.set_status_text  = ph_set_status_text;
     h.fw_version       = esp_app_get_description()->version;
     h.serial           = s_serial;
     s_proto.Init(model_store(), model_layout(), h);
@@ -112,6 +131,7 @@ esp_err_t host_link_init(void)
                                 PROTOCOL_TASK_PRIO, &s_task, PROTOCOL_TASK_CORE) != pdPASS)
         return ESP_FAIL;
     swipe_set_page_changed_cb(on_page_changed);
+    swipe_set_key_cb(on_key);
 
     usb_callbacks_t cb = {};
     cb.rx           = wake;

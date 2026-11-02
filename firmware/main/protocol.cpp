@@ -54,6 +54,34 @@ namespace
         }
     };
 
+    // Well-formed UTF-8 (no overlongs, surrogates or code points over
+    // U+10FFFF) with no NUL
+    bool valid_utf8(const uint8_t *s, uint32_t n)
+    {
+        for (uint32_t i = 0; i < n; ) {
+            uint8_t c = s[i++];
+            if (c == 0)
+                return false;
+            if (c < 0x80)
+                continue;
+            uint32_t extra, min, cp;
+            if      (c >= 0xC2 && c <= 0xDF) { extra = 1; min = 0x80;    cp = c & 0x1F; }
+            else if (c >= 0xE0 && c <= 0xEF) { extra = 2; min = 0x800;   cp = c & 0x0F; }
+            else if (c >= 0xF0 && c <= 0xF4) { extra = 3; min = 0x10000; cp = c & 0x07; }
+            else return false;
+            if (i + extra > n)
+                return false;
+            for (uint32_t k = 0; k < extra; k++) {
+                if ((s[i] & 0xC0) != 0x80)
+                    return false;
+                cp = cp << 6 | (s[i++] & 0x3F);
+            }
+            if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+                return false;
+        }
+        return true;
+    }
+
     uint16_t status_of(ImageResult r)
     {
         switch (r) {
@@ -280,6 +308,7 @@ void Protocol::Dispatch()
     case MSG_PING:           OnPing();         break;
     case MSG_GET_INFO:       OnGetInfo();      break;
     case MSG_RESET:          OnReset();        break;
+    case MSG_SET_STATUS_TEXT: OnSetStatusText(); break;
     case MSG_SET_BACKLIGHT:  OnSetBacklight(); break;
     case MSG_PUT_IMAGE:      Respond(ST_BAD_LENGTH); break;     // shorter than its prefix
     case MSG_FREE_IMAGES:    OnFreeImages();   break;
@@ -341,6 +370,28 @@ void Protocol::OnReset()
     m_store->Reset();
     Unlock();
     m_host.set_page_count(1, m_host.ctx);
+    m_host.set_status_text(STATUS_TEXT_LEFT, "", m_host.ctx);
+    m_host.set_status_text(STATUS_TEXT_RIGHT, "", m_host.ctx);
+    Respond(ST_OK);
+}
+
+// u8 field, u8 len, char text[len]
+void Protocol::OnSetStatusText()
+{
+    Reader r = { m_buf, m_len, 0 };
+    if (!r.Has(2))
+        return Respond(ST_BAD_LENGTH);
+    uint32_t field = r.U8();
+    uint32_t len   = r.U8();
+    if (!r.Has(len))
+        return Respond(ST_BAD_LENGTH);
+    if (field > STATUS_TEXT_RIGHT || len >= STATUS_TEXT_MAX || !valid_utf8(m_buf + 2, len))
+        return Respond(ST_BAD_ARG);
+
+    char text[STATUS_TEXT_MAX];
+    memcpy(text, m_buf + 2, len);
+    text[len] = 0;
+    m_host.set_status_text((int)field, text, m_host.ctx);
     Respond(ST_OK);
 }
 

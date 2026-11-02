@@ -56,6 +56,8 @@ namespace
         int  lock_depth = 0, comp_resets = 0, page_count = -1, page_set = -1, current = 0;
         size_t space = 1 << 20;         // write_space: room for events
         bool animate = false, backlight = true;
+        char status_text[2][64] = {};           // last text per STATUS_LEFT / STATUS_RIGHT
+        int  status_sets = 0;
         List<int> changed_pages;
 
         explicit Fixture(uint32_t capacity = 1u << 20)
@@ -80,6 +82,13 @@ namespace
             h.set_page         = [](int p, bool a, void *c) { ((Fixture *)c)->page_set = p; ((Fixture *)c)->animate = a; };
             h.current_page     = [](void *c) { return ((Fixture *)c)->current; };
             h.set_backlight    = [](bool on, void *c) { ((Fixture *)c)->backlight = on; };
+            h.set_status_text  = [](int field, const char *t, void *c) {
+                Fixture *f = (Fixture *)c;
+                Check(f->lock_depth == 0 && (field == STATUS_TEXT_LEFT || field == STATUS_TEXT_RIGHT));
+                Check(strlen(t) < STATUS_TEXT_MAX);
+                strcpy(f->status_text[field], t);
+                f->status_sets++;
+            };
             h.fw_version       = "1.2.3";
             h.serial           = "ABCDEF";
             h.ctx              = this;
@@ -405,6 +414,71 @@ Fact("Protocol Page Count Page And Backlight")
     Bytes off;
     off.U8(0);
     Assert(f.Request(MSG_SET_BACKLIGHT, off).Status() == ST_OK && !f.backlight);
+}
+
+Fact("Protocol Set Status Text")
+{
+    Fixture f;
+    auto text = [](int field, const char *s, int len = -1) {
+        Bytes p;
+        p.U8(field).U8(len < 0 ? (int)strlen(s) : len).Raw(s, strlen(s));
+        return p;
+    };
+
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(STATUS_TEXT_LEFT, "AppleTV")).Status() == ST_OK);
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(STATUS_TEXT_RIGHT, "12:35 am")).Status() == ST_OK);
+    Assert(!strcmp(f.status_text[0], "AppleTV") && !strcmp(f.status_text[1], "12:35 am"));
+
+    // Empty clears; trailing bytes are ignored; split across reads
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(STATUS_TEXT_LEFT, "")).Status() == ST_OK);
+    Assert(!strcmp(f.status_text[0], ""));
+    Bytes extra = text(STATUS_TEXT_LEFT, "Hi");
+    extra.U32(7);
+    Assert(f.Request(MSG_SET_STATUS_TEXT, extra, 3).Status() == ST_OK && !strcmp(f.status_text[0], "Hi"));
+
+    // Multi-byte UTF-8 is accepted; the longest text is STATUS_TEXT_MAX - 1 bytes
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(STATUS_TEXT_LEFT, "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x8E\xB5")).Status() == ST_OK);
+    char longest[STATUS_TEXT_MAX + 1];
+    memset(longest, 'x', sizeof(longest));
+    longest[STATUS_TEXT_MAX - 1] = 0;
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(STATUS_TEXT_RIGHT, longest)).Status() == ST_OK);
+    Assert(strlen(f.status_text[1]) == STATUS_TEXT_MAX - 1);
+
+    // Rejected, and nothing changes
+    int sets = f.status_sets;
+    longest[STATUS_TEXT_MAX - 1] = 'x';
+    longest[STATUS_TEXT_MAX] = 0;
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(STATUS_TEXT_RIGHT, longest)).Status() == ST_BAD_ARG);   // too long
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(2, "x")).Status() == ST_BAD_ARG);                       // no such field
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(0, "ab\xC3")).Status() == ST_BAD_ARG);                  // cut sequence
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(0, "\xC3(")).Status() == ST_BAD_ARG);                   // bad continuation
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(0, "\xC0\x80")).Status() == ST_BAD_ARG);                // overlong
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(0, "\xED\xA0\x80")).Status() == ST_BAD_ARG);            // surrogate
+    Assert(f.Request(MSG_SET_STATUS_TEXT, text(0, "\xF5\x80\x80\x80")).Status() == ST_BAD_ARG);        // beyond U+10FFFF
+    Bytes nul;
+    nul.U8(0).U8(3).U8('a').U8(0).U8('b');
+    Assert(f.Request(MSG_SET_STATUS_TEXT, nul).Status() == ST_BAD_ARG);                                // embedded NUL
+    Bytes shortText;
+    shortText.U8(0).U8(5).Raw("abc", 3);
+    Assert(f.Request(MSG_SET_STATUS_TEXT, shortText).Status() == ST_BAD_LENGTH);                       // length past the payload
+    Bytes noLen;
+    noLen.U8(0);
+    Assert(f.Request(MSG_SET_STATUS_TEXT, noLen).Status() == ST_BAD_LENGTH);
+    Assert(f.Request(MSG_SET_STATUS_TEXT).Status() == ST_BAD_LENGTH);
+    Assert(f.status_sets == sets);
+}
+
+Fact("Protocol Reset Clears Status Text")
+{
+    Fixture f;
+    Bytes p;
+    p.U8(STATUS_TEXT_LEFT).U8(1).U8('a');
+    f.Request(MSG_SET_STATUS_TEXT, p);
+    Bytes q;
+    q.U8(STATUS_TEXT_RIGHT).U8(1).U8('b');
+    f.Request(MSG_SET_STATUS_TEXT, q);
+    Assert(f.Request(MSG_RESET).Status() == ST_OK);
+    Assert(!strcmp(f.status_text[0], "") && !strcmp(f.status_text[1], ""));
 }
 
 Fact("Protocol Unknown Type Is Skipped")

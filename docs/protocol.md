@@ -95,7 +95,8 @@ Any data specific to that response follows these two fields.
 | `0x00` | PING | Echoes the payload back (for latency and throughput tests) |
 | `0x01` | GET_INFO | Device capabilities and geometry |
 | `0x02` | RESET | Clear the layout and every image |
-| `0x03`–`0x04` | — | Reserved for the status bar (clock and status text), not yet defined |
+| `0x03` | SET_STATUS_TEXT | Set the status bar's left or right text |
+| `0x04` | — | Reserved, not yet defined |
 | `0x05` | SET_BACKLIGHT | Turn the backlight on or off |
 | `0x10` | PUT_IMAGE | Upload or replace an image, in chunks |
 | `0x11` | FREE_IMAGES | Free images (deferred while keys use them) |
@@ -141,7 +142,26 @@ Any data specific to that response follows these two fields.
 
 **Request:** No payload.
 
-Clears all pages (the page count goes to 1 and every key becomes empty), abandons any upload in progress, and frees every image.
+Clears all pages (the page count goes to 1 and every key becomes empty), abandons any upload in progress, frees every image, and clears both status bar texts.
+
+### `0x03` SET_STATUS_TEXT
+
+**Request:**
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | field | `0` left text, `1` right text |
+| u8 | len | Bytes of text, 0..47 |
+| u8[len] | text | UTF-8, no NUL |
+
+Sets one of the two texts in the [status bar](status-bar.md) (left aligned and right aligned). The host decides what they say; the device has no clock. To change both, send two requests (they may be pipelined).
+
+- **Empty text** (`len = 0`) clears the text.
+- **Setting the current text** changes nothing on screen.
+- **Fixed buffers:** each text is held in a 48-byte buffer on the device, so the limit is 47 bytes (not characters).
+- **Rejected texts:** the text is not cut. The request fails and the bar keeps what it had. `BAD_LENGTH` if `len` runs past the payload; `BAD_ARG` for a `field` other than 0 or 1, more than 47 bytes, or text that isn't well-formed UTF-8 (bad or truncated sequences, overlongs, surrogates, code points above U+10FFFF, or a NUL).
+- **Characters:** the current font covers ASCII 32–126 only, so send ASCII for now.
+- **Lifetime:** the texts stay until changed, or until `RESET`. They're drawn by the device's status task, not at once: the new text appears within a frame or two of the response.
 
 ### `0x05` SET_BACKLIGHT
 
@@ -277,20 +297,20 @@ Events have the `EVENT` flag set, and `seq` is the device's event counter.
 |---|---|---|
 | u8 | page | |
 | u8 | key | |
-| u8 | action | `0` down, `1` up, `2` cancel |
+| u8 | action | `0` press, `1` release, `2` cancel |
 | u8 | lost | Event-overflow flag (see above) |
 | u32 | time_ms | Device milliseconds since boot. For working out hold times |
 
 **What each action means:**
-- **Down** is sent as soon as a finger lands on a key.
-- **Cancel** replaces **up** if the touch turns into a swipe or slides off the key.
-
-**Not sent yet:** the firmware has no key router yet (touch only drives swiping), so no KEY events are sent. PAGE_CHANGED works.
+See [`interactions.md`](interactions.md) for exactly when these fire.
+- **Press** is sent when the short swipe window after touch-down ends with the finger still on the key (or at lift, for a quick tap). A touch that becomes a swipe sends no key events.
+- **Release** is sent when the finger lifts while still on the key.
+- **Cancel** is sent instead of release if the finger drags out of the key after press. Don't trigger release actions.
+- Every press is followed by exactly one release or cancel.
 
 **Host guidance:**
-- Trigger normal actions on **up**.
-- Use **down** only for things like hold-to-repeat, or for actions where a cancelled press does no harm.
-- **Long press and double press are detected by the host, not the device.** The host uses `time_ms` from the down/up events; the `host/` library should provide helpers for this.
+- Press is safe to act on: it only fires once the touch can no longer become a swipe. Use **release** for actions that should only run on a completed click, and ignore **cancel**.
+- **Long press and double press are detected by the host, not the device.** The host uses `time_ms` from the press/release events (press is delayed by the swipe window, so measure from press, not touch-down); the `host/` library should provide helpers for this.
 
 ### `0x81` PAGE_CHANGED
 
@@ -306,7 +326,7 @@ This is sent once the page settles, not while a swipe is in progress.
 1. Open the device and send RESET_STREAM (control request).
 2. Send `GET_INFO`: check `protocol_version` and read the geometry.
 3. Render the faces and icons (with labels), encode them with the rle565 encoder and compute their IDs (CRC-32). Send `QUERY_IMAGES`, then `PUT_IMAGE` only for the missing ones, pipelined.
-4. Send `SET_PAGE_COUNT`, then one `SET_KEYS` with every key.
+4. Send `SET_PAGE_COUNT`, then one `SET_KEYS` with every key. Set the status bar texts with `SET_STATUS_TEXT`, and again whenever they change.
 5. Handle `KEY` events. Later changes are `SET_KEYS` with the affected keys (plus `PUT_IMAGE` for any new images), or a `PUT_IMAGE` that replaces an image in place. `FREE_IMAGES` images that are no longer wanted.
 
 ## Device state lifetime
@@ -318,5 +338,5 @@ This is sent once the page settles, not while a swipe is in progress.
 
 ## Open questions
 
-- Status bar and pager: Not designed yet. Message types `0x03`–`0x04` are reserved for them.
+- Status bar: the left and right texts are host-settable (`SET_STATUS_TEXT`). Still open: whether the device gets a clock, other status bar content, and the pager bar (disabled for now). Message type `0x04` is reserved for them.
 - Icon size: Somewhere from 80 to 96 px, to be decided by trying it on the hardware. The device reports the sizes in `GET_INFO`, so hosts shouldn't hard-code them.

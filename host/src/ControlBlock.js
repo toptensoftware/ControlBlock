@@ -10,7 +10,7 @@
 import { Emitter } from "./Emitter.js";
 import {
     USB_VID, USB_PID, INTERFACE, ENDPOINT, PROTOCOL_VERSION, REQ_RESET_STREAM,
-    PUT_IMAGE_PREFIX, KEYDEF_SIZE, Flags, Msg, Status,
+    PUT_IMAGE_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
     encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys,
     decodeInfo, decodeQuery, decodeEvent, statusName,
 } from "./protocol.js";
@@ -164,6 +164,20 @@ export class ControlBlock extends Emitter
     async reset()
     {
         await this.call(Msg.RESET);
+    }
+
+    // Status bar texts: { left, right }. Only the fields given change; "" clears
+    // one. Nothing is sent if any is invalid (too long: 47 bytes of UTF-8).
+    async setStatusText(texts)
+    {
+        const fields = { left: StatusText.LEFT, right: StatusText.RIGHT };
+        for (const name of Object.keys(texts))
+            if (!(name in fields))
+                throw new TypeError(`Unknown status text "${name}" (left or right)`);
+        const payloads = Object.entries(fields)
+            .filter(([name]) => texts[name] !== undefined)
+            .map(([name, field]) => encodeStatusText(field, texts[name]));
+        await Promise.all(payloads.map(p => this.call(Msg.SET_STATUS_TEXT, p)));
     }
 
     async setBacklight(on)

@@ -27,3 +27,8 @@ void swipe_go_to_page(int page, bool animate);
 #define SWIPE_CAUSE_USER  0
 #define SWIPE_CAUSE_HOST  1
 void swipe_set_page_changed_cb(void (*cb)(int page, int cause));
+
+// Told of every key action (TOUCH_KEY_PRESS / RELEASE / CANCEL, touch_router.h)
+// with the device time in ms, on the swipe task. The key's pressed look is
+// already handled. Touches are routed by touch_router; see docs/interactions.md.
+void swipe_set_key_cb(void (*cb)(int page, int key, int action, uint32_t time_ms));

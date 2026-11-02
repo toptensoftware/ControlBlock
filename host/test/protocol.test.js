@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
     encodeMessage, MessageParser, encodeKeys, encodeIds, encodePutImage, decodeInfo, decodeQuery, decodeEvent,
     Msg, Flags, KeyFlags, HEADER_SIZE, KEYDEF_SIZE, MAGIC, statusName, Status,
+    encodeStatusText, StatusText, STATUS_TEXT_MAX_BYTES,
 } from "../src/protocol.js";
 import { infoPayload } from "./FakeDevice.js";
 
@@ -65,6 +66,17 @@ test("ids and image chunks", () => {
     assert.deepEqual([...ids], [2, 0, 1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]);
     const put = encodePutImage(3, 100, 40, Uint8Array.of(7, 8));
     assert.deepEqual([...put], [3, 0, 0, 0, 100, 0, 0, 0, 40, 0, 0, 0, 7, 8]);
+});
+
+test("status text is a field, a length and UTF-8", () => {
+    assert.deepEqual([...encodeStatusText(StatusText.LEFT, "Hi")], [0, 2, 72, 105]);
+    assert.deepEqual([...encodeStatusText(StatusText.RIGHT, "")], [1, 0]);
+    assert.deepEqual([...encodeStatusText(StatusText.LEFT, "é")], [0, 2, 0xC3, 0xA9]);       // bytes, not characters
+    assert.equal(encodeStatusText(StatusText.RIGHT, "x".repeat(STATUS_TEXT_MAX_BYTES)).length, 2 + STATUS_TEXT_MAX_BYTES);
+    assert.throws(() => encodeStatusText(StatusText.LEFT, "x".repeat(STATUS_TEXT_MAX_BYTES + 1)), RangeError);
+    assert.throws(() => encodeStatusText(StatusText.LEFT, "é".repeat(24)), RangeError);       // 48 bytes
+    assert.throws(() => encodeStatusText(StatusText.LEFT, "a\0b"), TypeError);
+    assert.throws(() => encodeStatusText(StatusText.LEFT, 12), TypeError);
 });
 
 test("get info decodes every field", () => {

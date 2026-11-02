@@ -111,6 +111,7 @@ for (let k = 2; k < keysPerPage; k++)
 await cb.setPageCount(2);
 await cb.setKeys(keys);
 await cb.setPage(0);
+await cb.setStatusText({ left: "ControlBlock demo" });
 
 // Free the temporary image while page 2 still shows it
 await cb.freeImages([TEMP_ID]);
@@ -130,6 +131,7 @@ const timer = setInterval(async () => {
         tick++;
         // Replace in place: same ID, new pixels
         await cb.putImage(CLOCK_ID, (await iconImage(size, null, clockText(), null)).data);
+        await cb.setStatusText({ right: new Date().toTimeString().slice(0, 8) });     // ASCII "HH:MM:SS"
 
         if (tick % 2 === 0) {
             muted = !muted;

@@ -14,6 +14,9 @@ export const REQ_RESET_STREAM  = 0x10;
 export const KEYDEF_SIZE       = 20;
 export const PUT_IMAGE_PREFIX  = 12;
 
+export const STATUS_TEXT_MAX_BYTES = 47;        // SET_STATUS_TEXT: bytes of UTF-8 per text
+export const StatusText = Object.freeze({ LEFT: 0, RIGHT: 1 });
+
 export const Flags = Object.freeze({
     RESPONSE: 0x01,
     EVENT:    0x02,
@@ -23,6 +26,7 @@ export const Msg = Object.freeze({
     PING:           0x00,
     GET_INFO:       0x01,
     RESET:          0x02,
+    SET_STATUS_TEXT: 0x03,
     SET_BACKLIGHT:  0x05,
     PUT_IMAGE:      0x10,
     FREE_IMAGES:    0x11,
@@ -45,7 +49,7 @@ export const Status = Object.freeze({
     BAD_SEQUENCE: 8,
 });
 
-export const KeyAction = Object.freeze({ DOWN: 0, UP: 1, CANCEL: 2 });
+export const KeyAction = Object.freeze({ PRESS: 0, RELEASE: 1, CANCEL: 2 });
 export const PageCause = Object.freeze({ USER: 0, HOST: 1 });
 export const KeyFlags  = Object.freeze({ EMPTY: 0x0001, DISABLED: 0x0002 });
 
@@ -171,6 +175,20 @@ export function encodeIds(ids)
     for (const id of ids)
         w.u32(id);
     return w.done();
+}
+
+// SET_STATUS_TEXT: one field ("" clears it). The device takes at most
+// STATUS_TEXT_MAX_BYTES bytes of UTF-8; this throws rather than cut.
+export function encodeStatusText(field, text)
+{
+    if (typeof text !== "string")
+        throw new TypeError("Status text must be a string");
+    if (text.includes("\0"))
+        throw new TypeError("Status text can't contain NUL");
+    const bytes = new TextEncoder().encode(text);
+    if (bytes.length > STATUS_TEXT_MAX_BYTES)
+        throw new RangeError(`Status text is ${bytes.length} bytes; the limit is ${STATUS_TEXT_MAX_BYTES}`);
+    return new Writer(2 + bytes.length).u8(field).u8(bytes.length).raw(bytes).done();
 }
 
 // One PUT_IMAGE chunk

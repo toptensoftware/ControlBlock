@@ -1,6 +1,13 @@
 set(RLE565_DIR "${CMAKE_CURRENT_LIST_DIR}/../../rle565/src")
 set(SIMPLELIB_DIR "${CMAKE_CURRENT_LIST_DIR}/../../SimpleLib")
 
+# Boot-time stress run (main.cpp RUN_STRESS): embeds the test images.
+#   idf.py --preset debug -DCB_RUN_STRESS=ON build
+set(EMBED "../assets/ui.bin")
+if(CB_RUN_STRESS)
+    list(APPEND EMBED "../assets/test_keys.bin")
+endif()
+
 idf_component_register(
     SRCS
         "main.cpp"
@@ -17,6 +24,7 @@ idf_component_register(
         "host_link.cpp"
         "usb.cpp"
         "swipe.cpp"
+        "touch_router.cpp"
         "i2c.cpp"
         "ch422g.cpp"
         "waveshare_rgb_lcd_port.cpp"
@@ -27,8 +35,7 @@ idf_component_register(
         "${RLE565_DIR}"
         "${SIMPLELIB_DIR}"
     EMBED_FILES
-        "../assets/test_keys.bin"
-        "../assets/ui.bin"
+        ${EMBED}
     REQUIRES
         esp_app_format
         esp_driver_gpio
@@ -41,3 +48,7 @@ idf_component_register(
         espressif__esp_lcd_touch_gt911
         espressif__esp_tinyusb
 )
+
+if(CB_RUN_STRESS)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE RUN_STRESS=1)
+endif()

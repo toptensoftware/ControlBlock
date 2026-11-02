@@ -7,13 +7,14 @@
 #include "esp_log.h"
 #include "screen.h"
 #include "screen_view.h"
+#include "model.h"
 #include "status.h"
 #include "swipe.h"
+#include "touch_router.h"
 
 static const char *TAG = "swipe";
 
-// Tuning
-#define DRAG_SLOP_PX        10       // finger travel before a press becomes a drag
+// Tuning (the swipe window and slop are in touch_router.h)
 #define FLICK_SPEED         400.0f   // px/s: faster than this on release = flick to next page
 #define VELOCITY_WINDOW_US  80000    // release velocity is measured over the last 80 ms
 #define RUBBER_BAND         0.55f    // resistance past the first/last page (higher = looser)
@@ -41,6 +42,7 @@ typedef struct {
     event_kind_t     kind;
     TOUCH_EVENT_TYPE type;
     int              x;
+    int              y;
     int64_t          time_us;
     int              arg;
     bool             animate;
@@ -53,7 +55,6 @@ typedef struct {
 
 typedef enum {
     STATE_IDLE,       // resting on s_page
-    STATE_PRESSED,    // finger down, not moved far enough to drag
     STATE_DRAGGING,   // page follows the finger
     STATE_SETTLING,   // gliding to s_page after release
 } state_t;
@@ -70,9 +71,12 @@ static void  (*s_page_cb)(int page, int cause);
 static int   s_reported;              // last page reported (or the boot page)
 static int   s_cause = SWIPE_CAUSE_USER;
 
+// Touches: swipe or key press (touch_router.h), key actions to the host
+static TouchRouter s_router;
+static void      (*s_key_cb)(int page, int key, int action, uint32_t time_ms);
+
 // Drag
-static int   s_down_x;
-static float s_anchor_x;              // finger x when the drag started
+static float s_anchor_x;             // finger x when the drag started
 static float s_anchor_raw;            // un-rubber-banded position when the drag started
 
 // Recent finger samples for the release velocity
@@ -310,15 +314,15 @@ static void handle_event(const swipe_event_t *ev)
             s_anchor_x   = ev->x;
             s_anchor_raw = unrubber(s_pos);
             s_state      = STATE_DRAGGING;
+            s_router.Down(ev->x, ev->y, ev->time_us, s_page, true);
         } else {
-            s_down_x = ev->x;
-            s_state  = STATE_PRESSED;
+            s_router.Down(ev->x, ev->y, ev->time_us, s_page, false);
         }
         break;
 
     case TOUCH_MOVE:
         add_sample(ev->x, ev->time_us);
-        if (s_state == STATE_PRESSED && abs(ev->x - s_down_x) > DRAG_SLOP_PX) {
+        if (s_router.Move(ev->x, ev->y, ev->time_us)) {
             // Start dragging from here, so the page doesn't jump by the slop
             s_anchor_x   = ev->x;
             s_anchor_raw = s_pos;
@@ -330,10 +334,9 @@ static void handle_event(const swipe_event_t *ev)
 
     case TOUCH_UP:
         add_sample(ev->x, ev->time_us);
+        s_router.Up(ev->x, ev->y, ev->time_us);
         if (s_state == STATE_DRAGGING)
             on_release(ev->time_us);
-        else if (s_state == STATE_PRESSED)
-            s_state = STATE_IDLE;     // a tap; key presses come later
         break;
     }
 }
@@ -349,6 +352,7 @@ static void swipe_task(void *arg)
         swipe_event_t ev;
         while (xQueueReceive(s_queue, &ev, 0))
             handle_event(&ev);
+        s_router.Tick(now, s_page);
 
         if (s_state == STATE_SETTLING && !glide_step(now)) {
             s_pos   = s_glide_to;
@@ -398,8 +402,36 @@ void swipe_set_page_changed_cb(void (*cb)(int page, int cause))
     s_page_cb = cb;
 }
 
+void swipe_set_key_cb(void (*cb)(int page, int key, int action, uint32_t time_ms))
+{
+    s_key_cb = cb;
+}
+
+static bool router_key_active(int page, int key, void *)
+{
+    return model_key_active(page, key);
+}
+
+static void router_key_event(int page, int key, int action, uint32_t time_ms, void *)
+{
+    if (s_key_cb)
+        s_key_cb(page, key, action, time_ms);
+}
+
+// Pressed from touch-down, reverted if it turns into a swipe
+static void router_key_look(int page, int key, bool pressed, void *)
+{
+    model_set_key_pressed(page, key, pressed);
+}
+
 esp_err_t swipe_init(void)
 {
+    TouchRouterHost host = {};
+    host.key_active = router_key_active;
+    host.key_event  = router_key_event;
+    host.key_look   = router_key_look;
+    s_router.Init(host);
+
     s_num_pages = screen_page_count();
     s_queue = xQueueCreate(32, sizeof(swipe_event_t));
     if (!s_queue)
@@ -420,6 +452,7 @@ void swipe_touch(uint8_t id, TOUCH_EVENT_TYPE type, uint16_t x, uint16_t y)
     ev.kind    = EV_TOUCH;
     ev.type    = type;
     ev.x       = x;
+    ev.y       = y;
     ev.time_us = esp_timer_get_time();
     send_event(&ev);
 }

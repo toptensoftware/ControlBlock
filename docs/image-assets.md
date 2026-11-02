@@ -89,7 +89,7 @@ struct ImageEntry
 
 The page model (the compositor's client, under the model lock) holds per key:
 - its four `ImageEntry *` slots,
-- whether it's pressed (set by the key router, later),
+- whether it's pressed (set by the touch router: PRESS to RELEASE/CANCEL, see interactions.md),
 - and the `comp_key_t` the compositor sees, derived from these: the normal or pressed pair's current `data` pointers, plus `COMP_KEY_BG_OPAQUE` if that `bg` is opaque.
 
 **Pressed pair:**
@@ -195,7 +195,7 @@ The old layout stays on screen until the new page 0 has been built (blank until 
 | Who | Does | Locking |
 |---|---|---|
 | Protocol task (core 0) | Uploads, replaces, `FREE_IMAGES`, `SET_KEYS`, `RESET`, freeing swept pixels | Model lock for ref counts, key slots, entry state and the ID map |
-| Key router (later) | Press and release: picks a key's pair | Model lock |
+| Swipe task (touch router) | PRESS and RELEASE/CANCEL: picks a key's pair | Model lock |
 | Compositor task (core 1) | Reads pixels from its snapshot; sweeps | None for reading; `comp_is_retired` reads one header flag (see above) |
 | Bounce fill | Never sees images | |
 

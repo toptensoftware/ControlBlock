@@ -1,6 +1,6 @@
 # Status Bar
 
-The fixed 800x40 band at the top of the screen. Status: **implemented and measured on the hardware**, with mock content (`main.cpp`).
+The fixed 800x40 band at the top of the screen. Status: **implemented and measured on the hardware**, empty at boot until the host sets its texts.
 
 ```
 +--------------------------------------------------------------------+
@@ -26,6 +26,8 @@ Four properties:
 - The swipe task sets the selected pill every frame to the page most in view (`screen_page_most_in_view()`), so it switches as a swipe passes halfway and follows rubber-banding at the ends. Only an actual change causes a redraw.
 
 The setters are safe from any task (not ISRs). Setting a property to its current value does nothing.
+
+The host sets the two texts with `SET_STATUS_TEXT` ([protocol.md](protocol.md)); the protocol task calls `status_set_left/right()`, which only copy 48 bytes under a short spinlock and wake the status task. Drawing stays in that task (internal RAM only). `RESET` clears both. The device boots with both texts empty.
 
 ## Assets
 
@@ -70,4 +72,3 @@ At rest the bar adds nothing measurable to the fill (~115 µs, as before). The s
 ## Open items
 
 - **Internal RAM:** the two buffers take 128 KB; ~130 KB is left after init (largest block 86 KB). If Wi-Fi needs more, keep only the parts that change (each text and the pills) as small buffers and fill the rest black in the bounce fill, or move Wi-Fi/lwIP buffers to PSRAM.
-- Real content: the activity name and time (needs a clock source) from the host or the device; the time format.

@@ -34,6 +34,7 @@ enum : uint8_t
     MSG_PING           = 0x00,
     MSG_GET_INFO       = 0x01,
     MSG_RESET          = 0x02,
+    MSG_SET_STATUS_TEXT = 0x03,
     MSG_SET_BACKLIGHT  = 0x05,
     MSG_PUT_IMAGE      = 0x10,
     MSG_FREE_IMAGES    = 0x11,
@@ -68,6 +69,12 @@ enum : uint16_t
 
 #define PROTO_KEYDEF_SIZE    20             // KeyDef on the wire
 
+// SET_STATUS_TEXT fields, and the buffer a text needs (with its NUL).
+// host_link.cpp checks the size against the status bar's.
+#define STATUS_TEXT_LEFT     0
+#define STATUS_TEXT_RIGHT    1
+#define STATUS_TEXT_MAX      48
+
 // What the protocol needs from the device
 struct ProtocolHost
 {
@@ -90,6 +97,10 @@ struct ProtocolHost
     void (*set_page)(int page, bool animate, void *ctx);
     int  (*current_page)(void *ctx);
     void (*set_backlight)(bool on, void *ctx);
+    // A status bar text (STATUS_TEXT_LEFT/RIGHT; "" clears): valid UTF-8, at
+    // most STATUS_TEXT_MAX - 1 bytes. Called without the lock; must not block
+    // for long (the bar is drawn by its own task).
+    void (*set_status_text)(int field, const char *text, void *ctx);
 
     const char *fw_version;
     const char *serial;
@@ -151,6 +162,7 @@ private:
     void OnGetInfo();
     void OnReset();
     void OnSetBacklight();
+    void OnSetStatusText();
     void OnFreeImages();
     void OnQueryImages();
     void OnSetPageCount();

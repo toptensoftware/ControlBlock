@@ -72,7 +72,7 @@ Only rows that change are cleared and copied:
 
 **Opaque faces skip the clear.** A key with `COMP_KEY_BG_OPAQUE` in `comp_key_t.flags` has a `bg` that covers every pixel of the cell, so nothing is cleared: the face overwrites the cell, all 128 rows are copied, and its record spans all 128 rows (so a later non-opaque key clears them all). The padding between keys is then baked into the face in `COMP_BACKGROUND`, not left transparent. The client sets the flag only for images that pass `comp_image_is_opaque()`, which decodes the image once when it's loaded.
 
-When keys were drawn straight into PSRAM, the clear was the biggest single cost (0.75–0.95 ms of a 2.2 ms key with the display on) and opaque faces saved ~30%. Now that keys are rendered in internal RAM the clear is cheap, so opaque faces matter much less; they're kept as an option (`USE_OPAQUE_FACES` in the test client).
+When keys were drawn straight into PSRAM, the clear was the biggest single cost (0.75–0.95 ms of a 2.2 ms key with the display on) and opaque faces saved ~30%. Now that keys are rendered in internal RAM the clear is cheap, so opaque faces matter much less; they're kept as an option (`USE_OPAQUE_FACES` in the stress run).
 
 ## Drawing a key: render, then copy in fill gaps
 

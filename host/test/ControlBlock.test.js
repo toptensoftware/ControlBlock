@@ -82,6 +82,34 @@ test("syncImages uploads only what's missing", async () => {
     await cb.close();
 });
 
+test("setStatusText sends only the fields given", async () => {
+    const { dev, cb } = await connected();
+    const sent = () => dev.requests.filter(m => m.type === Msg.SET_STATUS_TEXT).map(m => [...m.payload]);
+
+    await cb.setStatusText({ left: "AppleTV" });
+    assert.deepEqual(sent(), [[0, 7, ...new TextEncoder().encode("AppleTV")]]);
+
+    await cb.setStatusText({ right: "" });                      // clears
+    await cb.setStatusText({ left: "A", right: "B" });
+    assert.deepEqual(sent().slice(1), [[1, 0], [0, 1, 65], [1, 1, 66]]);
+
+    await cb.setStatusText({});
+    assert.equal(sent().length, 4);
+
+    // Nothing is sent if any field is bad
+    await assert.rejects(cb.setStatusText({ left: "ok", right: "x".repeat(48) }), RangeError);
+    await assert.rejects(cb.setStatusText({ middle: "x" }), TypeError);
+    assert.equal(sent().length, 4);
+    await cb.close();
+});
+
+test("a rejected status text throws ControlBlockError", async () => {
+    const { cb } = await connected({ handler: () => ({ status: Status.BAD_ARG, data: new Uint8Array(0) }) });
+    await assert.rejects(cb.setStatusText({ left: "x" }),
+                         err => err instanceof ControlBlockError && err.status === Status.BAD_ARG);
+    await cb.close();
+});
+
 test("events are emitted", async () => {
     const { dev, cb } = await connected();
     const got = new Promise(resolve => cb.on("pageChanged", resolve));
