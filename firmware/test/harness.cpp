@@ -14,29 +14,37 @@ TestImages &TestImages::Get()
     return s_images;
 }
 
-TestImages::TestImages()
+TestImages::TestImages() : m_pack(LoadAsset("test_keys.bin"))
+{
+}
+
+BLOBPACK *LoadAsset(const char *name)
 {
     // Run from firmware/test (mk run) or the repository root
-    static const char *paths[] = {
-        "../assets/test_keys.bin",
-        "firmware/assets/test_keys.bin",
-        "../../assets/test_keys.bin",
+    static const char *dirs[] = {
+        "../assets/",
+        "firmware/assets/",
+        "../../assets/",
     };
     FILE *f = nullptr;
-    for (const char *p : paths)
-        if ((f = fopen(p, "rb")) != nullptr)
+    char path[256];
+    for (const char *d : dirs) {
+        snprintf(path, sizeof(path), "%s%s", d, name);
+        if ((f = fopen(path, "rb")) != nullptr)
             break;
+    }
     if (!f) {
-        fprintf(stderr, "Can't find firmware/assets/test_keys.bin (run from firmware/test)\n");
+        fprintf(stderr, "Can't find firmware/assets/%s (run from firmware/test)\n", name);
         exit(2);
     }
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    m_pack = (BLOBPACK *)malloc(size);
-    if (fread(m_pack, 1, size, f) != (size_t)size)
+    BLOBPACK *pack = (BLOBPACK *)malloc(size);
+    if (fread(pack, 1, size, f) != (size_t)size)
         exit(2);
     fclose(f);
+    return pack;
 }
 
 // ---------------------------------------------------------------------------

@@ -71,6 +71,19 @@ Fact("ScreenView Resolve Rubber Band Shows Background Off The End")
     Assert(f.px[0] == px_b && f.px[1] == nullptr && f.offset == 300);
 }
 
+Fact("ScreenView Page Most In View")
+{
+    Assert(screen_page_most_in_view(0, 3) == 0);
+    Assert(screen_page_most_in_view(W / 2 - 1, 3) == 0);
+    Assert(screen_page_most_in_view(W / 2, 3) == 1);
+    Assert(screen_page_most_in_view(W + W / 2 + 1, 3) == 2);
+    Assert(screen_page_most_in_view(2 * W, 3) == 2);
+
+    // Rubber-banding past either end stays on the end page
+    Assert(screen_page_most_in_view(-W / 2 - 100, 3) == 0);
+    Assert(screen_page_most_in_view(2 * W + W / 2 + 100, 3) == 2);
+}
+
 Fact("ScreenView Resolve Hold Shows Ready Page At Rest")
 {
     // Asked for 0 and 1, only 0 came back

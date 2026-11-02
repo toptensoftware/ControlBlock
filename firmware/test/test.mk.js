@@ -10,6 +10,7 @@ export default async function ()
         otherSourceFiles: [
             "../main/page_compositor.cpp",
             "../main/screen_view.cpp",
+            "../main/status_bar.cpp",
             "../../rle565/src/rle565.c",
         ],
         includePath: [

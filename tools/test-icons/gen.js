@@ -1,8 +1,9 @@
 // Renders key faces and some of node-buttonImage's built-in icons, encodes
 // them to rle565 (with alpha) and packs them into a blobpack for the
-// firmware's test pages:
+// firmware's test pages, plus the firmware's built-in UI assets:
 //
 //   firmware/assets/test_keys.bin    128x128 key faces and icons
+//   firmware/assets/ui.bin           status bar font and pager pills
 //
 // Run with `npm install && npm run build` in this folder.
 
@@ -13,6 +14,7 @@ import sharp from "sharp";
 import { ButtonImage } from "@toptensoftware/node-buttonImage";
 import { packRle } from "rle565";
 import { blobPack } from "rle565/blobpack.js";
+import { packFont } from "rle565/font.js";
 
 const ICON_SIZE = 80;   // icon area, centred in the 128x128 key cell
 // The built-in icons are padded for Stream Deck keys; render bigger and crop
@@ -147,3 +149,43 @@ keyBlobs.push(pad4(Buffer.from(keyNames.join("\0") + "\0")));
 const keysPack = blobPack(keyBlobs);
 fs.writeFileSync(keysOutFile, keysPack);
 console.log(`\n${keysOutFile}: ${FACES.length * 2} faces + ${names.length} icons, ${keysPack.length} bytes`);
+
+
+// ---------------------------------------------------------------------------
+// Built-in UI assets: firmware/assets/ui.bin
+//
+// Layout (keep in step with firmware/main/ui_assets.h):
+//   blob 0     status bar font: Inter SemiBold (fonts/, SIL OFL 1.1)
+//   blob 1     pager pill for the current page (white)
+//   blob 2     pager pill for the other pages (grey)
+
+const STATUS_FONT = { file: "fonts/Inter-SemiBold.ttf", size: 20, subpixel: 4 };
+
+// [name, width, height, colour]
+const PAGER_PILLS = [
+    ["pager-current", 24, 6, "#ffffff"],
+    ["pager-other",   12, 6, "#606060"],
+];
+
+const uiOutFile = path.resolve(here, "../../firmware/assets/ui.bin");
+const uiBlobs = [];
+
+const font = packFont(path.join(here, STATUS_FONT.file),
+                      { size: STATUS_FONT.size, subpixel: STATUS_FONT.subpixel, charset: "32-126" });
+uiBlobs.push(pad4(font.data));
+console.log(`\nstatus font    ${String(font.data.length).padStart(6)} bytes`);
+
+for (const [name, w, h, color] of PAGER_PILLS)
+{
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+        <rect width="${w}" height="${h}" rx="${h / 2}" fill="${color}"/>
+    </svg>`;
+    const rgba = await sharp(Buffer.from(svg)).ensureAlpha().raw().toBuffer();
+    const packed = await packRle({ data: rgba, info: { width: w, height: h, channels: 4 } }, {});
+    uiBlobs.push(pad4(packed.data));
+    console.log(`${name.padEnd(14)} ${String(packed.packedSize).padStart(6)} bytes`);
+}
+
+const uiPack = blobPack(uiBlobs);
+fs.writeFileSync(uiOutFile, uiPack);
+console.log(`\n${uiOutFile}: ${uiPack.length} bytes`);

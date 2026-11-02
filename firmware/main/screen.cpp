@@ -5,6 +5,7 @@
 #include "color.h"
 #include "compositor.h"
 #include "screen_view.h"
+#include "status_bar.h"
 #include "screen.h"
 
 static const char *TAG = "screen";
@@ -22,25 +23,34 @@ static_assert(SCREEN_STATUS_H >= SCREEN_BOUNCE_LINES, "first bounce fill must no
 // Measured: a page chunk takes ~285 us copied cold from PSRAM, ~68 us preloaded.
 #define SCREEN_CACHE_PRELOAD 1
 
-// Placeholder colours until the status bar and pager have content.
-#define COLOR_STATUS      RGB565(32, 32, 32)
-#define COLOR_PAGER       RGB565(32, 32, 32)
-#define COLOR_EDGE        RGB565(96, 96, 96)
+// The status bar, page area and pager bar share one background, so a
+// missing status bar or page is filled the same way (copy_px)
+static_assert(STATUS_BAR_BACKGROUND == COMP_BACKGROUND, "status bar and page area backgrounds differ");
 
 #define BUDGET_CYCLES     (DISPLAY_BOUNCE_BUDGET_US * CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)
 
 static int s_num_pages;
 
 // Written by the app, latched by the ISR at the start of each frame.
-static volatile int          s_scroll;
-static volatile TaskHandle_t s_frame_task;
+static volatile int             s_scroll;
+static volatile TaskHandle_t    s_frame_task;
+static const uint16_t *volatile s_status;
 
 // ISR-only: what this frame shows, latched at frame start
 static FrameView s_view;
 
+// Latched by the ISR at frame start; read by the status task to know when
+// the other buffer is free
+static const uint16_t *volatile s_status_frame;
+
 static volatile uint32_t s_frame_count;
 static volatile uint32_t s_max_fill_cycles;
 static volatile uint32_t s_overruns;
+static volatile uint32_t s_late_status;
+static volatile uint32_t s_late_one_page;
+static volatile uint32_t s_late_two_pages;
+static volatile uint32_t s_late_status_drawing;
+static volatile bool     s_status_drawing;
 
 // Fill with a solid colour, two pixels per 32-bit store. A plain per-pixel
 // loop was ~350 us for a 15-line chunk, more than copying a page from PSRAM.
@@ -90,6 +100,7 @@ IRAM_ATTR static void latch_frame(void)
     comp_view_t v[2];
     int n = comp_frame(pages.first, pages.count, pages.count == 2 ? pages.offset : 0, v);
     s_view = screen_resolve_view(pages, v, n);
+    s_status_frame = s_status;
 }
 
 // Preload the page data the chunk starting at line `y` will read. The cache
@@ -132,6 +143,7 @@ IRAM_ATTR static bool fill_lines(uint16_t *dest, int y, int count, void *ctx)
 {
     uint32_t start = esp_cpu_get_cycle_count();
     BaseType_t woken = pdFALSE;
+    const int y0 = y;
 
     if (y == 0) {
         // The first chunk is the status bar, so the buffers the compositor
@@ -146,9 +158,10 @@ IRAM_ATTR static bool fill_lines(uint16_t *dest, int y, int count, void *ctx)
     int offset = s_view.offset;
     for (int i = 0; i < count; i++, y++, dest += DISPLAY_H_RES) {
         if (y < SCREEN_PAGE_TOP) {
-            fill_px(dest, DISPLAY_H_RES, y == SCREEN_PAGE_TOP - 1 ? COLOR_EDGE : COLOR_STATUS);
+            const uint16_t *status = s_status_frame;
+            copy_px(dest, status ? status + y * SCREEN_W : NULL, DISPLAY_H_RES);
         } else if (y >= SCREEN_PAGE_TOP + SCREEN_PAGE_H) {
-            fill_px(dest, DISPLAY_H_RES, y == SCREEN_PAGE_TOP + SCREEN_PAGE_H ? COLOR_EDGE : COLOR_PAGER);
+            fill_px(dest, DISPLAY_H_RES, COMP_BACKGROUND);      // pager bar, blank for now
         } else {
             int row = y - SCREEN_PAGE_TOP;
             const uint16_t *lp = page_row(0, row);
@@ -172,8 +185,18 @@ IRAM_ATTR static bool fill_lines(uint16_t *dest, int y, int count, void *ctx)
     uint32_t cycles = esp_cpu_get_cycle_count() - start;
     if (cycles > s_max_fill_cycles)
         s_max_fill_cycles = cycles;
-    if (cycles > BUDGET_CYCLES)
+    if (cycles > BUDGET_CYCLES) {
+        // Where late fills happen, to find what's slowing them
         s_overruns = s_overruns + 1;
+        if (y0 + count <= SCREEN_PAGE_TOP)
+            s_late_status = s_late_status + 1;
+        else if (offset)
+            s_late_two_pages = s_late_two_pages + 1;
+        else
+            s_late_one_page = s_late_one_page + 1;
+        if (s_status_drawing)
+            s_late_status_drawing = s_late_status_drawing + 1;
+    }
     return woken == pdTRUE;
 }
 
@@ -197,6 +220,21 @@ void screen_set_scroll(int scroll_px)
     s_scroll = scroll_px;
 }
 
+void screen_set_status_bar(const uint16_t *px)
+{
+    s_status = px;
+}
+
+void screen_note_status_drawing(bool drawing)
+{
+    s_status_drawing = drawing;
+}
+
+const uint16_t *screen_status_bar_shown(void)
+{
+    return s_status_frame;
+}
+
 void screen_set_frame_task(TaskHandle_t task)
 {
     s_frame_task = task;
@@ -207,6 +245,14 @@ void screen_get_stats(screen_stats_t *stats)
     stats->frames      = s_frame_count;
     stats->max_fill_us = s_max_fill_cycles / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
     stats->overruns    = s_overruns;
-    s_max_fill_cycles  = 0;
-    s_overruns         = 0;
+    stats->late_status         = s_late_status;
+    stats->late_one_page       = s_late_one_page;
+    stats->late_two_pages      = s_late_two_pages;
+    stats->late_status_drawing = s_late_status_drawing;
+    s_max_fill_cycles     = 0;
+    s_overruns            = 0;
+    s_late_status         = 0;
+    s_late_one_page       = 0;
+    s_late_two_pages      = 0;
+    s_late_status_drawing = 0;
 }

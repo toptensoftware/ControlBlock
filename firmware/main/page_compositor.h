@@ -42,7 +42,7 @@
 // 8 KB per gap keeps every fill in budget with one page in view, 4 KB with
 // two (one of them read cold); 16 KB doesn't.
 #define COMP_SLICE_ROWS_ONE_PAGE   32       // 8 KB of key rows
-#define COMP_SLICE_ROWS_TWO_PAGES  16       // 4 KB
+#define COMP_SLICE_ROWS_TWO_PAGES  12       // 3 KB (16 was late with opaque faces at 440 lines)
 // A gap is only used if the copy starts this soon after the fill ends: an
 // 8 KB copy + write-back takes ~325 us of the ~420 us gap.
 #define COMP_GAP_FRESH_US          50

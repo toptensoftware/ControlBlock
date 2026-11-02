@@ -6,6 +6,8 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "screen.h"
+#include "screen_view.h"
+#include "status.h"
 #include "swipe.h"
 
 static const char *TAG = "swipe";
@@ -299,7 +301,9 @@ static void swipe_task(void *arg)
             s_state = STATE_IDLE;
         }
 
-        screen_set_scroll((int)lroundf(s_pos));
+        int scroll = (int)lroundf(s_pos);
+        screen_set_scroll(scroll);
+        status_set_selected_pill(screen_page_most_in_view(scroll, s_num_pages));
     }
 }
 

@@ -27,6 +27,9 @@ struct FrameView
 // skipping any before page 0 or from `num_pages` on.
 PagesInView screen_pages_in_view(int scroll, int num_pages);
 
+// The page covering most of the screen at `scroll` (0..num_pages-1)
+int screen_page_most_in_view(int scroll, int num_pages);
+
 // What to show, given the `n` buffers comp_frame() returned in `v`:
 //  - every page asked for: show them as scrolled
 //  - otherwise the first buffer at rest (the hold), or background if none

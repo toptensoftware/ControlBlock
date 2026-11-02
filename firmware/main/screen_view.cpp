@@ -25,6 +25,15 @@ IRAM_ATTR PagesInView screen_pages_in_view(int scroll, int num_pages)
     return p;
 }
 
+int screen_page_most_in_view(int scroll, int num_pages)
+{
+    // The page at the left edge once scrolled by half a page
+    int page = screen_pages_in_view(scroll + SCREEN_PAGE_W / 2, num_pages).left;
+    if (page >= num_pages)
+        page = num_pages - 1;
+    return page < 0 ? 0 : page;
+}
+
 IRAM_ATTR FrameView screen_resolve_view(const PagesInView &pages, const comp_view_t *v, int n)
 {
     FrameView f;

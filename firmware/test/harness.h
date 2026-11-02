@@ -33,6 +33,9 @@ private:
     uint32_t m_s;
 };
 
+// Read firmware/assets/<name> (a blobpack) into memory; exits if missing
+BLOBPACK *LoadAsset(const char *name);
+
 // firmware/assets/test_keys.bin (layout in test_keys.h)
 class TestImages
 {

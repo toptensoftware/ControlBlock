@@ -6,6 +6,8 @@ idf_component_register(
         "main.cpp"
         "screen.cpp"
         "screen_view.cpp"
+        "status_bar.cpp"
+        "status.cpp"
         "compositor.cpp"
         "page_compositor.cpp"
         "swipe.cpp"
@@ -20,6 +22,7 @@ idf_component_register(
         "${SIMPLELIB_DIR}"
     EMBED_FILES
         "../assets/test_keys.bin"
+        "../assets/ui.bin"
     REQUIRES
         esp_driver_gpio
         esp_driver_i2c

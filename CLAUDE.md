@@ -41,25 +41,25 @@ mk run                                   # build and run (~13 s); exit code 1 on
 FUZZ_SEEDS=200 mk config=release run     # long fuzz soak
 ```
 
-- Needs `mk` (`npm install -g toptensoftware/mk.js`) and MSVC. Reads `firmware/assets/test_keys.bin`.
+- Needs `mk` (`npm install -g toptensoftware/mk.js`) and MSVC. Reads `firmware/assets/test_keys.bin` and `ui.bin` (`LoadAsset()` in the harness).
 - `harness.h/.cpp`: a `World` runs a real `PageCompositor` against a fake client, bounce fill and clock, and checks invariants at every frame start: never shows or draws into the wrong buffer, each buffer coming on screen matches a reference render of its records pixel for pixel, no key goes back to an older version, flushed changes appear all at once, and it settles on the model. Every key change uses fresh image copies so versions have distinct pointers; reloads poison freed images.
 - Preempt hooks (`SetPreemptHook`) let tests run frame starts and client changes at points inside `Step()`, to test the ISR and client races deterministically.
-- `TestCompositor.cpp` has one scenario per spec behaviour; `TestCompositorFuzz.cpp` randomises swipes, changes, reloads and preemption; `TestScreenView.cpp` covers the frame-start maths.
-- Keep device-only code (FreeRTOS, ESP-IDF) out of the tested files: use `port.h` and pure functions, with a thin device layer around them (`compositor.cpp`, `screen.cpp`).
+- `TestCompositor.cpp` has one scenario per spec behaviour; `TestCompositorFuzz.cpp` randomises swipes, changes, reloads and preemption; `TestScreenView.cpp` covers the frame-start maths; `TestStatusBar.cpp` covers status bar layout and its properties/double buffer (and writes `build/status_bar.bmp` to look at).
+- Keep device-only code (FreeRTOS, ESP-IDF) out of the tested files: use `port.h` and pure functions, with a thin device layer around them (`compositor.cpp`, `screen.cpp`, `status.cpp`).
 
 ## Repository Layout
 
 ```
 docs/              Specs (protocol.md, page-compositor.md, screen-buffers.md)
 firmware/          ESP-IDF project for the device (C++)
-  assets/          Generated binaries embedded in the firmware (test_keys.bin)
+  assets/          Generated binaries embedded in the firmware (test_keys.bin, ui.bin)
   test/            Host unit tests (mk + MSVC + SimpleLib UnitTesting)
 host/              Node.js client library (USB vendor bulk/WebUSB, mode 1)
 web/               Optional web front end for configuring the device
 rle565/            Submodule: rle565 renderer (src/) and encoder (encoder/)
 node-buttonImage/  Submodule: host-side key image rendering
 SimpleLib/         Submodule: C++ utility library used instead of STL (only Core/ is used)
-tools/test-icons/  Generates firmware/assets/test_keys.bin (npm install && npm run build)
+tools/test-icons/  Generates firmware/assets/test_keys.bin and ui.bin (npm install && npm run build); fonts/ holds Inter (OFL)
 scratch/           Throwaway scripts (gitignored), per "Preventing Permission Prompts"
 ```
 
@@ -87,10 +87,13 @@ Modules in `firmware/main/` (all C++; `rle565.c` from the submodule stays C):
 - **`color.h`:** `RGB565(r, g, b)`.
 - **`port.h`:** Platform layer for code shared with the host tests: `port::SpinLock`, atomics on `uint32_t`, cycle counter, `port::CacheWriteback()`, `IRAM_ATTR` on the host.
 - **`screen_layout.h`:** Screen and page-area geometry (`SCREEN_*`, including `SCREEN_CHUNKS`, the fills per frame), no ESP-IDF dependencies.
-- **`screen.cpp/.h`:** The bounce fill. Each frame it latches the scroll position, asks the compositor (`comp_frame()`) for the one or two pages in view, notifies the frame task, and copies each page-area line from the buffers it got. After every fill it calls `comp_fill_done()`. Counts fills over budget (`screen_stats_t.overruns`). Status and pager bands are solid dark-grey placeholders for now.
-- **`screen_view.cpp/.h`:** The frame-start maths, pure and tested: `screen_pages_in_view()` (scroll to pages asked for) and `screen_resolve_view()` (what to show; if a page in view isn't ready, the one that is, at rest: the swipe-start hold).
+- **`screen.cpp/.h`:** The bounce fill. Each frame it latches the scroll position, asks the compositor (`comp_frame()`) for the one or two pages in view, notifies the frame task, and copies each page-area line from the buffers it got. After every fill it calls `comp_fill_done()`. Counts fills over budget (`screen_stats_t.overruns`), split by where they happened (status lines, one page, two pages) and whether the status bar was being drawn. Status bar lines are copied from the buffer set with `screen_set_status_bar()` (internal RAM, latched at frame start; `screen_status_bar_shown()` says which one the fill latched). The pager band (disabled) is plain black. Everything has a black background.
+- **`screen_view.cpp/.h`:** The frame-start maths, pure and tested: `screen_pages_in_view()` (scroll to pages asked for), `screen_resolve_view()` (what to show; if a page in view isn't ready, the one that is, at rest: the swipe-start hold) and `screen_page_most_in_view()` (for the pager).
+- **`status_bar.cpp/.h`:** Status bar core, platform independent and tested. `status_bar_render()` draws the 800x40 bar: left text, right text (white, centred on cap height, `STATUS_BAR_MARGIN` in), pager pills centred. `StatusBar` holds the four properties (left, right, pill count, selected pill; setters return whether the value changed, texts cut on a UTF-8 boundary) and two buffers: `BeginDraw(shown)` hands out the back buffer only once the fill has latched the front.
+- **`status.cpp/.h`:** Runs `StatusBar` on the device: two 64 KB buffers in internal RAM, a task (core 1, priority 3) that redraws only when a property changed and swaps at a frame start (at most one redraw a frame). API: `status_init(ui)`, `status_set_left/right()`, `status_set_pill_count()`, `status_set_selected_pill()`.
+- **`ui_assets.h`:** Layout of `assets/ui.bin` (built by `tools/test-icons/gen.js`): the status font (Inter SemiBold 20 px, 4x subpixel, ASCII), then the selected and other pager pills.
 - **`page_compositor.cpp/.h`:** The compositor core (`PageCompositor`), platform independent and unit tested. Spec: [`docs/page-compositor.md`](docs/page-compositor.md). Three page buffers in PSRAM (800x440 RGB565, ~688 KB each). A page is 15 keys, each a `bg` and `fg` rle565 image (128x128, cells on a centred grid, `COMP_KEY_X/Y(i)`, with equal gaps worked out from the page height: 18 px with no pager). Keys are redrawn when their image pointers differ from what the buffer records; drawing goes to a back buffer that's offered to the bounce fill and swapped in at a frame start. `Frame()` is the ISR side; `Step(now, gap)` does one unit of work.
-  - **Drawing a key:** render it into a 32 KB cell in internal RAM, then copy it to the page buffer in slices of rows, one slice per fill gap (`gap` = called within `COMP_GAP_FRESH_US` of a fill ending), each written back to PSRAM at once. 32-row slices with one page in view, 16 with two (`COMP_SLICE_ROWS_*`, measured). Page buffers are never written outside a gap. A full page takes ~2.5 frames.
+  - **Drawing a key:** render it into a 32 KB cell in internal RAM, then copy it to the page buffer in slices of rows, one slice per fill gap (`gap` = called within `COMP_GAP_FRESH_US` of a fill ending), each written back to PSRAM at once. 32-row slices with one page in view, 12 with two (`COMP_SLICE_ROWS_*`, measured; 16 made fills late mid-swipe with opaque faces). Page buffers are never written outside a gap. A full page takes ~2.5 frames.
   - A key with `COMP_KEY_BG_OPAQUE` (its `bg` covers the whole cell; check with `comp_image_is_opaque()` at load) isn't cleared before drawing.
 - **`compositor.cpp/.h`:** Runs the core in a task (core 1, priority 4) and owns the buffers and render cell. Client API: `comp_init(get_page, ctx)`, `comp_page_changed(page, flags)` (`COMP_FLUSH` = all at once; call it while still holding the client lock), `comp_reset()`. Bounce fill side: `comp_frame()` at frame start and `comp_fill_done()` after every fill (wakes the task for a gap only while it's copying a key). Images must stay valid while the compositor references them (client's job).
 - **`swipe.cpp/.h`:** Gesture and animation in a task (core 1) woken each frame. Tuning constants at the top of the file.
@@ -98,16 +101,17 @@ Modules in `firmware/main/` (all C++; `rle565.c` from the submodule stays C):
   - Release: a flick (>400 px/s over the last 80 ms) goes to the next page; otherwise to whichever page is mostly in view.
   - Glide is a critically damped spring (`SPRING_RESPONSE_S`), start speed capped so it never overshoots. `GLIDE_SPRING 0` switches to the older cubic ease-out.
   - Touching mid-glide catches the page.
+  - Each frame it sets the status bar's selected pill to the page most in view (redrawn only when it changes).
 - **`test_keys.h`:** Layout of `assets/test_keys.bin`: 4 faces with transparent padding, the same 4 opaque, then icons, then names. Shared by `main.cpp` and the host tests.
-- **`main.cpp`:** A test compositor client: 3 pages from `assets/test_keys.bin` (faces + icons; `USE_OPAQUE_FACES`). Test changes once a second (one key toggles pressed; every 10 s all keys change, flushed every other time). Logs FPS, the slowest fill, overruns and compositor stats once a second (the first line after boot reads high).
-  - `RUN_STRESS 1` (off by default): at boot, every key in view changes every 20 ms for 2 s (transparent and opaque faces, at rest and mid-swipe, incremental and flush), then logs the slowest fill, fills over budget and compositor load for each. Use it to check for late fills after changing the compositor or the bounce fill.
+- **`main.cpp`:** A test compositor client: 3 pages from `assets/test_keys.bin` (faces + icons; `USE_OPAQUE_FACES`). Test changes once a second (one key toggles pressed; every 10 s all keys change, flushed every other time). Starts the status bar with mock content (`MOCK_ACTIVITY`, `MOCK_TIME`, a pill per page). Logs free heap after init (internal RAM is the scarce one), then FPS, the slowest fill, overruns (with where they happened, if any) and compositor stats once a second (the first line after boot reads high).
+  - `RUN_STRESS 1` (off by default): at boot, every key in view changes every 20 ms for 2 s (transparent and opaque faces, at rest and mid-swipe, incremental and flush; then status bar redraws alone and on top of the worst case), then logs the slowest fill, fills over budget and compositor load for each. Use it to check for late fills after changing the compositor, the bounce fill or the status bar.
   - The earlier render bench and copy-gap experiment were removed once the design settled; their results are in `docs/page-compositor.md` and the code is in git history.
 
 ### Bounce fill rules
 
 The fill runs in ISR context:
 - Plain row copies and solid fills only. No rle565 decoding, no floating point.
-- Keep it well under the ~492 µs budget (aim < 250 µs). Currently ~71 µs at rest, ~200 µs mid-swipe.
+- Keep it well under the ~492 µs budget (aim < 250 µs). Currently ~115 µs at rest, ~200 µs mid-swipe, up to ~360 µs mid-swipe with the compositor flat out and the status bar redrawing.
 - A 15-line page chunk costs ~285 µs read cold from PSRAM but ~68 µs once in cache. At the end of each fill, the next chunk is preloaded with `Cache_Start_DCache_Preload` (`SCREEN_CACHE_PRELOAD`). Only one contiguous range can be preloaded, so mid-swipe the smaller page is read cold.
 - Per-pixel loops must be written for speed under `-Og` too, since the debug build has to keep the display fed (see `fill_px`, which uses 32-bit stores; a naive 16-bit loop cost ~350 µs).
 - Content changes are pointer/offset changes latched at frame start; nothing is redrawn in the ISR.
@@ -129,7 +133,7 @@ The fill runs in ISR context:
 
 - 5x3 keys per page, several pages, swiped left/right. Page area 800x440 (`SCREEN_*` in `screen_layout.h`).
 - **Pager bar disabled for now** (`SCREEN_PAGER_H 0`): the keys spread out better without it. Set it to 20 to bring it back; the key gap adjusts by itself (12 px instead of 18).
-- The status bar (and pager, if enabled) stays blank until its content is designed. The status bar must stay at least one bounce fill (15 lines) tall (`static_assert` in `screen.cpp`).
+- Status bar: left text (activity), right text (time), pager pills centred (the selected one follows the page most in view). Black background, white text, no border. Content is mock for now (`main.cpp`). The pager bar, if enabled, stays blank. The status bar must stay at least one bounce fill (15 lines) tall (`static_assert` in `screen.cpp`).
 - **Swipe feel:** must be very smooth, like the iPhone home screen. Not LVGL-style spring-back. No overshoot.
 - **Key faces:** a stock rle565 face built into the firmware (normal and pressed, tintable), with the host's icon and an optional label drawn on top. Gaps between keys.
 - **Icon size:** about 80–96 px square, still being tuned. Keep sizes as firmware constants reported to the host (GET_INFO); don't hard-code them elsewhere.
@@ -164,7 +168,9 @@ All custom. Do **not** use LVGL.
 ## Open Items
 
 - If dragging looks steppy: use the GT911 interrupt and/or predict the finger position per frame.
-- **Mid-swipe fill margin is thin:** the slowest fill with the compositor flat out was 446 µs of 492 (opaque faces, measured with a 400-line page area; not yet re-run at 440 lines with the pager disabled). If late fills appear mid-swipe once more PSRAM traffic arrives, try `COMP_SLICE_ROWS_TWO_PAGES` 12. Also untested: the `-Og` build under the stress run.
+- **Untested:** the `-Og` build under the stress run.
+- **Internal RAM:** ~130 KB free after init (largest block 86 KB); the status bar's two buffers take 128 KB. If Wi-Fi (mode 3) needs more, keep only the parts of the bar that change (text and pills) instead of whole buffers, and/or move Wi-Fi/lwIP buffers to PSRAM (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`, with a stress run since it adds PSRAM traffic).
+- The status font and the rle565 code run from PSRAM (code and rodata are mapped there), so a status redraw adds PSRAM reads: harmless alone, a little extra contention when the compositor is flat out (measured, within budget).
 - **Second render cell** (render the next key while one copies): ~20% faster page builds. Not needed yet; the swipe-start hold feels fine.
 - Before key presses: touch handling lives only in `swipe.c`. Split out a router so taps go to keys, cancelled when a press becomes a drag.
 - Flash writes (icon cache, NVS) may stall the bounce ISR (`CONFIG_LCD_RGB_ISR_IRAM_SAFE` is off). Test for display glitches when they arrive.

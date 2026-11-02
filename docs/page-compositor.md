@@ -90,22 +90,26 @@ When keys were drawn straight into PSRAM, the clear was the biggest single cost 
 | Pages in view | Largest slice with no late fills | Slowest fill | Chosen |
 |---|---|---|---|
 | One (at rest, or held at swipe start) | 8 KB | 70 µs | **32 rows** (8 KB) |
-| Two (mid-swipe, one read cold) | 4 KB (8 KB: most fills late) | 262 µs | **16 rows** (4 KB) |
+| Two (mid-swipe, one read cold) | 4 KB (8 KB: most fills late) | 262 µs | **12 rows** (3 KB) |
 
 16 KB slices made fills late in every case. Copying without the immediate write-back also worked at these sizes but left less margin (the write-backs land in later fills).
 
-**Measured with the compositor drawing flat out** (every key in view changing every 20 ms for 2 s, release build):
+With two pages in view the copy-gap experiment allowed 16 rows (4 KB), and that was used at first. With the compositor drawing flat out it held at a 400-line page area (446 µs, opaque faces) but not at 440 lines: opaque faces mid-swipe went to 527 µs with ~190 fills a second over budget, all in the page area. 12 rows fixed it, with far more margin than the smaller copy alone would suggest (4 KB per gap seems to be just past a threshold).
+
+**Measured with the compositor drawing flat out** (`RUN_STRESS`: every key in view changing every 20 ms for 2 s; 440-line page area, 12-row slices mid-swipe):
 
 | | Slowest fill | Fills over budget | Keys drawn in 2 s |
 |---|---|---|---|
-| At rest | 108 µs | 0 | ~600 |
-| Mid-swipe, transparent faces | 368 µs | 0 | ~365 |
-| Mid-swipe, opaque faces | 446 µs | 0 | ~365 |
+| At rest | 120 µs | 0 | ~600 |
+| Mid-swipe, transparent faces | 300 µs | 0 | ~305 |
+| Mid-swipe, opaque faces | 294 µs | 0 | ~305 |
+| Mid-swipe, opaque faces, status bar redrawn every 20 ms | 357 µs | 0 | ~305 |
+| Mid-swipe, status bar redrawn every 20 ms, no keys | 206 µs | 0 | 0 |
 
-Mid-swipe the margin is thin (~45 µs with opaque faces). If late fills come back (more PSRAM traffic, e.g. labels or USB), the first thing to try is 12-row slices with two pages in view.
+12-row slices cost ~16% of the keys drawn mid-swipe (~365 with 16 rows); at rest nothing changes.
 
 **Costs:**
-- **A full page** takes about 5 fills a key (render, then 4 slices): **~2.5 frames**, against ~1.5 when drawing straight into PSRAM. With two pages in view, ~10 fills a key.
+- **A full page** takes about 5 fills a key (render, then 4 slices): **~2.5 frames**, against ~1.5 when drawing straight into PSRAM. With two pages in view, ~12 fills a key (11 slices).
 - **A reset** waits for the key being copied to finish (a few ms).
 - **The frame-start guard** now covers a whole key (render + its slices), worked out per key.
 - **A second render cell** (render the next key while the previous one copies) would save about one fill a key (~20%). Not done: the swipe-start hold already feels fine.
