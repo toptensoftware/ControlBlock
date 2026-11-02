@@ -23,9 +23,15 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_ESP32S3_DATA_CACHE_64KB=y
 CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 
-# Logs go to UART0, which is the CH343P USB-to-UART port.
-# The native USB port is kept free for TinyUSB.
+# Logs go to UART0, which is the CH343P USB-to-UART port. ESP-IDF also
+# mirrors them to USB-Serial-JTAG on the native port (secondary console);
+# add CONFIG_ESP_CONSOLE_SECONDARY_NONE=y when TinyUSB takes that port.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 
 # GT911 touch
 CONFIG_ESP_LCD_TOUCH_MAX_POINTS=5
+
+# Bounce-buffer mode: if a fill is ever late, the panel image shifts and
+# stays shifted. This resyncs the DMA at every VSYNC, so a late fill costs
+# one bad frame instead.
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=y

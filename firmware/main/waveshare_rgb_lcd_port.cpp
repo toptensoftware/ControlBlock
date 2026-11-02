@@ -5,17 +5,10 @@
  */
 
 #include "waveshare_rgb_lcd_port.h"
-#include "i2c.h"
+#include "ch422g.h"
 
 static const char *TAG = "waveshare_lcd";
 
-// CH422G I2C GPIO expander — address 0x24 selects the system-parameter register,
-// address 0x38 selects the output register (CH422G encodes register in the device address).
-#define CH422G_ADDR_SYS  0x24
-#define CH422G_ADDR_OUT  0x38
-
-static i2c_master_dev_handle_t  s_i2c_sys      = NULL;
-static i2c_master_dev_handle_t  s_i2c_out      = NULL;
 static esp_lcd_panel_handle_t   s_panel        = NULL;
 
 // Twin frame buffers managed by the RGB panel driver (allocated in PSRAM).
@@ -32,7 +25,7 @@ static PFNBUFFERREADY s_ready_cb  = NULL;
 static PFNFILLLINES s_fill_cb  = NULL;
 static void        *s_fill_ctx = NULL;
 
-_Static_assert(DISPLAY_V_RES % DISPLAY_BOUNCE_BUFFER_LINES == 0,
+static_assert(DISPLAY_V_RES % DISPLAY_BOUNCE_BUFFER_LINES == 0,
                "Bounce buffer must divide the screen into whole chunks");
 
 // Called from the LCD DMA ISR each time a bounce buffer needs refilling.
@@ -74,23 +67,15 @@ static esp_err_t display_init_common(PFNBUFFERREADY ready_cb, PFNFILLLINES fill_
     s_fill_cb   = fill_cb;
     s_fill_ctx  = fill_ctx;
 
-    i2c_device_config_t dev_cfg = {};
-    dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
-    dev_cfg.scl_speed_hz    = I2C_MASTER_FREQ_HZ;
-    dev_cfg.device_address  = CH422G_ADDR_SYS;
-    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(i2c_get_bus(), &dev_cfg, &s_i2c_sys), TAG, "CH422G sys device add failed");
-    dev_cfg.device_address = CH422G_ADDR_OUT;
-    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(i2c_get_bus(), &dev_cfg, &s_i2c_out), TAG, "CH422G out device add failed");
-
     ESP_LOGI(TAG, "Install RGB LCD panel driver");
     esp_lcd_rgb_panel_config_t panel_config = {};
     panel_config.clk_src                        = LCD_CLK_SRC_DEFAULT;
     panel_config.timings.pclk_hz                = DISPLAY_PIXEL_CLOCK_HZ;
     panel_config.timings.h_res                  = DISPLAY_H_RES;
     panel_config.timings.v_res                  = DISPLAY_V_RES;
-    panel_config.timings.hsync_pulse_width       = 4;
-    panel_config.timings.hsync_back_porch        = 8;
-    panel_config.timings.hsync_front_porch       = 8;
+    panel_config.timings.hsync_pulse_width       = DISPLAY_HSYNC_PULSE;
+    panel_config.timings.hsync_back_porch        = DISPLAY_HSYNC_BACK_PORCH;
+    panel_config.timings.hsync_front_porch       = DISPLAY_HSYNC_FRONT_PORCH;
     panel_config.timings.vsync_pulse_width       = 4;
     panel_config.timings.vsync_back_porch        = 8;
     panel_config.timings.vsync_front_porch       = 8;
@@ -125,7 +110,7 @@ static esp_err_t display_init_common(PFNBUFFERREADY ready_cb, PFNFILLLINES fill_
     panel_config.data_gpio_nums[14]              = DISPLAY_IO_RGB_DATA14;
     panel_config.data_gpio_nums[15]              = DISPLAY_IO_RGB_DATA15;
 
-    ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&panel_config, &s_panel));
+    ESP_RETURN_ON_ERROR(esp_lcd_new_rgb_panel(&panel_config, &s_panel), TAG, "RGB panel create failed");
 
     // Register callbacks before init — the DMA engine starts on init.
     esp_lcd_rgb_panel_event_callbacks_t cbs = {};
@@ -133,14 +118,15 @@ static esp_err_t display_init_common(PFNBUFFERREADY ready_cb, PFNFILLLINES fill_
         cbs.on_bounce_empty = on_bounce_empty;
     else
         cbs.on_frame_buf_complete = on_frame_buf_complete;
-    ESP_ERROR_CHECK(esp_lcd_rgb_panel_register_event_callbacks(s_panel, &cbs, NULL));
+    ESP_RETURN_ON_ERROR(esp_lcd_rgb_panel_register_event_callbacks(s_panel, &cbs, NULL), TAG, "RGB panel callbacks failed");
 
     ESP_LOGI(TAG, "Initialize RGB LCD panel");
-    ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s_panel), TAG, "RGB panel init failed");
 
     if (!fill_cb) {
         // Retrieve the two PSRAM frame buffer pointers allocated by the driver.
-        ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(s_panel, 2, (void **)&s_fb[0], (void **)&s_fb[1]));
+        ESP_RETURN_ON_ERROR(esp_lcd_rgb_panel_get_frame_buffer(s_panel, 2, (void **)&s_fb[0], (void **)&s_fb[1]),
+                            TAG, "Get frame buffers failed");
         ESP_LOGI(TAG, "Frame buffers: fb0=%p  fb1=%p", s_fb[0], s_fb[1]);
     }
 
@@ -177,9 +163,5 @@ void display_set_framebuffer(uint16_t *fb)
 
 esp_err_t display_enable_backlight(bool enable)
 {
-    uint8_t buf = 0x01;
-    ESP_RETURN_ON_ERROR(i2c_master_transmit(s_i2c_sys, &buf, 1, -1), TAG, "BL: CH422G sys write failed");
-    buf = enable ? 0x1E : 0x1A;
-    ESP_RETURN_ON_ERROR(i2c_master_transmit(s_i2c_out, &buf, 1, -1), TAG, "BL: CH422G out write failed");
-    return ESP_OK;
+    return ch422g_set(CH422G_BACKLIGHT, enable);
 }

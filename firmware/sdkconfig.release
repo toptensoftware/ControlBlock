@@ -1,0 +1,9 @@
+# Release build overlay, applied on top of sdkconfig.defaults by the
+# "release" preset (CMakePresets.json).
+
+# -O2 everywhere
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Compile out assert() (NDEBUG). FreeRTOS configASSERT and the HAL asserts
+# follow this setting.
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y

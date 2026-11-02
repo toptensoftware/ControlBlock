@@ -1,8 +1,8 @@
 #pragma once
 #include "driver/i2c_master.h"
 
-#define I2C_MASTER_SCL_IO    9
-#define I2C_MASTER_SDA_IO    8
+#define I2C_MASTER_SCL_IO    GPIO_NUM_9
+#define I2C_MASTER_SDA_IO    GPIO_NUM_8
 #define I2C_MASTER_PORT      I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ   400000
 #define I2C_MASTER_TIMEOUT_MS 1000

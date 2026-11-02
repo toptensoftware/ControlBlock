@@ -15,9 +15,15 @@
 #define DISPLAY_H_RES               (800)
 #define DISPLAY_V_RES               (480)
 #define DISPLAY_PIXEL_CLOCK_HZ      (25 * 1000 * 1000)
+#define DISPLAY_HSYNC_PULSE         (4)
+#define DISPLAY_HSYNC_BACK_PORCH    (8)
+#define DISPLAY_HSYNC_FRONT_PORCH   (8)
+#define DISPLAY_H_TOTAL             (DISPLAY_H_RES + DISPLAY_HSYNC_PULSE + DISPLAY_HSYNC_BACK_PORCH + DISPLAY_HSYNC_FRONT_PORCH)
 #define DISPLAY_DATA_WIDTH          (16)
 #define DISPLAY_BOUNCE_BUFFER_LINES (15)
 #define DISPLAY_BOUNCE_BUFFER_SIZE  (DISPLAY_H_RES * DISPLAY_BOUNCE_BUFFER_LINES)
+// Time the display takes to send one bounce buffer: a fill must finish within this.
+#define DISPLAY_BOUNCE_BUDGET_US    (DISPLAY_BOUNCE_BUFFER_LINES * DISPLAY_H_TOTAL / (DISPLAY_PIXEL_CLOCK_HZ / 1000000))
 #define DISPLAY_IO_RGB_DISP         ((gpio_num_t)(-1))
 #define DISPLAY_IO_RGB_VSYNC        (GPIO_NUM_3)
 #define DISPLAY_IO_RGB_HSYNC        (GPIO_NUM_46)
@@ -66,6 +72,7 @@ typedef bool (*PFNFILLLINES)(uint16_t *dest, int y, int count, void *ctx);
 // apply in this mode.
 esp_err_t display_init_bounce(PFNFILLLINES fill_cb, void *ctx);
 
+// Backlight on/off (CH422G line, no PWM). Needs ch422g_init().
 esp_err_t display_enable_backlight(bool enable);
 
 // Return both frame buffer pointers (order matches driver allocation).

@@ -4,10 +4,13 @@
 #include "esp_err.h"
 #include <stdint.h>
 
-// GPIO used to control the touch reset line via CH422G
-#define TOUCH_RESET_GPIO        GPIO_NUM_4
+// GT911 INT line. Held low while the GT911 comes out of reset to select I2C
+// address 0x5D, then released to an input (the GT911 drives it after that).
+#define TOUCH_INT_GPIO          GPIO_NUM_4
 
-#define TOUCH_PIN_NUM_RST       (-1)    // -1 = controlled via CH422G, not directly
+// The GT911 component doesn't manage reset or INT: reset is on the CH422G
+// and INT is handled in touch_init().
+#define TOUCH_PIN_NUM_RST       (-1)
 #define TOUCH_PIN_NUM_INT       (-1)
 
 typedef enum {
@@ -24,7 +27,7 @@ typedef void (*PFNTOUCHED)(uint8_t id, TOUCH_EVENT_TYPE type, uint16_t x, uint16
 
 // Initialize the GT911 touch controller and start the polling task.
 // touched_cb is called from the touch task on each finger state change.
-// Must be called after i2c_init() and display_init().
+// Must be called after i2c_init() and ch422g_init().
 esp_err_t touch_init(PFNTOUCHED touched_cb);
 
 #endif // _WAVESHARE_TOUCH_PORT_H_

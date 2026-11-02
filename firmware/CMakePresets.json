@@ -1,0 +1,25 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "debug",
+            "displayName": "Debug",
+            "description": "-Og, assertions on",
+            "binaryDir": "build/debug",
+            "cacheVariables": {
+                "SDKCONFIG_DEFAULTS": "sdkconfig.defaults",
+                "SDKCONFIG": "./build/debug/sdkconfig"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Release",
+            "description": "-O2, assertions off",
+            "binaryDir": "build/release",
+            "cacheVariables": {
+                "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;sdkconfig.release",
+                "SDKCONFIG": "./build/release/sdkconfig"
+            }
+        }
+    ]
+}

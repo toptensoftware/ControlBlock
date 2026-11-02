@@ -1,0 +1,14 @@
+{
+  "name": "controlblock-test-icons",
+  "private": true,
+  "type": "module",
+  "description": "Generates the rle565 test icons bundled into the firmware for render timing",
+  "scripts": {
+    "build": "node gen.js"
+  },
+  "dependencies": {
+    "@toptensoftware/node-buttonImage": "file:../../node-buttonImage",
+    "rle565": "file:../../rle565/encoder",
+    "sharp": "^0.34.5"
+  }
+}

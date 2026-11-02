@@ -113,7 +113,7 @@ static float unrubber(float pos)
 
 static void add_sample(int x, int64_t time_us)
 {
-    s_samples[s_sample_next] = (sample_t){ time_us, x };
+    s_samples[s_sample_next] = sample_t{ time_us, x };
     s_sample_next = (s_sample_next + 1) % NUM_SAMPLES;
     if (s_sample_count < NUM_SAMPLES)
         s_sample_count++;
@@ -247,8 +247,9 @@ static void handle_event(const swipe_event_t *ev)
     case TOUCH_DOWN:
         s_sample_count = 0;
         add_sample(ev->x, ev->time_us);
-        if (s_state == STATE_SETTLING) {
-            // Catch the page mid-glide and drag from where it is
+        if (s_state == STATE_SETTLING || s_state == STATE_DRAGGING) {
+            // Catch the page mid-glide and drag from where it is. DRAGGING
+            // here means the last TOUCH_UP was lost; treat it the same way.
             s_page       = clamp_page((int)lroundf(s_pos / PAGE_W));
             s_anchor_x   = ev->x;
             s_anchor_raw = unrubber(s_pos);
@@ -321,7 +322,10 @@ void swipe_touch(uint8_t id, TOUCH_EVENT_TYPE type, uint16_t x, uint16_t y)
     if (id != 0)        // paging follows the first finger only
         return;
     swipe_event_t ev = { .type = type, .x = x, .time_us = esp_timer_get_time() };
-    xQueueSend(s_queue, &ev, 0);
+    if (xQueueSend(s_queue, &ev, 0) != pdTRUE) {
+        static int dropped;
+        ESP_LOGW(TAG, "touch queue full, dropped %d events", ++dropped);
+    }
 }
 
 int swipe_current_page(void)
