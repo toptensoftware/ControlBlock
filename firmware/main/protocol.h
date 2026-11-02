@@ -7,7 +7,7 @@
 // ProtocolHost. Spec: docs/protocol.md (wire format), docs/image-assets.md.
 //
 // Receive(), ResetStream(), SendEvents() and Idle() run on one task (the
-// protocol task). PostKey() and PostPageChanged() are safe from any task.
+// protocol task). PostKey(), PostPageChanged() and PostWake() are safe from any task.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -45,7 +45,11 @@ enum : uint8_t
 
     EVT_KEY            = 0x80,
     EVT_PAGE_CHANGED   = 0x81,
+    EVT_WAKE           = 0x82,
 };
+
+// GET_INFO flags (docs/backlight.md)
+#define INFO_FLAG_BACKLIGHT  0x0001         // the backlight is on
 
 // Response status
 enum : uint16_t
@@ -97,6 +101,8 @@ struct ProtocolHost
     void (*set_page)(int page, bool animate, void *ctx);
     int  (*current_page)(void *ctx);
     void (*set_backlight)(bool on, void *ctx);
+    // Is it on now? (GET_INFO flags; the device layer holds the state)
+    bool (*backlight_on)(void *ctx);
     // A status bar text (STATUS_TEXT_LEFT/RIGHT; "" clears): valid UTF-8, at
     // most STATUS_TEXT_MAX - 1 bytes. Called without the lock; must not block
     // for long (the bar is drawn by its own task).
@@ -128,6 +134,7 @@ public:
     // --- Events (any task) ---
     void PostKey(int page, int key, int action, uint32_t time_ms);
     void PostPageChanged(int page, int cause);
+    void PostWake(uint32_t time_ms);
 
     // Protocol task: send queued events that fit in write_space(). Returns
     // true if any were sent.

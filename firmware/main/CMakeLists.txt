@@ -25,6 +25,7 @@ idf_component_register(
         "usb.cpp"
         "swipe.cpp"
         "touch_router.cpp"
+        "touch_gate.cpp"
         "i2c.cpp"
         "ch422g.cpp"
         "waveshare_rgb_lcd_port.cpp"
@@ -51,4 +52,10 @@ idf_component_register(
 
 if(CB_RUN_STRESS)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE RUN_STRESS=1)
+endif()
+
+# Backlight cycle (main.cpp BACKLIGHT_CYCLE_S): toggles the backlight every N seconds.
+#   idf.py --preset debug -DCB_BACKLIGHT_CYCLE_S=5 build   (0 turns it off again)
+if(CB_BACKLIGHT_CYCLE_S)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE BACKLIGHT_CYCLE_S=${CB_BACKLIGHT_CYCLE_S})
 endif()

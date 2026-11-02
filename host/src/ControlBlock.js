@@ -5,7 +5,8 @@
 // Requests are pipelined: each method sends at once and resolves when its
 // response arrives (responses come back in order, matched by seq).
 // Events: "key" ({ page, key, action, lost, timeMs }), "pageChanged"
-// ({ page, cause }), "error" (the read loop failed), "close".
+// ({ page, cause }), "wake" ({ lost, timeMs }: the screen was touched while
+// the backlight is off; docs/backlight.md), "error" (the read loop failed), "close".
 
 import { Emitter } from "./Emitter.js";
 import {
@@ -180,9 +181,14 @@ export class ControlBlock extends Emitter
         await Promise.all(payloads.map(p => this.call(Msg.SET_STATUS_TEXT, p)));
     }
 
+    // Turn the backlight on or off. While off, a touch sends a "wake" event
+    // instead of acting on keys; the device never turns it on itself. The
+    // state at connect is info.backlight; after that it's yours to track.
     async setBacklight(on)
     {
         await this.call(Msg.SET_BACKLIGHT, Uint8Array.of(on ? 1 : 0));
+        if (this.info)
+            this.info.backlight = !!on;
     }
 
     // Upload (or replace) an rle565 image under `id`, in pipelined chunks

@@ -10,7 +10,7 @@
 #include "model.h"
 #include "status.h"
 #include "swipe.h"
-#include "touch_router.h"
+#include "touch_gate.h"
 
 static const char *TAG = "swipe";
 
@@ -36,6 +36,7 @@ typedef enum {
     EV_TOUCH,
     EV_PAGE_COUNT,      // arg = count
     EV_GO_TO_PAGE,      // arg = page
+    EV_ENABLED,         // arg = backlight on
 } event_kind_t;
 
 typedef struct {
@@ -72,8 +73,9 @@ static int   s_reported;              // last page reported (or the boot page)
 static int   s_cause = SWIPE_CAUSE_USER;
 
 // Touches: swipe or key press (touch_router.h), key actions to the host
-static TouchRouter s_router;
+static TouchGate s_router;
 static void      (*s_key_cb)(int page, int key, int action, uint32_t time_ms);
+static void      (*s_wake_cb)(uint32_t time_ms);
 
 // Drag
 static float s_anchor_x;             // finger x when the drag started
@@ -287,6 +289,11 @@ static void handle_command(const swipe_event_t *ev)
 {
     if (ev->kind == EV_PAGE_COUNT) {
         set_page_count(ev->arg);
+    } else if (ev->kind == EV_ENABLED) {
+        s_router.SetEnabled(ev->arg != 0, ev->time_us);
+        // A drag in progress is let go and settles on the nearest page
+        if (!ev->arg && s_state == STATE_DRAGGING)
+            on_release(ev->time_us);
     } else if (ev->kind == EV_GO_TO_PAGE) {
         // The host wins over a drag in progress
         s_cause = SWIPE_CAUSE_HOST;
@@ -307,7 +314,10 @@ static void handle_event(const swipe_event_t *ev)
     case TOUCH_DOWN:
         s_sample_count = 0;
         add_sample(ev->x, ev->time_us);
-        if (s_state == STATE_SETTLING || s_state == STATE_DRAGGING) {
+        if (!s_router.Enabled()) {
+            // Dark: the touch only wakes, and a glide carries on
+            s_router.Down(ev->x, ev->y, ev->time_us, s_page, false);
+        } else if (s_state == STATE_SETTLING || s_state == STATE_DRAGGING) {
             // Catch the page mid-glide and drag from where it is. DRAGGING
             // here means the last TOUCH_UP was lost; treat it the same way.
             s_page       = clamp_page((int)lroundf(s_pos / PAGE_W));
@@ -397,6 +407,26 @@ void swipe_go_to_page(int page, bool animate)
     send_event(&ev);
 }
 
+void swipe_set_enabled(bool enabled)
+{
+    swipe_event_t ev = {};
+    ev.kind    = EV_ENABLED;
+    ev.arg     = enabled;
+    ev.time_us = esp_timer_get_time();
+    send_event(&ev);
+}
+
+void swipe_set_wake_cb(void (*cb)(uint32_t time_ms))
+{
+    s_wake_cb = cb;
+}
+
+static void router_wake(uint32_t time_ms, void *)
+{
+    if (s_wake_cb)
+        s_wake_cb(time_ms);
+}
+
 void swipe_set_page_changed_cb(void (*cb)(int page, int cause))
 {
     s_page_cb = cb;
@@ -430,7 +460,7 @@ esp_err_t swipe_init(void)
     host.key_active = router_key_active;
     host.key_event  = router_key_event;
     host.key_look   = router_key_look;
-    s_router.Init(host);
+    s_router.Init(host, router_wake, nullptr);
 
     s_num_pages = screen_page_count();
     s_queue = xQueueCreate(32, sizeof(swipe_event_t));

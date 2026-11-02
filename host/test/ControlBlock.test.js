@@ -118,6 +118,42 @@ test("events are emitted", async () => {
     await cb.close();
 });
 
+test("wake events are emitted", async () => {
+    const { dev, cb } = await connected();
+    const got = new Promise(resolve => cb.on("wake", resolve));
+    dev.event(Msg.WAKE, 3, Uint8Array.of(0, 0, 0, 0, 0xE8, 0x03, 0, 0));
+    assert.deepEqual(await got, { type: "wake", seq: 3, lost: false, timeMs: 1000 });
+    await cb.close();
+});
+
+test("setBacklight sends on or off and info follows", async () => {
+    const { dev, cb } = await connected();
+    assert.equal(cb.info.backlight, true);
+    await cb.setBacklight(false);
+    assert.equal(cb.info.backlight, false);
+    await cb.setBacklight(true);
+    assert.equal(cb.info.backlight, true);
+    const sent = dev.requests.filter(m => m.type === Msg.SET_BACKLIGHT).map(m => [...m.payload]);
+    assert.deepEqual(sent, [[0], [1]]);
+    await cb.close();
+});
+
+test("a reconnecting host learns the backlight is off", async () => {
+    const { dev, cb } = await connected({ backlight: false });
+    assert.equal(cb.info.backlight, false);
+    await cb.setBacklight(true);
+    assert.equal((await cb.getInfo()).backlight, true);
+    assert.equal(dev.backlight, true);
+    await cb.close();
+});
+
+test("a failed setBacklight throws and leaves info alone", async () => {
+    const { cb } = await connected({ handler: () => ({ status: Status.BAD_LENGTH, data: new Uint8Array(0) }) });
+    await assert.rejects(cb.setBacklight(false), err => err instanceof ControlBlockError);
+    assert.equal(cb.info.backlight, true);
+    await cb.close();
+});
+
 test("a lost response times out and resets the stream", async () => {
     const { dev, cb } = await connected({ handler: () => null });
     await assert.rejects(cb.reset(), /timed out/);

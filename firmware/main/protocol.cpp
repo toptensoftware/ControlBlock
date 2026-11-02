@@ -336,7 +336,7 @@ void Protocol::OnGetInfo()
     uint8_t out[64 + 2 * 256];
     Writer w = { out, sizeof(out), 0 };
     w.U16(PROTO_VERSION);
-    w.U16(0);
+    w.U16(m_host.backlight_on(m_host.ctx) ? INFO_FLAG_BACKLIGHT : 0);
     w.U32(PROTO_MAX_PAYLOAD);
     w.U32(st.capacity);
     w.U32(st.used);
@@ -522,6 +522,13 @@ void Protocol::PostPageChanged(int page, int cause)
     PostEvent(e);
 }
 
+void Protocol::PostWake(uint32_t time_ms)
+{
+    Event e = { EVT_WAKE, 8, { 0, 0, 0, 0 } };
+    put32(e.data + 4, time_ms);
+    PostEvent(e);
+}
+
 bool Protocol::SendEvents()
 {
     bool sent = false;
@@ -535,8 +542,9 @@ bool Protocol::SendEvents()
         Event e = m_events[m_ev_head];
         m_ev_head = (m_ev_head + 1) % PROTO_EVENT_QUEUE;
         m_ev_count--;
-        if (e.type == EVT_KEY && m_ev_lost) {
-            e.data[3] |= 1;
+        // The lost flag rides on the next KEY or WAKE (the byte differs)
+        if ((e.type == EVT_KEY || e.type == EVT_WAKE) && m_ev_lost) {
+            e.data[e.type == EVT_KEY ? 3 : 0] |= 1;
             m_ev_lost = false;
         }
         m_ev_lock.Exit();

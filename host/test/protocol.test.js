@@ -107,6 +107,20 @@ test("events", () => {
     assert.equal(decodeEvent({ type: 0x99, seq: 0, payload: new Uint8Array(0) }), null);
 });
 
+test("wake event", () => {
+    const wake = decodeEvent({ type: Msg.WAKE, seq: 9, payload: Uint8Array.of(1, 0, 0, 0, 0x10, 0x27, 0, 0) });
+    assert.deepEqual(wake, { type: "wake", seq: 9, lost: true, timeMs: 10000 });
+    const plain = decodeEvent({ type: Msg.WAKE, seq: 1, payload: Uint8Array.of(0, 0, 0, 0, 1, 0, 0, 0) });
+    assert.deepEqual(plain, { type: "wake", seq: 1, lost: false, timeMs: 1 });
+    assert.equal(Msg.WAKE, 0x82);
+});
+
+test("get info reports the backlight flag", () => {
+    assert.equal(decodeInfo(infoPayload()).backlight, true);
+    assert.equal(decodeInfo(infoPayload({ backlight: false })).backlight, false);
+    assert.equal(decodeInfo(infoPayload({ backlight: false })).maxPayload, 8192);   // fields after it still line up
+});
+
 test("status names", () => {
     assert.equal(statusName(Status.NOT_FOUND), "NOT_FOUND");
     assert.equal(statusName(77), "STATUS_77");

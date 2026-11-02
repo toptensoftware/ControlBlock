@@ -48,7 +48,7 @@ From `host/`: `npm install` once, then `npm test` (Node's test runner, no device
 ## Repository Layout
 
 ```
-docs/              Specs: protocol.md, image-assets.md, page-compositor.md, status-bar.md, interactions.md (screen-buffers.md is partly superseded)
+docs/              Specs: protocol.md, image-assets.md, page-compositor.md, status-bar.md, interactions.md, backlight.md (screen-buffers.md is partly superseded)
 firmware/          ESP-IDF project for the device (C++)
   assets/          Generated binaries embedded in the firmware (ui.bin; test_keys.bin only for the stress run)
   test/            Host unit tests
@@ -86,6 +86,7 @@ Modules in `firmware/main/` (all C++; `rle565.c` from the submodule stays C):
 - **`status_bar.cpp/.h`, `status.cpp/.h`, `ui_assets.h`:** the status bar (text, pager pills). Spec: [`docs/status-bar.md`](docs/status-bar.md).
 - **`swipe.cpp/.h`:** drag, flick and spring glide between pages, in a task woken each frame; tuning constants at the top. Sets the status bar's selected pill. Also takes the host's page count and go-to-page (through its queue) and reports page changes once settled. Feeds touches through the touch router and shows each key's pressed look from touch-down (reverted if it becomes a swipe) until RELEASE/CANCEL.
 - **`touch_router.cpp/.h`:** swipe or key press: the swipe window, edge-ambiguous zone, and PRESS/RELEASE/CANCEL. Pure and tested; tuning constants in the header. Spec: [`docs/interactions.md`](docs/interactions.md).
+- **Backlight wake gate** ([`docs/backlight.md`](docs/backlight.md); built and unit tested, **not yet run on the hardware**): while the host has the backlight off, touches skip the router and swipe and send a WAKE event (`0x82`) per touch-down instead; the rest of that touch is swallowed. The state is in GET_INFO `flags` bit 0. Pure and tested: `touch_gate.cpp/.h` wraps `touch_router`; `swipe.cpp` feeds it, `host_link.cpp` holds the state and drives the light and the gate.
 - **`image_store.cpp/.h`:** the host's rle565 images under 32-bit IDs in PSRAM: streamed uploads, replace in place, deferred free, reset. Platform independent and tested. Spec: [`docs/image-assets.md`](docs/image-assets.md).
 - **`key_layout.cpp/.h`:** pages of keys, four image slots each (normal and pressed bg/fg), ref counted; all-or-nothing `SetKeys`. The compositor's client. Tested.
 - **`protocol.cpp/.h`:** the mode 1 protocol: stream parser, every request (including SET_STATUS_TEXT: the host sets the status bar's left and right text), event queue. Platform independent and tested. Spec: [`docs/protocol.md`](docs/protocol.md).
@@ -94,6 +95,7 @@ Modules in `firmware/main/` (all C++; `rle565.c` from the submodule stays C):
 - **`host_link.cpp/.h`:** the protocol task (core 0): USB bytes in, responses and events out; applies status text to `status_set_left/right`.
 - **`main.cpp`:** init and the stats log. The device boots empty (one empty page, no keys, empty status text); the host supplies everything. Logs free heap at boot, then FPS, fill, compositor and image stats once a second.
   - `RUN_STRESS` (off by default; build with `idf.py --preset debug -DCB_RUN_STRESS=ON build`, which embeds `assets/test_keys.bin` as its test images, layout in `test_keys.h`; `-DCB_RUN_STRESS=OFF` turns it off again; the device is left empty afterwards): at boot, drives the compositor (and status bar) flat out at rest and mid-swipe, plus image replaces at ~USB speed, and logs late fills for each case. Run it after changing the compositor, the bounce fill or anything that touches PSRAM.
+  - `BACKLIGHT_CYCLE_S` (off by default; `idf.py --preset debug -DCB_BACKLIGHT_CYCLE_S=5 build` toggles the backlight every 5 s and logs `backlight cycle: on/off`; `-DCB_BACKLIGHT_CYCLE_S=0` turns it off again): tests the backlight hardware without the host. It calls `display_enable_backlight()` directly, bypassing the touch gate and host state, so don't use it with a host app.
 
 ### Bounce fill rules
 
@@ -152,6 +154,8 @@ All custom. Do **not** use LVGL.
 - **Second render cell** (render the next key while one copies): ~20% faster page builds. Not needed yet.
 - **Key presses:** the touch router is built and unit tested, and wired to the model and `Protocol::PostKey`, but **not yet run on the hardware**. Tune `TOUCH_SWIPE_WINDOW_MS` and `TOUCH_EDGE_AMBIGUOUS_PX`, and judge the pressed look flashing on swipes (it shows at touch-down and reverts when a swipe starts). The swipe task takes the model lock on key actions: check it doesn't delay frames. Per-key "no swipe window" mode: add only if needed.
 - **Not yet run on the hardware:** `RUN_STRESS`'s image-replace cases (do uploads make fills late?) and `demo/bench.js`.
+- **Backlight wake-on-touch:** built and unit tested, not run on the hardware. Hardware-only checks: GT911 reporting while the light is off, wake feel.
+- **Backlight-on USB glitch:** when the backlight turns on, the CH343P UART USB port disconnects and reconnects (Windows connect sound), with both USB ports powered. Cause unknown: the CH422G bytes match `aclock`'s and `USB_SEL` is untouched, and a web search found nothing. Isolate with `BACKLIGHT_CYCLE_S`: check for an ESP32 reboot in the log, try with only one cable, and see whether it happens on every wake.
 - Host library: long and double press helpers (protocol.md says the host detects them).
 - Flash writes (icon cache, NVS) may stall the bounce ISR (`CONFIG_LCD_RGB_ISR_IRAM_SAFE` is off). Test for display glitches when they arrive.
 - How pages and keys are stored and configured for modes 2 and 3.

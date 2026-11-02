@@ -37,6 +37,16 @@ static const char *TAG = "controlblock";
 #define RUN_STRESS  0
 #endif
 
+// Backlight cycle: toggle the backlight every this many seconds, to test the
+// hardware (USB behaviour, power) without the host. Goes straight to the
+// display, bypassing the touch gate and the host's backlight state, so don't
+// use it together with a host app. Off (0) by default; build with
+//     idf.py --preset debug -DCB_BACKLIGHT_CYCLE_S=5 build
+// (-DCB_BACKLIGHT_CYCLE_S=0 turns it off again).
+#ifndef BACKLIGHT_CYCLE_S
+#define BACKLIGHT_CYCLE_S  0
+#endif
+
 extern const uint8_t ui_start[] asm("_binary_ui_bin_start");
 extern const uint8_t ui_end[]   asm("_binary_ui_bin_end");
 
@@ -348,8 +358,19 @@ extern "C" void app_main(void)
     uint32_t last_frames = 0;
     screen_stats_t st;
     comp_stats_t cs;
+#if BACKLIGHT_CYCLE_S
+    uint32_t seconds = 0;
+    bool backlight = true;
+#endif
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
+#if BACKLIGHT_CYCLE_S
+        if (++seconds % BACKLIGHT_CYCLE_S == 0) {
+            backlight = !backlight;
+            ESP_LOGI(TAG, "backlight cycle: %s", backlight ? "on" : "off");
+            display_enable_backlight(backlight);
+        }
+#endif
         ImageStoreStats is;
         model_lock();
         model_store()->GetStats(&is);

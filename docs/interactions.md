@@ -62,6 +62,7 @@ IDLE ─────────────────────────
 - **Mid-swipe pages:** while a swipe is in progress a touch never reaches a key; the page under the finger is moving.
 - **Hit testing** uses the key the finger went down on, on the page most in view at touch-down. The "safe area" for touch-down is the key's 128x128 cell shrunk by `EDGE_AMBIGUOUS_PX` on every side. The bounds for "leaving the key" are the full cell.
 - **Key removed or page changed by the host while HELD:** send `CANCEL` (the key is gone), then **DEAD**.
+- **Backlight off:** touches never reach the state machine. Each touch-down sends a `WAKE` event instead and the rest of the touch is swallowed (also after the host turns the light back on). Turning the light off mid-touch sends `CANCEL` for a held key. See [`backlight.md`](backlight.md).
 - **Host disconnect, event overflow:** unchanged from the protocol. The host treats any key it thinks is held as released.
 - **Pressed look:** separate from the events. The pressed image pair is shown from touch-down on an active key (so a tap gives feedback at once), and reverted if the touch turns into a swipe or leaves the key before the window ends. Once `PRESS` is sent it stays until `RELEASE`/`CANCEL`. A swipe therefore flashes the pressed look briefly. Touches that can only swipe (gap, edge zone, inactive key, busy page) never show it. The look is a `key_look` callback on the router, not part of the KEY events.
 

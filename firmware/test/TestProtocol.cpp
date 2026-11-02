@@ -82,6 +82,7 @@ namespace
             h.set_page         = [](int p, bool a, void *c) { ((Fixture *)c)->page_set = p; ((Fixture *)c)->animate = a; };
             h.current_page     = [](void *c) { return ((Fixture *)c)->current; };
             h.set_backlight    = [](bool on, void *c) { ((Fixture *)c)->backlight = on; };
+            h.backlight_on     = [](void *c) { return ((Fixture *)c)->backlight; };
             h.set_status_text  = [](int field, const char *t, void *c) {
                 Fixture *f = (Fixture *)c;
                 Check(f->lock_depth == 0 && (field == STATUS_TEXT_LEFT || field == STATUS_TEXT_RIGHT));
@@ -233,7 +234,8 @@ Fact("Protocol Get Info")
     Msg m = f.Request(MSG_GET_INFO);
     Assert(m.Status() == ST_OK);
     int i = 4;
-    Assert(m.U16At(i) == PROTO_VERSION);                      i += 4;
+    Assert(m.U16At(i) == PROTO_VERSION);                      i += 2;
+    Assert(m.U16At(i) == INFO_FLAG_BACKLIGHT);                i += 2;     // flags: backlight on
     Assert(m.U32At(i) == PROTO_MAX_PAYLOAD);                  i += 4;
     Assert(m.U32At(i) == 1u << 20);                           i += 4;     // capacity
     Assert(m.U32At(i) == sizeof(ImageData) + f.env.Size(f.env.Icon(0))); i += 4;
@@ -414,6 +416,122 @@ Fact("Protocol Page Count Page And Backlight")
     Bytes off;
     off.U8(0);
     Assert(f.Request(MSG_SET_BACKLIGHT, off).Status() == ST_OK && !f.backlight);
+}
+
+// --- Backlight (docs/backlight.md) ---
+
+namespace
+{
+    Bytes OnByte(uint32_t on) { Bytes p; p.U8(on); return p; }
+    uint32_t InfoFlags(Fixture &f) { return f.Request(MSG_GET_INFO).U16At(6); }
+}
+
+Fact("Protocol Backlight Any Non-Zero Means On")
+{
+    Fixture f;
+    Assert(f.Request(MSG_SET_BACKLIGHT, OnByte(0)).Status() == ST_OK && !f.backlight);
+    Assert(f.Request(MSG_SET_BACKLIGHT, OnByte(1)).Status() == ST_OK && f.backlight);
+    f.Request(MSG_SET_BACKLIGHT, OnByte(0));
+    Assert(f.Request(MSG_SET_BACKLIGHT, OnByte(200)).Status() == ST_OK && f.backlight);
+    f.Request(MSG_SET_BACKLIGHT, OnByte(0));
+    Assert(f.Request(MSG_SET_BACKLIGHT, OnByte(2)).Status() == ST_OK && f.backlight);
+}
+
+Fact("Protocol Backlight Short Payload Is Bad Length And Changes Nothing")
+{
+    Fixture f;
+    Assert(f.Request(MSG_SET_BACKLIGHT).Status() == ST_BAD_LENGTH && f.backlight);
+    f.Request(MSG_SET_BACKLIGHT, OnByte(0));
+    Assert(f.Request(MSG_SET_BACKLIGHT).Status() == ST_BAD_LENGTH && !f.backlight);
+}
+
+Fact("Protocol Get Info Flags Follow The Backlight")
+{
+    Fixture f;
+    Assert(InfoFlags(f) == INFO_FLAG_BACKLIGHT);            // on at boot
+    f.Request(MSG_SET_BACKLIGHT, OnByte(0));
+    Assert(InfoFlags(f) == 0);
+    f.Request(MSG_SET_BACKLIGHT, OnByte(1));
+    Assert(InfoFlags(f) == INFO_FLAG_BACKLIGHT);
+}
+
+Fact("Protocol Reset And Reset Stream Leave The Backlight Alone")
+{
+    Fixture f;
+    f.Request(MSG_SET_BACKLIGHT, OnByte(0));
+    Assert(f.Request(MSG_RESET).Status() == ST_OK);
+    Assert(!f.backlight && InfoFlags(f) == 0);
+    f.proto.ResetStream();
+    Assert(!f.backlight && InfoFlags(f) == 0);
+
+    f.Request(MSG_SET_BACKLIGHT, OnByte(1));
+    f.Request(MSG_RESET);
+    f.proto.ResetStream();
+    Assert(f.backlight && InfoFlags(f) == INFO_FLAG_BACKLIGHT);
+}
+
+Fact("Protocol Content Requests Work While The Backlight Is Off")
+{
+    Fixture f;
+    f.Request(MSG_SET_BACKLIGHT, OnByte(0));
+    Assert(f.Upload(1, f.env.Face(0)) == ST_OK);
+    Bytes n;
+    n.U8(3);
+    Assert(f.Request(MSG_SET_PAGE_COUNT, n).Status() == ST_OK);
+    KeyDef defs[] = { { 2, 4, 0, { 1, 0, 0, 0 } } };
+    Assert(f.Request(MSG_SET_KEYS, Keys(1, defs)).Status() == ST_OK);
+    Bytes go;
+    go.U8(2).U8(1);
+    Assert(f.Request(MSG_SET_PAGE, go).Status() == ST_OK && f.page_set == 2 && f.animate);
+    Bytes t;
+    t.U8(STATUS_TEXT_LEFT).U8(2).Raw("hi", 2);
+    Assert(f.Request(MSG_SET_STATUS_TEXT, t).Status() == ST_OK && !strcmp(f.status_text[0], "hi"));
+
+    // Same content after the light comes on
+    f.Request(MSG_SET_BACKLIGHT, OnByte(1));
+    comp_key_t keys[COMP_KEYS];
+    f.layout.GetPage(2, keys);
+    Assert(keys[4].bg == f.store.Find(1)->data->Pixels());
+    Assert(f.layout.PageCount() == 3 && f.page_set == 2);
+}
+
+Fact("Protocol Wake Event Layout")
+{
+    Fixture f;
+    f.proto.PostWake(987654);
+    Assert(f.proto.SendEvents());
+    List<Msg> e = f.Read();
+    Assert(e.GetCount() == 1);
+    Assert(e[0].type == EVT_WAKE && e[0].type == 0x82 && e[0].flags == PROTO_FLAG_EVENT);
+    Assert(e[0].len == 8);
+    Assert(e[0].U8At(0) == 0 && e[0].U8At(1) == 0 && e[0].U8At(2) == 0 && e[0].U8At(3) == 0);
+    Assert(e[0].U32At(4) == 987654);
+}
+
+Fact("Protocol Wake Event Reports Overflow")
+{
+    Fixture f;
+    for (int i = 0; i < PROTO_EVENT_QUEUE + 5; i++)
+        f.proto.PostWake(i);
+    f.proto.SendEvents();
+    List<Msg> e = f.Read();
+    Assert(e.GetCount() == PROTO_EVENT_QUEUE);
+    Assert(e[0].U32At(4) == 5 && e[0].U8At(0) == 1);        // lost flag, in the WAKE's own layout
+    Assert(e[1].U8At(0) == 0);
+}
+
+Fact("Protocol Wake Comes After The Cancel Queued Before It")
+{
+    Fixture f;
+    f.proto.PostKey(0, 3, KEY_ACTION_DOWN, 10);
+    f.proto.PostKey(0, 3, KEY_ACTION_CANCEL, 20);
+    f.proto.PostWake(30);
+    f.proto.SendEvents();
+    List<Msg> e = f.Read();
+    Assert(e.GetCount() == 3);
+    Assert(e[1].type == EVT_KEY && e[1].U8At(2) == KEY_ACTION_CANCEL);
+    Assert(e[2].type == EVT_WAKE && e[2].U32At(4) == 30);
+    Assert(e[2].seq == (uint16_t)(e[1].seq + 1));
 }
 
 Fact("Protocol Set Status Text")

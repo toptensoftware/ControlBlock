@@ -2,12 +2,12 @@
 // testing the library without hardware. `handler(msg)` returns the response
 // { status, data } for a request, or null to stay silent.
 
-import { MessageParser, encodeMessage, Writer, Flags, Msg, Status, PROTOCOL_VERSION } from "../src/protocol.js";
+import { MessageParser, encodeMessage, Writer, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION } from "../src/protocol.js";
 
-export function infoPayload({ maxPayload = 8192, pageCount = 1 } = {})
+export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true } = {})
 {
     const w = new Writer(128);
-    w.u16(PROTOCOL_VERSION).u16(0).u32(maxPayload).u32(5000000).u32(1234).u32(3).u32(4000000);
+    w.u16(PROTOCOL_VERSION).u16(backlight ? InfoFlags.BACKLIGHT : 0).u32(maxPayload).u32(5000000).u32(1234).u32(3).u32(4000000);
     w.u16(800).u16(480).u8(5).u8(3).u8(8).u8(pageCount);
     w.u16(128).u16(128).u16(80).u16(80).u8(0);
     for (const s of ["1.0", "SERIAL1"]) {
@@ -19,8 +19,9 @@ export function infoPayload({ maxPayload = 8192, pageCount = 1 } = {})
 
 export class FakeDevice
 {
-    constructor({ maxPayload = 8192, handler } = {})
+    constructor({ maxPayload = 8192, handler, backlight = true } = {})
     {
+        this.backlight = backlight;     // follows SET_BACKLIGHT; reported by GET_INFO
         this.opened = false;
         this.claimed = false;
         this.resets = 0;
@@ -51,8 +52,10 @@ export class FakeDevice
     {
         for (const msg of this._parser.push(new Uint8Array(data))) {
             this.requests.push(msg);
+            if (msg.type === Msg.SET_BACKLIGHT && msg.payload.length >= 1)
+                this.backlight = msg.payload[0] !== 0;
             const r = msg.type === Msg.GET_INFO
-                ? { status: Status.OK, data: infoPayload({ maxPayload: this.maxPayload }) }
+                ? { status: Status.OK, data: infoPayload({ maxPayload: this.maxPayload, backlight: this.backlight }) }
                 : msg.type === Msg.PING
                     ? { status: Status.OK, data: msg.payload }
                     : this.handler(msg);

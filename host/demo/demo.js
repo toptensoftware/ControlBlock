@@ -5,12 +5,14 @@
 //   - page 1's last key is a clock, replaced in place every second (same ID)
 //   - page 2, key 2 uses a temporary image that's freed while still shown;
 //     after 10 s the key moves on and the device releases the memory
+//   - page 1's Power key turns the display off; touching it turns it back on
+//     (the clock and status text keep updating while it's dark)
 // Logs page changes and the device's image memory. Ctrl+C to quit.
 //
 //   npm run demo
 
 import { ButtonImage } from "@toptensoftware/node-buttonImage";
-import { ControlBlock, keyImage, keyImageFromSvg, PageCause } from "../index.js";
+import { ControlBlock, keyImage, keyImageFromSvg, KeyAction, PageCause } from "../index.js";
 
 const ICONS = [
     ["home", "Home", "#ffffff"], ["settings", "Settings", "#c0c0c0"], ["play", "Play", "#40e040"],
@@ -19,6 +21,8 @@ const ICONS = [
     ["apple-tv", "Apple TV", "#ffffff"], ["steam", "Steam", "#80c0ff"], ["refresh", "Refresh", "#40ffc0"],
     ["next-track", "Next", "#ffffff"], ["info", "Info", "#a0a0ff"],
 ];
+
+const POWER_KEY = 6;        // page 1's key with the "power" icon (index 6 in ICONS)
 
 // Fixed IDs for images that change in place (content IDs for the rest)
 const CLOCK_ID = 0xC10C0001;
@@ -69,7 +73,26 @@ console.log(`ControlBlock ${info.serial}, firmware ${info.firmwareVersion}: ${in
             `${(info.imageCapacity / 1024) | 0} KB for images`);
 
 cb.on("pageChanged", e => console.log(`page ${e.page} (${e.cause === PageCause.HOST ? "host" : "swiped"})`));
-cb.on("key", e => console.log(`key ${e.page}/${e.key} action ${e.action}${e.lost ? " (events lost)" : ""}`));
+cb.on("key", e => {
+    console.log(`key ${e.page}/${e.key} action ${e.action}${e.lost ? " (events lost)" : ""}`);
+    // Page 1's Power key turns the display off; any touch (wake) turns it back on
+    if (e.page === 0 && e.key === POWER_KEY && e.action === KeyAction.RELEASE)
+        setBacklight(false);
+});
+cb.on("wake", e => {
+    console.log(`wake${e.lost ? " (events lost)" : ""}`);
+    setBacklight(true);
+});
+
+async function setBacklight(on)
+{
+    try {
+        await cb.setBacklight(on);
+        console.log(`backlight ${on ? "on" : "off"}`);
+    } catch (err) {
+        console.error(err.message);
+    }
+}
 cb.on("error", err => console.error("device error:", err));
 
 // --- Images ---
@@ -148,6 +171,7 @@ const timer = setInterval(async () => {
 
 process.on("SIGINT", async () => {
     clearInterval(timer);
+    await cb.setBacklight(true).catch(() => { });    // don't leave the screen dark
     await cb.close();
     process.exit(0);
 });

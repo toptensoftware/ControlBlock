@@ -58,6 +58,11 @@ public:
     // cancels a held key that has gone or whose page has changed.
     void Tick(int64_t now_us, int page);
 
+    // End the touch in progress without lifting: a held key gets a CANCEL, a
+    // pending one just loses its pressed look. The rest of the touch is
+    // ignored by the caller (TouchGate).
+    void Abort(int64_t now_us);
+
 private:
     enum class State
     {

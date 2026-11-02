@@ -6,7 +6,7 @@
 #include "UnitTesting.h"
 #include "Core.h"
 #include "harness.h"            // Rng, Check
-#include "touch_router.h"
+#include "touch_gate.h"
 
 using namespace SimpleLib;
 
@@ -21,12 +21,15 @@ namespace
         uint32_t ms;
     };
 
-    // A router with a fake host: records key events, any key can be made inactive
+    // A router behind its wake gate (enabled unless a test turns it off) with a
+    // fake host: records key events and wakes, any key can be made inactive
     struct Rig
     {
-        TouchRouter router;
+        TouchGate   router;
         Ev          ev[256];
         int         count = 0;
+        int         wakes = 0;
+        uint32_t    wake_ms = 0;
         bool        inactive[SCREEN_MAX_PAGES][COMP_KEYS] = {};
         int64_t     now = 1000 * MS;
         int         page = 0;
@@ -56,8 +59,10 @@ namespace
                     r->ev[r->count++] = Ev{ page, key, action, ms };
             };
             h.ctx = this;
-            router.Init(h);
+            router.Init(h, [](uint32_t ms, void *ctx) { ((Rig *)ctx)->wakes++; ((Rig *)ctx)->wake_ms = ms; }, this);
         }
+
+        void SetEnabled(bool on) { router.SetEnabled(on, now); }
 
         void Advance(int ms)
         {
@@ -567,6 +572,155 @@ Fact("TouchRouter Next Touch Is Independent")
     r.Advance(WIN + 20);
     r.Up(CX(1), CY(1));
     Assert(r.count == 2 && r.Is(0, 1, TOUCH_KEY_PRESS) && r.Is(1, 1, TOUCH_KEY_RELEASE));
+}
+
+// --- Wake gate: the backlight is off (docs/backlight.md) ---
+
+Fact("TouchGate Touch While Off Sends One Wake And Nothing Else")
+{
+    Rig r;
+    r.SetEnabled(false);
+    r.Down(CX(7), CY(7));
+    Assert(r.wakes == 1);
+    Assert(r.wake_ms == (uint32_t)(r.now / MS));
+    Assert(!r.look && r.look_changes == 0);
+
+    // Moving (even far enough to swipe), a long hold and the lift add nothing
+    Assert(!r.Move(CX(7) + 100, CY(7)));
+    Assert(!r.Move(CX(7) + 300, CY(7)));
+    r.Advance(WIN * 4);
+    r.Up(CX(7) + 300, CY(7));
+    Assert(r.wakes == 1 && r.count == 0 && r.look_changes == 0);
+}
+
+Fact("TouchGate Each Touch Down Wakes Once")
+{
+    Rig r;
+    r.SetEnabled(false);
+    for (int i = 0; i < 3; i++) {
+        r.Down(CX(i), CY(i));
+        r.Advance(30);
+        r.Up(CX(i), CY(i));
+        Assert(r.wakes == i + 1);
+    }
+    Assert(r.count == 0 && r.look_changes == 0);
+}
+
+Fact("TouchGate Quick Tap While Off Presses Nothing")
+{
+    Rig r;
+    r.SetEnabled(false);
+    r.Down(CX(7), CY(7));
+    r.Up(CX(7), CY(7));
+    Assert(r.wakes == 1 && r.count == 0);
+}
+
+Fact("TouchGate Touch Down Before Turning On Stays Swallowed")
+{
+    Rig r;
+    r.SetEnabled(false);
+    r.Down(CX(7), CY(7));
+    r.SetEnabled(true);
+    Assert(r.wakes == 1);
+    r.Advance(WIN * 2);                 // would be a PRESS if it reached the key
+    Assert(!r.Move(CX(7) + 100, CY(7)));
+    r.Up(CX(7), CY(7));
+    Assert(r.wakes == 1 && r.count == 0 && r.look_changes == 0);
+
+    // The next touch goes to the key as usual
+    r.Down(CX(7), CY(7));
+    r.Advance(WIN + 20);
+    r.Up(CX(7), CY(7));
+    Assert(r.wakes == 1 && r.count == 2 && r.Is(0, 7, TOUCH_KEY_PRESS) && r.Is(1, 7, TOUCH_KEY_RELEASE));
+}
+
+Fact("TouchGate Off While Held Cancels The Key")
+{
+    Rig r;
+    r.Down(CX(7), CY(7));
+    r.Advance(WIN + 20);
+    Assert(r.count == 1 && r.look);
+    r.SetEnabled(false);
+    Assert(r.count == 2 && r.Is(1, 7, TOUCH_KEY_CANCEL));
+    Assert(!r.look && !r.look_bad);
+    Assert(r.wakes == 0);               // the finger was already down: no wake
+
+    // The rest of the touch is swallowed
+    r.Move(COMP_KEY_X(7) + COMP_KEY_SIZE + 50, CY(7));
+    r.Up(CX(7), CY(7));
+    Assert(r.count == 2 && r.wakes == 0);
+
+    // The next touch down wakes
+    r.Down(CX(7), CY(7));
+    Assert(r.wakes == 1);
+}
+
+Fact("TouchGate Off While Pending Sends Nothing And Reverts The Look")
+{
+    Rig r;
+    r.Down(CX(7), CY(7));
+    Assert(r.look);
+    r.SetEnabled(false);
+    Assert(r.count == 0 && !r.look && !r.look_bad && r.wakes == 0);
+    r.Advance(WIN * 2);                 // the window ending presses nothing
+    r.Up(CX(7), CY(7));
+    Assert(r.count == 0 && r.wakes == 0 && r.look_changes == 2);
+}
+
+Fact("TouchGate Off Mid Swipe Swallows The Rest")
+{
+    Rig r;
+    r.Down(CX(7), CY(7));
+    Assert(r.Move(CX(7) + 50, CY(7)));          // a swipe has started
+    r.SetEnabled(false);
+    Assert(!r.Move(CX(7) + 100, CY(7)));        // no further swipe decisions
+    r.Up(CX(7) + 100, CY(7));
+    Assert(r.count == 0 && r.wakes == 0 && !r.look);
+}
+
+Fact("TouchGate Off With A Finger Down Wakes On The Next Touch Down Only")
+{
+    Rig r;
+    r.Down(CX(2), CY(2));
+    r.SetEnabled(false);
+    r.Advance(500);
+    Assert(r.wakes == 0);
+    r.Up(CX(2), CY(2));
+    Assert(r.wakes == 0);
+    r.Down(CX(2), CY(2));
+    Assert(r.wakes == 1);
+}
+
+Fact("TouchGate Setting The Current State Changes Nothing")
+{
+    Rig r;
+    // On while a key is held
+    r.Down(CX(3), CY(3));
+    r.Advance(WIN + 20);
+    r.SetEnabled(true);
+    Assert(r.count == 1 && r.look);
+    r.Up(CX(3), CY(3));
+    Assert(r.count == 2 && r.Is(1, 3, TOUCH_KEY_RELEASE));
+
+    // Off while a touch is swallowed: still swallowed, still no wake
+    r.SetEnabled(false);
+    r.Down(CX(3), CY(3));
+    r.SetEnabled(false);
+    Assert(r.wakes == 1);
+    r.Up(CX(3), CY(3));
+    Assert(r.wakes == 1 && r.count == 2);
+}
+
+Fact("TouchGate Turning On Then Off Again Mid Touch")
+{
+    Rig r;
+    r.SetEnabled(false);
+    r.Down(CX(1), CY(1));
+    r.SetEnabled(true);
+    r.SetEnabled(false);
+    r.Up(CX(1), CY(1));
+    r.SetEnabled(true);
+    Assert(r.wakes == 1 && r.count == 0);
 }
 
 // --- Fuzz ---

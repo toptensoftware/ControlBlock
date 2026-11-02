@@ -2,7 +2,7 @@
 
 This is the host ↔ device protocol for **mode 1 (host-controlled)**. The PC software uploads images and key layouts. The device draws them, runs paging, swiping and press feedback on its own, and reports key presses back to the PC.
 
-How images are stored, replaced and freed on the device is in [`image-assets.md`](image-assets.md).
+How images are stored, replaced and freed on the device is in [`image-assets.md`](image-assets.md). Backlight on/off and the wake-on-touch event are in [`backlight.md`](backlight.md).
 
 ## Design summary
 
@@ -118,7 +118,7 @@ Any data specific to that response follows these two fields.
 | Type | Field | Notes |
 |---|---|---|
 | u16 | protocol_version | `1` |
-| u16 | reserved | |
+| u16 | flags | Bit 0: backlight is on (see [`backlight.md`](backlight.md)). Other bits 0 |
 | u32 | max_payload | Largest payload the device accepts, for every message type (8192 in v1) |
 | u32 | image_capacity | Bytes available for images |
 | u32 | image_used | Bytes in use, counting memory not yet released (retired or mid-replace images) |
@@ -171,7 +171,20 @@ Sets one of the two texts in the [status bar](status-bar.md) (left aligned and r
 |---|---|
 | u8 | on |
 
-The hardware backlight can only be switched on or off (through the CH422G); it has no dimming.
+| Value | Meaning |
+|---|---|
+| `0` | Backlight off |
+| non-zero | Backlight on |
+
+The hardware backlight can only be switched on or off (through the CH422G); it has no dimming. Full behaviour is in [`backlight.md`](backlight.md).
+
+- **Touch while off:** the device ignores touches for its own purposes (no key events, no swiping, no pressed look) and sends a [`WAKE`](#0x82-wake) event on each touch-down instead. It never turns the backlight on itself: the host does, with `SET_BACKLIGHT`.
+- **Turning off mid-touch:** a key being held gets a `CANCEL`, and a swipe settles. The finger still down is swallowed and sends no `WAKE`.
+- **Turning on mid-touch:** a touch that went down while dark stays swallowed until it lifts, so the wake touch never presses what appears under it.
+- **Content keeps updating** while dark (`SET_KEYS`, `PUT_IMAGE`, `SET_STATUS_TEXT`, `SET_PAGE`).
+- **Lifetime:** boots on. Only `SET_BACKLIGHT` changes it; `RESET`, `RESET_STREAM` and a host disconnect leave it alone.
+- **Reading the state:** `GET_INFO` `flags` bit 0.
+- Setting the current state does nothing. A missing `on` byte is `BAD_LENGTH`.
 
 ### `0x10` PUT_IMAGE
 
@@ -290,6 +303,7 @@ Events have the `EVENT` flag set, and `seq` is the device's event counter.
 |---|---|
 | `0x80` | KEY |
 | `0x81` | PAGE_CHANGED |
+| `0x82` | WAKE |
 
 ### `0x80` KEY
 
@@ -321,13 +335,27 @@ See [`interactions.md`](interactions.md) for exactly when these fire.
 
 This is sent once the page settles, not while a swipe is in progress.
 
+### `0x82` WAKE
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | lost | Event-overflow flag (see above) |
+| u8[3] | reserved | 0 |
+| u32 | time_ms | Device milliseconds since boot |
+
+The screen was touched while the backlight is off (see [`SET_BACKLIGHT`](#0x05-set_backlight) and [`backlight.md`](backlight.md)).
+- One `WAKE` per touch-down of the first finger. Extra fingers send nothing.
+- No `KEY` or `PAGE_CHANGED` events come from that touch: it is swallowed until the finger lifts.
+- The device stays dark until the host sends `SET_BACKLIGHT`. A host that doesn't want to wake can ignore the event.
+- Queued events (such as the `CANCEL` for a key held when the light went off) arrive before it.
+
 ## Typical session
 
 1. Open the device and send RESET_STREAM (control request).
 2. Send `GET_INFO`: check `protocol_version` and read the geometry.
 3. Render the faces and icons (with labels), encode them with the rle565 encoder and compute their IDs (CRC-32). Send `QUERY_IMAGES`, then `PUT_IMAGE` only for the missing ones, pipelined.
 4. Send `SET_PAGE_COUNT`, then one `SET_KEYS` with every key. Set the status bar texts with `SET_STATUS_TEXT`, and again whenever they change.
-5. Handle `KEY` events. Later changes are `SET_KEYS` with the affected keys (plus `PUT_IMAGE` for any new images), or a `PUT_IMAGE` that replaces an image in place. `FREE_IMAGES` images that are no longer wanted.
+5. Handle `KEY` events. To sleep the screen, send `SET_BACKLIGHT` off; on a `WAKE` event, send it on. Later changes are `SET_KEYS` with the affected keys (plus `PUT_IMAGE` for any new images), or a `PUT_IMAGE` that replaces an image in place. `FREE_IMAGES` images that are no longer wanted.
 
 ## Device state lifetime
 

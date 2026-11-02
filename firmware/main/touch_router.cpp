@@ -115,6 +115,14 @@ void TouchRouter::Up(int, int, int64_t now_us)
     UpdateLook();
 }
 
+void TouchRouter::Abort(int64_t now_us)
+{
+    if (m_state == State::Held)
+        Emit(TOUCH_KEY_CANCEL, now_us);
+    m_state = State::Idle;
+    UpdateLook();
+}
+
 void TouchRouter::Tick(int64_t now_us, int page)
 {
     if (m_state == State::Pending && now_us - m_down_us >= TOUCH_SWIPE_WINDOW_MS * 1000LL) {

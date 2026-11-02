@@ -36,7 +36,11 @@ export const Msg = Object.freeze({
     SET_PAGE:       0x22,
     KEY:            0x80,       // events
     PAGE_CHANGED:   0x81,
+    WAKE:           0x82,
 });
+
+// GET_INFO flags
+export const InfoFlags = Object.freeze({ BACKLIGHT: 0x0001 });
 
 export const Status = Object.freeze({
     OK:           0,
@@ -215,7 +219,8 @@ export function decodeInfo(data)
 {
     const r = new Reader(data);
     const info = {};
-    info.protocolVersion   = r.u16(); r.u16();
+    info.protocolVersion   = r.u16();
+    info.backlight         = (r.u16() & InfoFlags.BACKLIGHT) !== 0;
     info.maxPayload        = r.u32();
     info.imageCapacity     = r.u32();
     info.imageUsed         = r.u32();
@@ -249,7 +254,8 @@ export function decodeQuery(data)
 }
 
 // An event message: { type: "key", page, key, action, lost, timeMs } or
-// { type: "pageChanged", page, cause }, or null if unknown
+// { type: "pageChanged", page, cause } or { type: "wake", lost, timeMs }, or
+// null if unknown
 export function decodeEvent(msg)
 {
     const r = new Reader(msg.payload);
@@ -259,5 +265,10 @@ export function decodeEvent(msg)
     }
     if (msg.type === Msg.PAGE_CHANGED)
         return { type: "pageChanged", seq: msg.seq, page: r.u8(), cause: r.u8() };
+    if (msg.type === Msg.WAKE) {
+        const lost = (r.u8() & 1) !== 0;
+        r.pos += 3;                     // reserved
+        return { type: "wake", seq: msg.seq, lost, timeMs: r.u32() };
+    }
     return null;
 }

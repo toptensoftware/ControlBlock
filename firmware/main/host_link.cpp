@@ -47,7 +47,19 @@ static void   ph_reset_compositor(void *)                    { comp_reset(); }
 static void   ph_set_page_count(int count, void *)           { swipe_set_page_count(count); }
 static void   ph_set_page(int page, bool animate, void *)    { swipe_go_to_page(page, animate); }
 static int    ph_current_page(void *)                        { return swipe_current_page(); }
-static void   ph_set_backlight(bool on, void *)              { display_enable_backlight(on); }
+// The backlight state lives here (GET_INFO reads it): boots on (main.cpp).
+// It drives the light and the touch wake gate together.
+static volatile bool s_backlight = true;
+
+static void   ph_set_backlight(bool on, void *)
+{
+    if (on == s_backlight)
+        return;
+    s_backlight = on;
+    display_enable_backlight(on);
+    swipe_set_enabled(on);
+}
+static bool   ph_backlight_on(void *)                        { return s_backlight; }
 static void   ph_set_status_text(int field, const char *text, void *)
 {
     // Safe from this task: the status task does the drawing (internal RAM)
@@ -68,6 +80,12 @@ static void wake(void)
 static void on_page_changed(int page, int cause)
 {
     s_proto.PostPageChanged(page, cause);
+    wake();
+}
+
+static void on_wake(uint32_t time_ms)
+{
+    s_proto.PostWake(time_ms);
     wake();
 }
 
@@ -122,6 +140,7 @@ esp_err_t host_link_init(void)
     h.set_page         = ph_set_page;
     h.current_page     = ph_current_page;
     h.set_backlight    = ph_set_backlight;
+    h.backlight_on     = ph_backlight_on;
     h.set_status_text  = ph_set_status_text;
     h.fw_version       = esp_app_get_description()->version;
     h.serial           = s_serial;
@@ -132,6 +151,7 @@ esp_err_t host_link_init(void)
         return ESP_FAIL;
     swipe_set_page_changed_cb(on_page_changed);
     swipe_set_key_cb(on_key);
+    swipe_set_wake_cb(on_wake);
 
     usb_callbacks_t cb = {};
     cb.rx           = wake;
