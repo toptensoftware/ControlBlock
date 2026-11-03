@@ -18,6 +18,12 @@ export const CONFIG_DATA_PREFIX = 4;       // CONFIG_DATA: u32 offset, then the 
 export const STATUS_TEXT_MAX_BYTES = 47;        // SET_STATUS_TEXT: bytes of UTF-8 per text
 export const StatusText = Object.freeze({ LEFT: 0, RIGHT: 1 });
 
+// Wi-Fi credentials (docs/wifi.md)
+export const WIFI_SSID_MAX_BYTES = 32;
+export const WIFI_PASS_MIN_BYTES = 8;
+export const WIFI_PASS_MAX_BYTES = 63;
+export const WifiState = Object.freeze({ NO_CREDENTIALS: 0, CONNECTING: 1, CONNECTED: 2, RETRYING: 3 });
+
 export const Flags = Object.freeze({
     RESPONSE: 0x01,
     EVENT:    0x02,
@@ -38,14 +44,18 @@ export const Msg = Object.freeze({
     CONFIG_BEGIN:   0x30,
     CONFIG_DATA:    0x31,
     CONFIG_COMMIT:  0x32,
+    WIFI_SET:       0x40,
+    WIFI_GET:       0x41,
+    WIFI_STATUS:    0x42,
     KEY:            0x80,       // events
     PAGE_CHANGED:   0x81,
     WAKE:           0x82,
     HEARTBEAT:      0x83,
+    WIFI_STATE:     0x84,
 });
 
 // GET_INFO flags
-export const InfoFlags = Object.freeze({ BACKLIGHT: 0x0001 });
+export const InfoFlags = Object.freeze({ BACKLIGHT: 0x0001, WIFI_CREDENTIALS: 0x0002 });
 
 export const Status = Object.freeze({
     OK:           0,
@@ -223,6 +233,28 @@ export function encodeStatusText(field, text)
     return new Writer(2 + bytes.length).u8(field).u8(bytes.length).raw(bytes).done();
 }
 
+// WIFI_SET: the ssid (a string, or raw bytes) and password (a string; "" or
+// missing = an open network). An empty ssid clears. Throws rather than send
+// what the device would refuse.
+export function encodeWifiSet(ssid, password = "")
+{
+    const ssidBytes = typeof ssid === "string" ? new TextEncoder().encode(ssid) : ssid;
+    if (!(ssidBytes instanceof Uint8Array))
+        throw new TypeError("The ssid must be a string or bytes");
+    if (typeof password !== "string")
+        throw new TypeError("The password must be a string");
+    const pass = new TextEncoder().encode(password);
+    if (ssidBytes.length > WIFI_SSID_MAX_BYTES)
+        throw new RangeError(`The ssid is ${ssidBytes.length} bytes; the limit is ${WIFI_SSID_MAX_BYTES}`);
+    if (pass.length && (pass.length < WIFI_PASS_MIN_BYTES || pass.length > WIFI_PASS_MAX_BYTES))
+        throw new RangeError(`The password is ${pass.length} bytes; it must be ${WIFI_PASS_MIN_BYTES} to ${WIFI_PASS_MAX_BYTES} (or empty for an open network)`);
+    if (!ssidBytes.length && pass.length)
+        throw new TypeError("A password needs an ssid");
+    if (ssidBytes.includes(0) || pass.includes(0))
+        throw new TypeError("The ssid and password can't contain NUL");
+    return new Writer(2 + ssidBytes.length + pass.length).u8(ssidBytes.length).u8(pass.length).raw(ssidBytes).raw(pass).done();
+}
+
 // One PUT_IMAGE chunk
 export function encodePutImage(id, total, offset, chunk)
 {
@@ -260,7 +292,9 @@ export function decodeInfo(data)
     const r = new Reader(data);
     const info = {};
     info.protocolVersion   = r.u16();
-    info.backlight         = (r.u16() & InfoFlags.BACKLIGHT) !== 0;
+    const flags            = r.u16();
+    info.backlight         = (flags & InfoFlags.BACKLIGHT) !== 0;
+    info.wifiCredentials   = (flags & InfoFlags.WIFI_CREDENTIALS) !== 0;
     info.maxPayload        = r.u32();
     info.imageCapacity     = r.u32();
     info.imageUsed         = r.u32();
@@ -285,6 +319,38 @@ export function decodeInfo(data)
     return info;
 }
 
+// WIFI_GET response data: { ssid, password, ssidBytes } (all empty if none are stored)
+export function decodeWifiCredentials(data)
+{
+    const r = new Reader(data);
+    const ssidLen = r.u8(), passLen = r.u8();
+    const ssidBytes = data.slice(r.pos, r.pos + ssidLen);
+    const pass = data.subarray(r.pos + ssidLen, r.pos + ssidLen + passLen);
+    return { ssid: new TextDecoder().decode(ssidBytes), password: new TextDecoder().decode(pass), ssidBytes };
+}
+
+function wifiStateName(state)
+{
+    return Object.keys(WifiState).find(k => WifiState[k] === state) ?? `STATE_${state}`;
+}
+
+function ipString(state, ip)
+{
+    return state === WifiState.CONNECTED ? `${ip[0]}.${ip[1]}.${ip[2]}.${ip[3]}` : null;
+}
+
+// WIFI_STATUS response data. `ip` is null unless connected.
+export function decodeWifiStatus(data)
+{
+    const r = new Reader(data);
+    const state = r.u8(), reason = r.u8();
+    const rssi = r.u8() << 24 >> 24;
+    r.u8();                             // reserved
+    const ip = data.subarray(r.pos, r.pos + 4);
+    const mac = [...data.subarray(r.pos + 4, r.pos + 10)].map(b => b.toString(16).padStart(2, "0")).join(":");
+    return { state, stateName: wifiStateName(state), reason, rssi, ip: ipString(state, ip), mac };
+}
+
 // QUERY_IMAGES response data: one bool per ID asked about
 export function decodeQuery(data)
 {
@@ -303,7 +369,8 @@ export const HEARTBEAT_INTERVAL_MS = 1000;
 
 // An event message: { type: "key", page, key, action, lost, timeMs } or
 // { type: "pageChanged", page, cause } or { type: "wake", lost, timeMs } or
-// { type: "heartbeat", timeMs }, or null if unknown
+// { type: "heartbeat", timeMs } or { type: "wifiState", state, stateName, lost, ip },
+// or null if unknown
 export function decodeEvent(msg)
 {
     const r = new Reader(msg.payload);
@@ -320,5 +387,10 @@ export function decodeEvent(msg)
     }
     if (msg.type === Msg.HEARTBEAT)
         return { type: "heartbeat", seq: msg.seq, timeMs: r.u32() };
+    if (msg.type === Msg.WIFI_STATE) {
+        const state = r.u8(), lost = (r.u8() & 1) !== 0;
+        r.pos += 2;                     // reserved
+        return { type: "wifiState", seq: msg.seq, state, stateName: wifiStateName(state), lost, ip: ipString(state, msg.payload.subarray(r.pos, r.pos + 4)) };
+    }
     return null;
 }

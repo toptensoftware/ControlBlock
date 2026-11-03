@@ -41,6 +41,25 @@ CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=4096
 CONFIG_TINYUSB_VENDOR_TX_BUFSIZE=2048
 CONFIG_TINYUSB_VENDOR_EPSIZE=512
 
+# Wi-Fi (docs/wifi.md): station only, a few small HTTP/UDP requests, not streaming.
+# Smaller buffers than the defaults (static RX 10, dynamic RX/TX 32, AMPDU
+# windows 6) to keep internal RAM for the display and USB. Wi-Fi/lwIP stay in
+# internal RAM (CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP off): PSRAM writes starve
+# the bounce fill. Core 0 for the driver and lwIP; core 1 is the compositor's.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+# IRAM and internal RAM are one SRAM on the S3: keep the driver out of IRAM.
+# Tried on (both, then RX only): esp_wifi_init() ran out of internal RAM
+# (only ~20 KB was free before it). Revisit after freeing internal RAM.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_RX_BA_WIN=6
+CONFIG_ESP_WIFI_TX_BA_WIN=4
+CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_0=y
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+
 # GT911 touch
 CONFIG_ESP_LCD_TOUCH_MAX_POINTS=5
 

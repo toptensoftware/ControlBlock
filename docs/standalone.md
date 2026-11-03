@@ -4,7 +4,7 @@ Mostly design. Built so far: the bake tool, the config upload, and loading the s
 
 **Status:** the design below is settled except for the items under "Still open". **Built:**
 - The bake pipeline (`tools/bake/`: stage 1 resolve, stage 2 render, stage 3 pack, plus the CLI and `--upload`), specified by [`config-format.md`](config-format.md); and the config upload to the `config` partition ([`protocol.md`](protocol.md#configuration-upload)).
-- The boot loader, host tested (build order step 4): `config_blob` (validate and relocate), `config_apply` (Home onto the key layout), `ImageStore::AddExternal`, `ConfigStore::Read`. The device layer `config_boot.cpp` reads the stored blob into PSRAM at boot and shows Home's keys. **Not yet run on the hardware.** Home's keys show their images; pressing does nothing.
+- The boot loader, host tested (build order step 4): `config_blob` (validate and relocate), `config_apply` (Home onto the key layout), `ImageStore::AddExternal`, `ConfigStore::Read`. The device layer `config_boot.cpp` reads the stored blob into PSRAM at boot and shows Home's keys. Works on the hardware (a flashed config loads). Home's keys show their images; pressing does nothing.
 - `binpack/` fixes found on the way: `finalize()` pads to 4 bytes, one Buffer can be shared by two fields, and a shared Buffer first referenced early and again from a later nested reference (an image used by Home and by an activity page) now gets a pointer both times (it used to be null the second time; test added in `binpack/test.js` and `tools/bake/test/pack.test.js`). The submodule changes are not committed in the main repository yet.
 
 **Next, test first for each:** (1) the trigger dispatcher with the global op queue (`Trigger`, `HasBinding`, `delay`, `switchActivity` ordering, device on/off tracking); (2) `key_gesture` generalized per control; (3) the page strip and activity switching (includes selecting an activity, the "release" that rebuilds Home, and freeing the blob on a hosted takeover); (6) `hidKey` and the Lua script runtime.
@@ -38,7 +38,7 @@ Mostly design. Built so far: the bake tool, the config upload, and loading the s
 
 ### Wi-Fi
 
-Credentials are set from a command-line Node tool (stored on the device, e.g. NVS). A web UI comes later. Wi-Fi also needs internal RAM, which is tight (see CLAUDE.md Open Items).
+Credentials are set over USB from a command-line Node tool (`host/demo/wifi.js`) and kept in NVS; a web UI comes later. Built: see [`wifi.md`](wifi.md) for the design, the protocol messages (`WIFI_SET`, `WIFI_GET`, `WIFI_STATUS`) and the RAM it takes.
 
 ## Config
 

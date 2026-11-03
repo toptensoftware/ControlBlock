@@ -7,6 +7,7 @@
 #include "protocol.h"
 #include "store_env.h"
 #include "flash_env.h"
+#include "wifi_env.h"
 #include "crc32.h"
 
 using namespace SimpleLib;
@@ -54,6 +55,8 @@ namespace
         KeyLayout  layout;
         FakeFlash  flash;
         ConfigStore config;
+        FakeWifiStorage wifi_storage;
+        WifiConfig wifi;
         Protocol   proto;
 
         List<uint8_t> out;
@@ -63,11 +66,15 @@ namespace
         char status_text[2][64] = {};           // last text per STATUS_LEFT / STATUS_RIGHT
         int  status_sets = 0;
         int  restarts = 0;
+        WifiStatus wifi_st = {};                // what the device layer reports
+        int  wifi_changes = 0;                  // credential changes the device layer was told of
         List<int> changed_pages;
 
         explicit Fixture(uint32_t capacity = 1u << 20) : flash(16 * CONFIG_SECTOR)
         {
             config.Init(flash.Host());
+            wifi.Init(wifi_storage.Host());
+            wifi.SetChangedCallback([](const WifiCredentials &, void *c) { ((Fixture *)c)->wifi_changes++; }, this);
 
             store.Init(env.Host(), capacity, COMP_KEY_SIZE, COMP_KEY_SIZE);
             store.SetListener(&layout);
@@ -98,10 +105,11 @@ namespace
                 f->status_sets++;
             };
             h.restart          = [](void *c) { ((Fixture *)c)->restarts++; };
+            h.wifi_status      = [](WifiStatus *st, void *c) { *st = ((Fixture *)c)->wifi_st; };
             h.fw_version       = "1.2.3";
             h.serial           = "ABCDEF";
             h.ctx              = this;
-            proto.Init(&store, &layout, &config, h);
+            proto.Init(&store, &layout, &config, &wifi, h);
         }
 
         static void Changed(int page, uint32_t, void *c)
@@ -1004,4 +1012,248 @@ Fact("Protocol Config Upload Is Independent Of Image Uploads")
     Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 2000)).Status() == ST_OK);
     Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_OK);
     Assert(f.store.IsLive(2));
+}
+
+// ===========================================================================
+// Wi-Fi (docs/wifi.md)
+// ===========================================================================
+
+namespace
+{
+    Bytes WifiSet(const char *ssid, const char *pass)
+    {
+        Bytes p;
+        p.U8((uint32_t)strlen(ssid)).U8((uint32_t)strlen(pass)).Raw(ssid, strlen(ssid)).Raw(pass, strlen(pass));
+        return p;
+    }
+
+    // Both lengths as given, whatever follows
+    Bytes WifiSetRaw(uint32_t ssid_len, uint32_t pass_len, const void *data = "", size_t n = 0)
+    {
+        Bytes p;
+        p.U8(ssid_len).U8(pass_len).Raw(data, n);
+        return p;
+    }
+
+    uint32_t WifiFlag(Fixture &f) { return InfoFlags(f) & INFO_FLAG_WIFI_CREDENTIALS; }
+}
+
+Fact("Protocol Wifi Message Types")
+{
+    Assert(MSG_WIFI_SET == 0x40 && MSG_WIFI_GET == 0x41 && MSG_WIFI_STATUS == 0x42 && EVT_WIFI_STATE == 0x84);
+    Assert(INFO_FLAG_WIFI_CREDENTIALS == 0x0002);
+}
+
+Fact("Protocol Wifi Set Stores And Get Reads Back")
+{
+    Fixture f;
+    Msg g = f.Request(MSG_WIFI_GET);
+    Assert(g.Status() == ST_OK && g.len == 4 + 2 && g.U8At(4) == 0 && g.U8At(5) == 0);      // none stored
+
+    Assert(f.Request(MSG_WIFI_SET, WifiSet("Home", "password1")).Status() == ST_OK);
+    Assert(f.wifi_storage.saves == 1 && f.wifi_changes == 1);
+    g = f.Request(MSG_WIFI_GET);
+    Assert(g.Status() == ST_OK && g.len == 4 + 2 + 4 + 9);
+    Assert(g.U8At(4) == 4 && g.U8At(5) == 9);
+    Assert(!memcmp(g.data + 6, "Home", 4) && !memcmp(g.data + 10, "password1", 9));
+
+    // Open network
+    Assert(f.Request(MSG_WIFI_SET, WifiSet("Cafe", "")).Status() == ST_OK);
+    g = f.Request(MSG_WIFI_GET);
+    Assert(g.len == 4 + 2 + 4 && g.U8At(4) == 4 && g.U8At(5) == 0 && !memcmp(g.data + 6, "Cafe", 4));
+}
+
+Fact("Protocol Wifi Set Same Credentials Changes Nothing")
+{
+    Fixture f;
+    f.Request(MSG_WIFI_SET, WifiSet("Home", "password1"));
+    Assert(f.Request(MSG_WIFI_SET, WifiSet("Home", "password1")).Status() == ST_OK);
+    Assert(f.wifi_storage.saves == 1 && f.wifi_changes == 1);
+}
+
+Fact("Protocol Wifi Empty Ssid Clears")
+{
+    Fixture f;
+    f.Request(MSG_WIFI_SET, WifiSet("Home", "password1"));
+    Assert(f.Request(MSG_WIFI_SET, WifiSetRaw(0, 0)).Status() == ST_OK);
+    Assert(f.wifi_storage.erases == 1 && f.wifi_changes == 2);
+    Msg g = f.Request(MSG_WIFI_GET);
+    Assert(g.len == 6 && g.U8At(4) == 0 && g.U8At(5) == 0);
+    Assert(WifiFlag(f) == 0);
+}
+
+Fact("Protocol Wifi Set Argument Errors Change Nothing")
+{
+    Fixture f;
+    f.Request(MSG_WIFI_SET, WifiSet("Home", "password1"));
+
+    char ssid[40], pass[70];
+    memset(ssid, 'a', sizeof(ssid));
+    memset(pass, 'b', sizeof(pass));
+    Assert(f.Request(MSG_WIFI_SET, WifiSetRaw(33, 0, ssid, 33)).Status() == ST_BAD_ARG);            // ssid over 32
+    Assert(f.Request(MSG_WIFI_SET, WifiSetRaw(1, 1, "ab", 2)).Status() == ST_BAD_ARG);               // password 1..7
+    Assert(f.Request(MSG_WIFI_SET, WifiSetRaw(1, 7, "abcdefgh", 8)).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_WIFI_SET, WifiSetRaw(1, 64, pass, 65)).Status() == ST_BAD_ARG);             // over 63
+    Assert(f.Request(MSG_WIFI_SET, WifiSetRaw(0, 8, pass, 8)).Status() == ST_BAD_ARG);               // password, no ssid
+    Assert(f.Request(MSG_WIFI_SET, WifiSetRaw(3, 0, "a\0b", 3)).Status() == ST_BAD_ARG);             // NUL in ssid
+    Assert(f.Request(MSG_WIFI_SET, WifiSetRaw(3, 9, "abcpass\0word", 12)).Status() == ST_BAD_ARG);   // NUL in password
+
+    Msg g = f.Request(MSG_WIFI_GET);
+    Assert(g.U8At(4) == 4 && !memcmp(g.data + 6, "Home", 4));
+    Assert(f.wifi_storage.saves == 1 && f.wifi_storage.erases == 0 && f.wifi_changes == 1);
+}
+
+Fact("Protocol Wifi Set Length Errors")
+{
+    Fixture f;
+    Assert(f.Request(MSG_WIFI_SET).Status() == ST_BAD_LENGTH);                                       // no lengths
+    Bytes one;
+    one.U8(4);
+    Assert(f.Request(MSG_WIFI_SET, one).Status() == ST_BAD_LENGTH);                                  // one length
+    Assert(f.Request(MSG_WIFI_SET, WifiSetRaw(4, 9, "Homepass", 8)).Status() == ST_BAD_LENGTH);      // shorter than they say
+    Assert(f.Request(MSG_WIFI_SET, WifiSetRaw(4, 0, "Hom", 3)).Status() == ST_BAD_LENGTH);
+    Assert(!f.wifi.Stored() && f.wifi_storage.saves == 0);
+}
+
+Fact("Protocol Wifi Set Ignores Trailing Bytes And Works In Pieces")
+{
+    Fixture f;
+    Bytes p = WifiSet("Home", "password1");
+    p.U32(0xDEADBEEF);
+    Assert(f.Request(MSG_WIFI_SET, p, 3).Status() == ST_OK);
+    Assert(f.wifi.Stored() && f.wifi.Get().ssid_len == 4 && f.wifi.Get().pass_len == 9);
+}
+
+Fact("Protocol Wifi Set Reports A Storage Failure")
+{
+    Fixture f;
+    f.Request(MSG_WIFI_SET, WifiSet("Home", "password1"));
+    f.wifi_storage.fail_save = true;
+    Assert(f.Request(MSG_WIFI_SET, WifiSet("Other", "password2")).Status() == ST_IO_ERROR);
+    Msg g = f.Request(MSG_WIFI_GET);
+    Assert(g.U8At(4) == 4 && !memcmp(g.data + 6, "Home", 4));                                        // old ones stay
+    Assert(f.wifi_changes == 1);
+}
+
+Fact("Protocol Wifi Get Info Flag Follows The Credentials")
+{
+    Fixture f;
+    Assert(WifiFlag(f) == 0);
+    f.Request(MSG_WIFI_SET, WifiSet("Home", "password1"));
+    Assert(WifiFlag(f) == INFO_FLAG_WIFI_CREDENTIALS);
+    Assert((InfoFlags(f) & INFO_FLAG_BACKLIGHT) != 0);                                               // independent of bit 0
+    f.Request(MSG_SET_BACKLIGHT, OnByte(0));
+    Assert(InfoFlags(f) == INFO_FLAG_WIFI_CREDENTIALS);
+    f.Request(MSG_WIFI_SET, WifiSetRaw(0, 0));
+    Assert(InfoFlags(f) == 0);
+}
+
+Fact("Protocol Wifi Get Info Flag Is Set For Credentials Stored Before Boot")
+{
+    FakeWifiStorage storage;
+    WifiCredentials c;
+    Assert(wifi_credentials_make(&c, (const uint8_t *)"Home", 4, (const uint8_t *)"password1", 9));
+    uint8_t blob[WIFI_BLOB_MAX];
+    storage.Preload(blob, wifi_blob_encode(c, blob));
+    Fixture f;
+    f.wifi.Init(storage.Host());
+    Assert(WifiFlag(f) == INFO_FLAG_WIFI_CREDENTIALS);
+}
+
+Fact("Protocol Reset And Reset Stream Leave The Wifi Credentials Alone")
+{
+    Fixture f;
+    f.Request(MSG_WIFI_SET, WifiSet("Home", "password1"));
+    Assert(f.Request(MSG_RESET).Status() == ST_OK);
+    f.proto.ResetStream();
+    Assert(f.wifi.Stored() && WifiFlag(f) == INFO_FLAG_WIFI_CREDENTIALS);
+    Assert(f.wifi_changes == 1 && f.wifi_storage.erases == 0);
+    Msg g = f.Request(MSG_WIFI_GET);
+    Assert(g.U8At(4) == 4 && !memcmp(g.data + 6, "Home", 4));
+}
+
+Fact("Protocol Wifi Status Layout")
+{
+    Fixture f;
+    f.wifi_st.state  = (uint8_t)WifiState::Connected;
+    f.wifi_st.reason = 201;
+    f.wifi_st.rssi   = -57;
+    f.wifi_st.ip[0] = 192; f.wifi_st.ip[1] = 168; f.wifi_st.ip[2] = 1; f.wifi_st.ip[3] = 50;
+    for (int i = 0; i < 6; i++)
+        f.wifi_st.mac[i] = (uint8_t)(0xA0 + i);
+
+    Msg m = f.Request(MSG_WIFI_STATUS);
+    Assert(m.Status() == ST_OK && m.len == 4 + 14);
+    Assert(m.U8At(4) == 2);                                     // CONNECTED
+    Assert(m.U8At(5) == 201);                                   // reason
+    Assert((int8_t)m.U8At(6) == -57);                           // rssi
+    Assert(m.U8At(7) == 0);                                     // reserved
+    Assert(m.U8At(8) == 192 && m.U8At(9) == 168 && m.U8At(10) == 1 && m.U8At(11) == 50);
+    for (int i = 0; i < 6; i++)
+        Assert(m.U8At(12 + i) == (uint32_t)(0xA0 + i));
+}
+
+Fact("Protocol Wifi Status Without Credentials")
+{
+    Fixture f;
+    Msg m = f.Request(MSG_WIFI_STATUS);
+    Assert(m.Status() == ST_OK && m.len == 4 + 14);
+    for (int i = 4; i < m.len; i++)
+        Assert(m.U8At(i) == 0);                                 // NO_CREDENTIALS, everything else zero
+}
+
+Fact("Protocol Wifi Status And Get Ignore A Payload")
+{
+    Fixture f;
+    Bytes p;
+    p.U32(1);
+    Assert(f.Request(MSG_WIFI_STATUS, p).Status() == ST_OK);
+    Assert(f.Request(MSG_WIFI_GET, p).Status() == ST_OK);
+}
+
+Fact("Protocol Wifi State Event Layout")
+{
+    Fixture f;
+    const uint8_t ip[4] = { 10, 0, 0, 7 };
+    f.proto.PostWifiState(WifiState::Connected, ip);
+    Assert(f.proto.SendEvents());
+    List<Msg> e = f.Read();
+    Assert(e.GetCount() == 1);
+    Assert(e[0].type == EVT_WIFI_STATE && e[0].type == 0x84 && e[0].flags == PROTO_FLAG_EVENT);
+    Assert(e[0].len == 8);
+    Assert(e[0].U8At(0) == 2 && e[0].U8At(1) == 0 && e[0].U8At(2) == 0 && e[0].U8At(3) == 0);
+    Assert(e[0].U8At(4) == 10 && e[0].U8At(5) == 0 && e[0].U8At(6) == 0 && e[0].U8At(7) == 7);
+
+    const uint8_t none[4] = {};
+    f.proto.PostWifiState(WifiState::Retrying, none);
+    f.proto.SendEvents();
+    e = f.Read();
+    Assert(e[0].U8At(0) == 3 && e[0].U8At(4) == 0);
+}
+
+Fact("Protocol Wifi State Event Reports Overflow")
+{
+    Fixture f;
+    const uint8_t ip[4] = {};
+    for (int i = 0; i < PROTO_EVENT_QUEUE + 3; i++)
+        f.proto.PostWifiState(i & 1 ? WifiState::Connected : WifiState::Retrying, ip);
+    f.proto.SendEvents();
+    List<Msg> e = f.Read();
+    Assert(e.GetCount() == PROTO_EVENT_QUEUE);
+    Assert(e[0].U8At(1) == 1);                                  // lost flag, in this event's own layout
+    Assert(e[1].U8At(1) == 0);
+}
+
+Fact("Protocol Wifi State Event Queues In Order With The Others")
+{
+    Fixture f;
+    const uint8_t ip[4] = { 1, 2, 3, 4 };
+    f.proto.PostKey(0, 3, KEY_ACTION_DOWN, 10);
+    f.proto.PostWifiState(WifiState::Connecting, ip);
+    f.proto.PostPageChanged(1, PAGE_CAUSE_USER);
+    f.proto.SendEvents();
+    List<Msg> e = f.Read();
+    Assert(e.GetCount() == 3);
+    Assert(e[0].type == EVT_KEY && e[1].type == EVT_WIFI_STATE && e[2].type == EVT_PAGE_CHANGED);
+    Assert(e[1].seq == (uint16_t)(e[0].seq + 1));
 }

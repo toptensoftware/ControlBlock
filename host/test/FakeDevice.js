@@ -4,10 +4,10 @@
 
 import { MessageParser, encodeMessage, Writer, Reader, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION, crc32 } from "../src/protocol.js";
 
-export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true, config } = {})
+export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true, wifiCredentials = false, config } = {})
 {
     const w = new Writer(128);
-    w.u16(PROTOCOL_VERSION).u16(backlight ? InfoFlags.BACKLIGHT : 0).u32(maxPayload).u32(5000000).u32(1234).u32(3).u32(4000000);
+    w.u16(PROTOCOL_VERSION).u16((backlight ? InfoFlags.BACKLIGHT : 0) | (wifiCredentials ? InfoFlags.WIFI_CREDENTIALS : 0)).u32(maxPayload).u32(5000000).u32(1234).u32(3).u32(4000000);
     w.u16(800).u16(480).u8(5).u8(3).u8(8).u8(pageCount);
     w.u16(128).u16(128).u16(80).u16(80).u8(0);
     for (const s of ["1.0", "SERIAL1"]) {
@@ -25,8 +25,11 @@ export class FakeDevice
     //   latencyMs: how long each CONFIG_DATA takes to answer; failAt: a chunk offset that gets IO_ERROR
     //   After a good commit the device "restarts": the connection drops, and (if
     //   restartMs is set) it comes back after that long, with the config in GET_INFO.
-    constructor({ maxPayload = 8192, handler, backlight = true, config } = {})
+    // wifi: emulate the Wi-Fi messages (docs/wifi.md): { ssid, pass } already stored (strings),
+    //   and `status` ({ state, reason, rssi, ip, mac }) is what WIFI_STATUS reports (settable by tests)
+    constructor({ maxPayload = 8192, handler, backlight = true, config, wifi } = {})
     {
+        this.wifi = wifi ? { ssid: "", pass: "", status: { state: 0, reason: 0, rssi: 0, ip: [0, 0, 0, 0], mac: [0, 0, 0, 0, 0, 0] }, ...wifi } : null;
         this.config = config ? {
             capacity: 1 << 20, latencyMs: 0, commitMs: 0, restartMs: 0, failAt: -1,
             stored: null,               // { size, crc } once committed
@@ -74,7 +77,9 @@ export class FakeDevice
                 continue;
             }
             const r = msg.type === Msg.GET_INFO
-                ? { status: Status.OK, data: infoPayload({ maxPayload: this.maxPayload, backlight: this.backlight, config: this.config && { capacity: this.config.capacity, size: this.config.stored?.size ?? 0, crc: this.config.stored?.crc ?? 0 } }) }
+                ? { status: Status.OK, data: infoPayload({ maxPayload: this.maxPayload, backlight: this.backlight, wifiCredentials: !!this.wifi?.ssid, config: this.config && { capacity: this.config.capacity, size: this.config.stored?.size ?? 0, crc: this.config.stored?.crc ?? 0 } }) }
+                : this.wifi && msg.type >= Msg.WIFI_SET && msg.type <= Msg.WIFI_STATUS
+                    ? this._wifi(msg)
                 : msg.type === Msg.PING
                     ? { status: Status.OK, data: msg.payload }
                     : this.handler(msg);
@@ -82,6 +87,25 @@ export class FakeDevice
                 this.respond(msg, r.status, r.data);
         }
         return { status: "ok", bytesWritten: data.length };
+    }
+
+    // The Wi-Fi messages, as the firmware does them (the rules are checked by the firmware's own tests)
+    _wifi(msg)
+    {
+        const w = this.wifi, p = msg.payload;
+        if (msg.type === Msg.WIFI_SET) {
+            if (p.length < 2 || p.length < 2 + p[0] + p[1])
+                return { status: Status.BAD_LENGTH, data: new Uint8Array(0) };
+            w.ssid = new TextDecoder().decode(p.subarray(2, 2 + p[0]));
+            w.pass = new TextDecoder().decode(p.subarray(2 + p[0], 2 + p[0] + p[1]));
+            return { status: Status.OK, data: new Uint8Array(0) };
+        }
+        if (msg.type === Msg.WIFI_GET) {
+            const ssid = new TextEncoder().encode(w.ssid), pass = new TextEncoder().encode(w.pass);
+            return { status: Status.OK, data: new Writer(2 + ssid.length + pass.length).u8(ssid.length).u8(pass.length).raw(ssid).raw(pass).done() };
+        }
+        const st = w.status;
+        return { status: Status.OK, data: new Writer(14).u8(st.state).u8(st.reason).u8(st.rssi & 0xFF).u8(0).raw(Uint8Array.from(st.ip)).raw(Uint8Array.from(st.mac)).done() };
     }
 
     // The config upload, as the firmware does it. Answers (possibly later) itself.

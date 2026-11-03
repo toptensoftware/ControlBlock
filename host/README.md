@@ -46,5 +46,10 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: Ke
   - It resolves `{ uploaded: false }` and sends nothing if the device already has exactly this blob (`force: true` sends it anyway).
   - A failure (`ControlBlockError`: `NO_SPACE`, `BAD_CRC`, `IO_ERROR`…) leaves the device with no config until the next good upload.
   - `crc32(bytes)` (zlib's) is exported, as are `info.configCapacity`, `configSize` and `configCrc`.
+- **Wi-Fi** ([`docs/wifi.md`](../docs/wifi.md)): works in any mode, and `reset()` leaves it alone.
+  - `setWifi(ssid, password)` stores a network and connects in the background; `clearWifi()` forgets it and turns Wi-Fi off. A missing password is an open network. A bad length or a NUL throws before anything is sent (ssid 32 bytes, password 8 to 63).
+  - `getWifi()` returns `{ ssid, password, ssidBytes }` (the password in clear text). `info.wifiCredentials` says whether any are stored.
+  - `wifiStatus()` returns `{ state, stateName, reason, rssi, ip, mac }` (`ip` is null unless connected), and a `"wifiState"` event ({ state, stateName, lost, ip }) fires when it changes.
+  - `node demo/wifi.js set <ssid> [password] | get | clear | status | wait [seconds]`
 - **`freeImages(ids)`:** the ID goes at once, and the memory once no key uses it.
 - **Browsers:** `ControlBlock` and `src/protocol.js` work on any WebUSB `USBDevice`, so you can pass `navigator.usb`'s. `src/images.js` is Node only (it uses sharp and the rle565 encoder).

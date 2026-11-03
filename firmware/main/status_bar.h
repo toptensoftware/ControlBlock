@@ -33,8 +33,17 @@ typedef struct {
 // The style from ui.bin (layout in ui_assets.h)
 status_bar_style_t status_bar_style(const BLOBPACK *ui);
 
-// Draw the bar into `px` (STATUS_BAR_PIXELS): background, text vertically
-// centred on its cap height, pager pills centred.
+// Most rows status_bar_render_rows() is asked for at once: the size of the
+// device's internal scratch band (SCREEN_W * this * 2 bytes)
+#define STATUS_BAR_BAND_ROWS_MAX  4
+
+// Draw rows y0..y0+rows-1 of the bar into `px` (SCREEN_W * rows pixels), the
+// same pixels status_bar_render() puts there. The device renders a band into
+// internal RAM and copies it to the PSRAM bar in a fill gap.
+void status_bar_render_rows(uint16_t *px, int y0, int rows, const status_bar_style_t *style, const status_bar_content_t *content);
+
+// Draw the whole bar into `px` (STATUS_BAR_PIXELS): background, text
+// vertically centred on its cap height, pager pills centred.
 void status_bar_render(uint16_t *px, const status_bar_style_t *style, const status_bar_content_t *content);
 
 // The bar's properties and its two buffers. Setters may be called from any

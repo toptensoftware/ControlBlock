@@ -175,6 +175,57 @@ Fact("StatusBar Text And Pager Together")
 }
 
 // ---------------------------------------------------------------------------
+// Drawing in bands: the device renders a few rows at a time into a small
+// internal buffer and copies them to the PSRAM bar in fill gaps
+
+namespace
+{
+    uint16_t banded[W * H];
+
+    // Draw the bar `rows` rows at a time through a scratch buffer
+    void RenderBanded(int rows, const status_bar_content_t *content)
+    {
+        static BLOBPACK *ui = LoadAsset("ui.bin");
+        status_bar_style_t style = status_bar_style(ui);
+        static uint16_t scratch[W * STATUS_BAR_BAND_ROWS_MAX];
+        memset(banded, 0xAB, sizeof(banded));       // anything not drawn shows
+        for (int y = 0; y < H; y += rows) {
+            int n = rows < H - y ? rows : H - y;
+            status_bar_render_rows(scratch, y, n, &style, content);
+            memcpy(banded + y * W, scratch, n * W * sizeof(uint16_t));
+        }
+    }
+}
+
+Fact("StatusBar Bands Match The Whole Bar")
+{
+    static BLOBPACK *ui = LoadAsset("ui.bin");
+    status_bar_style_t style = status_bar_style(ui);
+    status_bar_content_t content = {};
+    strcpy(content.left, "AppleTV");
+    strcpy(content.right, "12.35am");
+    content.pill_count = 4;
+    content.selected_pill = 2;
+
+    status_bar_render(px, &style, &content);
+    int sizes[] = { 1, 2, 3, 4, 7, STATUS_BAR_BAND_ROWS_MAX };
+    for (int rows : sizes) {
+        RenderBanded(rows, &content);
+        Assert(memcmp(px, banded, sizeof(px)) == 0);
+    }
+}
+
+Fact("StatusBar Bands Match When Empty")
+{
+    static BLOBPACK *ui = LoadAsset("ui.bin");
+    status_bar_style_t style = status_bar_style(ui);
+    status_bar_content_t content = {};
+    status_bar_render(px, &style, &content);
+    RenderBanded(2, &content);
+    Assert(memcmp(px, banded, sizeof(px)) == 0);
+}
+
+// ---------------------------------------------------------------------------
 // Properties and buffers
 
 namespace

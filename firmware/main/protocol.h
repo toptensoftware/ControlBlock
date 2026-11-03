@@ -8,7 +8,8 @@
 // The standalone config upload is ConfigStore's (config_store.h).
 //
 // Receive(), ResetStream(), SendEvents() and Idle() run on one task (the
-// protocol task). PostKey(), PostPageChanged() and PostWake() are safe from any task.
+// protocol task). PostKey(), PostPageChanged(), PostWake() and PostWifiState()
+// are safe from any task.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -16,6 +17,8 @@
 #include "image_store.h"
 #include "key_layout.h"
 #include "config_store.h"
+#include "wifi_credentials.h"
+#include "wifi_state.h"
 
 #define PROTO_VERSION        1
 #define PROTO_MAGIC          0x4243         // "CB" as bytes 43 42
@@ -47,11 +50,15 @@ enum : uint8_t
     MSG_CONFIG_BEGIN   = 0x30,
     MSG_CONFIG_DATA    = 0x31,
     MSG_CONFIG_COMMIT  = 0x32,
+    MSG_WIFI_SET       = 0x40,
+    MSG_WIFI_GET       = 0x41,
+    MSG_WIFI_STATUS    = 0x42,
 
     EVT_KEY            = 0x80,
     EVT_PAGE_CHANGED   = 0x81,
     EVT_WAKE           = 0x82,
     EVT_HEARTBEAT      = 0x83,
+    EVT_WIFI_STATE     = 0x84,
 };
 
 // Heartbeat: an event about once a second, so the host's bulk IN read always
@@ -62,8 +69,9 @@ enum : uint8_t
 #define PROTO_HEARTBEAT_MS   1000
 #define PROTO_HEARTBEAT_ROOM 1024
 
-// GET_INFO flags (docs/backlight.md)
+// GET_INFO flags (docs/backlight.md, docs/wifi.md)
 #define INFO_FLAG_BACKLIGHT  0x0001         // the backlight is on
+#define INFO_FLAG_WIFI_CREDENTIALS 0x0002   // Wi-Fi credentials are stored
 
 // Response status
 enum : uint16_t
@@ -128,6 +136,10 @@ struct ProtocolHost
     // Should give USB a moment to send it first; need not return.
     void (*restart)(void *ctx);
 
+    // WIFI_STATUS: the connection state now (the credentials themselves are
+    // WifiConfig's). Called without the lock.
+    void (*wifi_status)(WifiStatus *out, void *ctx);
+
     const char *fw_version;
     const char *serial;
     void       *ctx;
@@ -136,7 +148,7 @@ struct ProtocolHost
 class Protocol
 {
 public:
-    void Init(ImageStore *store, KeyLayout *layout, ConfigStore *config, const ProtocolHost &host);
+    void Init(ImageStore *store, KeyLayout *layout, ConfigStore *config, WifiConfig *wifi, const ProtocolHost &host);
 
     // Bytes from the host (bulk OUT), in order, in any pieces. Complete
     // messages are handled as they arrive and their responses flushed.
@@ -155,6 +167,8 @@ public:
     void PostKey(int page, int key, int action, uint32_t time_ms);
     void PostPageChanged(int page, int cause);
     void PostWake(uint32_t time_ms);
+    // The Wi-Fi state or address changed (`ip`: a.b.c.d while Connected, else zeros)
+    void PostWifiState(WifiState state, const uint8_t ip[4]);
 
     // Protocol task: send queued events that fit in write_space(). Returns
     // true if any were sent.
@@ -204,12 +218,16 @@ private:
     void OnConfigBegin();
     void OnConfigData();
     void OnConfigCommit();
+    void OnWifiSet();
+    void OnWifiGet();
+    void OnWifiStatus();
     bool ReadIds(uint16_t *count);
     void PostEvent(const Event &e);
 
     ImageStore  *m_store = nullptr;
     KeyLayout   *m_layout = nullptr;
     ConfigStore *m_config = nullptr;
+    WifiConfig  *m_wifi = nullptr;
     ProtocolHost m_host = {};
 
     // Parser

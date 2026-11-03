@@ -4,6 +4,7 @@
 #include "esp32s3/rom/cache.h"
 #include "color.h"
 #include "compositor.h"
+#include "fill_gap.h"
 #include "screen_view.h"
 #include "status_bar.h"
 #include "screen.h"
@@ -108,12 +109,30 @@ IRAM_ATTR static void latch_frame(void)
 // view this picks whichever covers more of the screen.
 IRAM_ATTR static void preload_chunk(int y)
 {
+    // The status bar is in PSRAM too. Chunk 0 of the next frame (y past the
+    // end) reads s_status, which is what the frame will latch.
+    int s0 = y >= DISPLAY_V_RES ? 0 : y;
+    int s1 = s0 + DISPLAY_BOUNCE_BUFFER_LINES;
+    if (s1 > SCREEN_STATUS_H)
+        s1 = SCREEN_STATUS_H;
+
     int r0 = y - SCREEN_PAGE_TOP;
     int r1 = r0 + DISPLAY_BOUNCE_BUFFER_LINES;
     if (r0 < 0)
         r0 = 0;
     if (r1 > SCREEN_PAGE_H)
         r1 = SCREEN_PAGE_H;
+    if (y >= DISPLAY_V_RES)
+        r0 = r1 = 0;
+
+    // Only one range can be preloaded: the status bar's rows if the chunk
+    // has at least as many of them as page rows
+    if (s0 < s1 && s1 - s0 >= r1 - r0) {
+        const uint16_t *bar = y >= DISPLAY_V_RES ? s_status : s_status_frame;
+        if (bar)
+            Cache_Start_DCache_Preload((uint32_t)(bar + s0 * SCREEN_W), (uint32_t)((s1 - s0) * SCREEN_W * sizeof(uint16_t)), 0);
+        return;
+    }
     if (r0 >= r1)
         return;
 
@@ -172,15 +191,15 @@ IRAM_ATTR static bool fill_lines(uint16_t *dest, int y, int count, void *ctx)
     }
 
 #if SCREEN_CACHE_PRELOAD
-    // y is now the first line of the next chunk. The view only changes at
-    // frame start, so the preload is right unless the next chunk starts a
-    // new frame (y == DISPLAY_V_RES), which is the status bar anyway.
-    if (y < DISPLAY_V_RES)
-        preload_chunk(y);
+    // y is now the first line of the next chunk (DISPLAY_V_RES: the next
+    // frame's first, all status bar). The view only changes at frame start,
+    // so the page preload is right.
+    preload_chunk(y);
 #endif
 
-    // The gap before the next fill is when the compositor writes PSRAM
-    comp_fill_done();
+    // The gap before the next fill is when the compositor and the status bar
+    // write PSRAM
+    fill_gap_done();
 
     uint32_t cycles = esp_cpu_get_cycle_count() - start;
     if (cycles > s_max_fill_cycles)
@@ -229,6 +248,11 @@ void screen_set_scroll(int scroll_px)
 void screen_set_status_bar(const uint16_t *px)
 {
     s_status = px;
+}
+
+bool screen_two_pages_in_view(void)
+{
+    return s_view.offset != 0;
 }
 
 void screen_note_status_drawing(bool drawing)

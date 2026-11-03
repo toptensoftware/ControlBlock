@@ -117,12 +117,24 @@ namespace
         return ST_BAD_ARG;
     }
 
+    // Which byte of an event's data carries the overflow flag (-1: none)
+    int lost_byte(uint8_t type)
+    {
+        switch (type) {
+        case EVT_KEY:        return 3;
+        case EVT_WAKE:       return 0;
+        case EVT_WIFI_STATE: return 1;
+        }
+        return -1;
+    }
+
     void put16(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
     void put32(uint8_t *p, uint32_t v) { put16(p, v); put16(p + 2, v >> 16); }
 }
 
-void Protocol::Init(ImageStore *store, KeyLayout *layout, ConfigStore *config, const ProtocolHost &host)
+void Protocol::Init(ImageStore *store, KeyLayout *layout, ConfigStore *config, WifiConfig *wifi, const ProtocolHost &host)
 {
+    m_wifi   = wifi;
     m_store  = store;
     m_layout = layout;
     m_config = config;
@@ -340,6 +352,9 @@ void Protocol::Dispatch()
     case MSG_CONFIG_BEGIN:   OnConfigBegin();  break;
     case MSG_CONFIG_DATA:    OnConfigData();   break;
     case MSG_CONFIG_COMMIT:  OnConfigCommit(); break;
+    case MSG_WIFI_SET:       OnWifiSet();      break;
+    case MSG_WIFI_GET:       OnWifiGet();      break;
+    case MSG_WIFI_STATUS:    OnWifiStatus();   break;
     default:                 Respond(ST_UNKNOWN_TYPE); break;
     }
 }
@@ -360,7 +375,8 @@ void Protocol::OnGetInfo()
     uint8_t out[64 + 2 * 256];
     Writer w = { out, sizeof(out), 0 };
     w.U16(PROTO_VERSION);
-    w.U16(m_host.backlight_on(m_host.ctx) ? INFO_FLAG_BACKLIGHT : 0);
+    w.U16((m_host.backlight_on(m_host.ctx) ? INFO_FLAG_BACKLIGHT : 0)
+          | (m_wifi->Stored() ? INFO_FLAG_WIFI_CREDENTIALS : 0));
     w.U32(PROTO_MAX_PAYLOAD);
     w.U32(st.capacity);
     w.U32(st.used);
@@ -551,6 +567,56 @@ void Protocol::OnConfigCommit()
         m_restart = true;
 }
 
+// u8 ssid_len, u8 pass_len, ssid, pass. Empty ssid clears.
+void Protocol::OnWifiSet()
+{
+    Reader r = { m_buf, m_len, 0 };
+    if (!r.Has(2))
+        return Respond(ST_BAD_LENGTH);
+    uint32_t ssid_len = r.U8();
+    uint32_t pass_len = r.U8();
+    if (!r.Has(ssid_len + pass_len))
+        return Respond(ST_BAD_LENGTH);
+
+    switch (m_wifi->Set(m_buf + 2, ssid_len, m_buf + 2 + ssid_len, pass_len)) {
+    case WifiResult::Ok:      return Respond(ST_OK);
+    case WifiResult::BadArg:  return Respond(ST_BAD_ARG);
+    case WifiResult::IoError: return Respond(ST_IO_ERROR);
+    }
+    Respond(ST_BAD_ARG);
+}
+
+void Protocol::OnWifiGet()
+{
+    const WifiCredentials &c = m_wifi->Get();
+    uint8_t out[2 + WIFI_SSID_MAX + WIFI_PASS_MAX];
+    Writer w = { out, sizeof(out), 0 };
+    w.U8(c.ssid_len);
+    w.U8(c.pass_len);
+    for (int i = 0; i < c.ssid_len; i++)
+        w.U8((uint8_t)c.ssid[i]);
+    for (int i = 0; i < c.pass_len; i++)
+        w.U8((uint8_t)c.pass[i]);
+    Respond(ST_OK, out, w.len);
+}
+
+void Protocol::OnWifiStatus()
+{
+    WifiStatus st = {};
+    m_host.wifi_status(&st, m_host.ctx);
+    uint8_t out[14];
+    Writer w = { out, sizeof(out), 0 };
+    w.U8(st.state);
+    w.U8(st.reason);
+    w.U8((uint8_t)st.rssi);
+    w.U8(0);
+    for (int i = 0; i < 4; i++)
+        w.U8(st.ip[i]);
+    for (int i = 0; i < 6; i++)
+        w.U8(st.mac[i]);
+    Respond(ST_OK, out, w.len);
+}
+
 // ===========================================================================
 // Events
 // ===========================================================================
@@ -589,6 +655,12 @@ void Protocol::PostWake(uint32_t time_ms)
     PostEvent(e);
 }
 
+void Protocol::PostWifiState(WifiState state, const uint8_t ip[4])
+{
+    Event e = { EVT_WIFI_STATE, 8, { (uint8_t)state, 0, 0, 0, ip[0], ip[1], ip[2], ip[3] } };
+    PostEvent(e);
+}
+
 bool Protocol::SendEvents()
 {
     bool sent = false;
@@ -602,9 +674,10 @@ bool Protocol::SendEvents()
         Event e = m_events[m_ev_head];
         m_ev_head = (m_ev_head + 1) % PROTO_EVENT_QUEUE;
         m_ev_count--;
-        // The lost flag rides on the next KEY or WAKE (the byte differs)
-        if ((e.type == EVT_KEY || e.type == EVT_WAKE) && m_ev_lost) {
-            e.data[e.type == EVT_KEY ? 3 : 0] |= 1;
+        // The lost flag rides on the next event that has one (the byte differs)
+        int lost_at = lost_byte(e.type);
+        if (lost_at >= 0 && m_ev_lost) {
+            e.data[lost_at] |= 1;
             m_ev_lost = false;
         }
         m_ev_lock.Exit();

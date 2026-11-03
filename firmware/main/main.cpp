@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "nvs_flash.h"
 #include "i2c.h"
 #include "ch422g.h"
 #include "color.h"
@@ -17,7 +18,9 @@
 #include "compositor.h"
 #include "config_boot.h"
 #include "model.h"
+#include "heap_log.h"
 #include "host_link.h"
+#include "wifi.h"
 #include "screen.h"
 #include "swipe.h"
 #include "status.h"
@@ -314,15 +317,20 @@ static esp_err_t init_status_bar(void)
     return status_init(s_ui);
 }
 
-// Internal RAM is the scarce one (USB, Wi-Fi and the display all want it)
-static void log_heap(const char *when)
+// NVS holds the Wi-Fi credentials (and the driver's PHY calibration). If it is
+// full or from a newer version, it is erased (the credentials are lost; the
+// host can set them again). A failure that remains only costs Wi-Fi: the
+// credentials can't be stored then, and the device boots as usual.
+static void init_nvs(void)
 {
-    ESP_LOGI(TAG, "heap %s: internal %u free (largest %u, min ever %u), PSRAM %u free",
-             when,
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS: %s, erasing it", esp_err_to_name(err));
+        nvs_flash_erase();
+        err = nvs_flash_init();
+    }
+    if (err != ESP_OK)
+        ESP_LOGE(TAG, "NVS init failed: %s (Wi-Fi settings can't be stored)", esp_err_to_name(err));
 }
 
 static void on_touched(uint8_t id, TOUCH_EVENT_TYPE type, uint16_t x, uint16_t y)
@@ -335,15 +343,23 @@ static void on_touched(uint8_t id, TOUCH_EVENT_TYPE type, uint16_t x, uint16_t y
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "ControlBlock starting");
+    log_heap(TAG, "at start");
 
+    init_nvs();
+    log_heap(TAG, "after NVS");
     i2c_init();
     ESP_ERROR_CHECK(ch422g_init());
     ESP_ERROR_CHECK(init_status_bar());
+    log_heap(TAG, "after the status bar");
 
     ESP_ERROR_CHECK(comp_init(model_get_page, model_is_retired, NULL));
+    log_heap(TAG, "after the compositor");
     config_boot_load();                     // before the store sizes itself and before the display runs
+    log_heap(TAG, "after the config load");
     ESP_ERROR_CHECK(model_init());
+    log_heap(TAG, "after the model");
     ESP_ERROR_CHECK(screen_init(1));        // the layout starts with one empty page
+    log_heap(TAG, "after the screen (display driver)");
     config_boot_apply();                    // the stored config's Home, if any
     ESP_ERROR_CHECK(display_enable_backlight(true));
 
@@ -354,9 +370,14 @@ extern "C" void app_main(void)
 #endif
 
     ESP_ERROR_CHECK(swipe_init());
+    log_heap(TAG, "after swipe");
     ESP_ERROR_CHECK(touch_init(on_touched));
+    log_heap(TAG, "after touch");
+    wifi_init();                            // loads the credentials; no radio yet
     ESP_ERROR_CHECK(host_link_init());
-    log_heap("after init");
+    log_heap(TAG, "after the host link (USB)");
+    ESP_ERROR_CHECK(wifi_start());          // last: a Wi-Fi problem can never keep the screen from coming up
+    log_heap(TAG, "after init");
 
     uint32_t last_frames = 0;
     screen_stats_t st;

@@ -31,9 +31,5 @@ void comp_reset(void);
 // See PageCompositor::Frame().
 int comp_frame(int first, int count, int offset, comp_view_t out[2]);
 
-// Bounce fill (screen.cpp), ISR context, at the end of every fill: the gap
-// before the next fill is when the compositor copies key slices to PSRAM.
-void comp_fill_done(void);
-
 // Counters since the last call (resets them).
 void comp_get_stats(comp_stats_t *stats);

@@ -45,30 +45,43 @@ The host sets the two texts with `SET_STATUS_TEXT` ([protocol.md](protocol.md));
 
 The bounce fill can't decode rle565, so the bar is drawn ahead of time into a whole-bar buffer (800x40 RGB565, 64 KB) that the fill copies row by row.
 
-- **Internal RAM, not PSRAM:** the fill copies the bar every frame; from PSRAM the first fills of each frame would read cold (~285 µs per 15 lines vs ~70 µs).
-- **Double buffered:** two buffers. The status task draws into the one not shown, then hands it to the screen (`screen_set_status_bar()`), which latches it at the next frame start. It draws again only once the fill has latched it (`screen_status_bar_shown()` returns the front), so a buffer is never drawn while the fill may read it, and the bar never shows half-drawn.
-- **At most one redraw a frame.** Changes made while a redraw is waiting or running are combined into the next.
+- **PSRAM (implemented, not yet run on the hardware):** the two buffers were in internal RAM (128 KB), which left the Wi-Fi driver under 1 KB ([`wifi.md`](wifi.md)). They are now `heap_caps_aligned_alloc(64, ..., MALLOC_CAP_SPIRAM)`. The fill reads the bar every frame, so it is kept warm: `preload_chunk()` in `screen.cpp` preloads the bar's rows for the next chunk (the first chunk of the next frame at the end of the last fill), unless the chunk has more page rows than bar rows (only one range can be preloaded).
+- **Written only in fill gaps, in bands:** a redraw would write 64 KB of PSRAM, which starves the fill. So `status_bar_render_rows()` renders a few rows into a small internal scratch band (`SCREEN_W * STATUS_BAR_BAND_ROWS_MAX` pixels, 6.4 KB), and the status task copies one band to the back buffer (and writes it back) per fill gap: `STATUS_BAND_ROWS_ONE_PAGE` (4 rows, 6.4 KB) or `STATUS_BAND_ROWS_TWO_PAGES` (2 rows, 3.2 KB, mid-swipe) at the top of `status.cpp`. A redraw takes 10 or 20 gaps (0.17 or 0.33 s). The compositor's slices are 8 KB and 3 KB; those and the band sizes are first guesses.
+- **Sharing gaps:** `fill_gap.cpp/.h` replaces `comp_fill_done()`. The compositor and the status task each register a client; while a client has something to write, each gap goes to one of them in turn (`gap_share.h`, host tested), so two writers never overlap. A gap a task reaches more than `COMP_GAP_FRESH_US` after the fill is skipped.
+- **Double buffered:** two buffers. The status task draws into the one not shown, then hands it to the screen (`screen_set_status_bar()`), which latches it at the next frame start. It draws again only once the fill has latched it (`screen_status_bar_shown()` returns the front), so a buffer is never drawn while the fill may read it, and the bar never shows half-drawn (the swap happens only after the last band). The content is copied at `BeginDraw`, so a redraw is one consistent state.
+- **At most one redraw at a time.** Changes made while a redraw is waiting or running are combined into the next.
 
 Code:
 
 - **`status_bar.cpp/.h`** (platform independent, host tested in `firmware/test/TestStatusBar.cpp`):
-  - `status_bar_render(px, style, content)`: draws the whole bar.
+  - `status_bar_render(px, style, content)`: draws the whole bar. `status_bar_render_rows(px, y0, rows, ...)` draws a band of it, identical pixels (host tested at several band sizes).
   - `StatusBar`: the four properties and two buffers. Setters return whether the value changed. `BeginDraw(shown, &content)` copies the properties and returns the back buffer, or NULL if nothing changed or the fill hasn't latched the front yet; `EndDraw()` makes it the front.
-- **`status.cpp/.h`** (device): owns the `StatusBar`, its buffers in internal RAM and a task (core 1, priority 3, below the compositor and swipe) that waits for a change, draws, and swaps. If a change is waiting on a swap, it polls once a tick.
+- **`status.cpp/.h`** (device): owns the `StatusBar`, its buffers in PSRAM, the scratch band in internal RAM and a task (core 1, priority 3, below the compositor and swipe) that waits for a change, renders a band, copies it in a fill gap, and swaps after the last. If a change is waiting on a swap, it polls once a tick.
 
 The host test writes `firmware/test/build/status_bar.bmp`, handy for checking the look without flashing.
 
 ## Measured
 
-`RUN_STRESS` (release build; status redrawn every 20 ms, mid-swipe):
+`RUN_STRESS` (release build, bar in PSRAM; status redrawn every 20 ms, mid-swipe), against the earlier internal-RAM bar:
 
-| | Slowest fill | Fills over budget |
-|---|---|---|
-| Status bar redraws alone | 206 µs | 0 |
-| On top of the compositor flat out (opaque faces) | 357 µs | 0 |
+| | Slowest fill, PSRAM bar | Internal-RAM bar | Fills over budget |
+|---|---|---|---|
+| Compositor flat out, at rest | 121-123 µs | ~115 µs | 0 |
+| Compositor flat out, mid-swipe | 286-292 µs | | 0 |
+| Status bar redraws alone, mid-swipe | 353 µs | 206 µs | 0 |
+| Compositor (opaque) + status bar, mid-swipe | 316 µs | 357 µs | 0 |
+| Image replaces, at rest | 280 µs | not run | 0 |
+| Image replaces, mid-swipe | 412 µs | not run | 0 |
 
-At rest the bar adds nothing measurable to the fill (~115 µs, as before). The status font and rle565 code are read from PSRAM (code and rodata are mapped there), so a redraw adds a little PSRAM traffic; it showed only as extra contention with the compositor flat out, within budget.
+- No late fills in any case. At rest the bar costs nothing measurable.
+- The bar alone mid-swipe is slower (353 vs 206 µs): its first chunk is a cold PSRAM read. With the compositor also running it is no slower than before, since the two now share the fill gaps.
+- Image replaces mid-swipe (412 µs) leave the least margin of the cases (80 µs under budget). This was their first run on the hardware.
+- With the demo (clock redraw each second, swiping), a debug build reached 475 µs once in a one-second window, still under budget.
+
+The status font and rle565 code are read from PSRAM (code and rodata are mapped there), so a redraw adds a little PSRAM traffic.
 
 ## Open items
 
-- **Internal RAM:** the two buffers take 128 KB; ~130 KB is left after init (largest block 86 KB). If Wi-Fi needs more, keep only the parts that change (each text and the pills) as small buffers and fill the rest black in the bounce fill, or move Wi-Fi/lwIP buffers to PSRAM.
+- **PSRAM bar, measured** (see Measured): no late fills in `RUN_STRESS`, and Wi-Fi comes up with ~120 KB internal RAM free. The redraw latency of 0.17-0.33 s for pill changes looks fine on the hardware (the band rows are tuning constants in `status.cpp`). Wi-Fi traffic during a swipe is not tested and not a concern: actions are one quick fire-and-forget after a press. The mid-swipe fill maximum is above the 250 µs aim in the stress cases, but never late.
+- **Fallback if the fill goes late:** keep only the parts that change (each text and the pills) as small internal buffers and fill the rest black in the bounce fill.
+- The preload choice (bar rows vs page rows) and the band row choice in `status.cpp` are device-only and not covered by the host tests.

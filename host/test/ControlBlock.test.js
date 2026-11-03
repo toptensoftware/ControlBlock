@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ControlBlock, ControlBlockError } from "../src/ControlBlock.js";
-import { Msg, Status, Reader, encodeIds, crc32, HEARTBEAT_INTERVAL_MS } from "../src/protocol.js";
+import { Msg, Status, Reader, encodeIds, crc32, HEARTBEAT_INTERVAL_MS, WifiState, encodeWifiSet } from "../src/protocol.js";
 import { imageId, keyImage, encodeImage } from "../src/images.js";
 import { readRleHeader } from "rle565/unpack.js";
 import { FakeDevice } from "./FakeDevice.js";
@@ -347,4 +347,75 @@ test("waitOpen retries until the device is back, then gives up", async () => {
         intervalMs: 5, timeoutMs: 60,
         opener: async () => { throw new Error("No ControlBlock found"); },
     }), /did not come back.*No ControlBlock found/);
+});
+
+// --- Wi-Fi (docs/wifi.md) ---
+
+test("setWifi sends the credentials and info follows", async () => {
+    const { dev, cb } = await connected({ wifi: {} });
+    assert.equal(cb.info.wifiCredentials, false);
+    await cb.setWifi("Home", "password1");
+    assert.equal(cb.info.wifiCredentials, true);
+    const sent = dev.requests.filter(m => m.type === Msg.WIFI_SET);
+    assert.equal(sent.length, 1);
+    assert.deepEqual([...sent[0].payload], [...encodeWifiSet("Home", "password1")]);
+    assert.equal((await cb.getInfo()).wifiCredentials, true);
+    await cb.close();
+});
+
+test("getWifi reads the credentials back", async () => {
+    const { cb } = await connected({ wifi: {} });
+    assert.deepEqual(await cb.getWifi(), { ssid: "", password: "", ssidBytes: new Uint8Array(0) });
+    await cb.setWifi("Home", "password1");
+    const got = await cb.getWifi();
+    assert.equal(got.ssid, "Home");
+    assert.equal(got.password, "password1");
+    await cb.setWifi("Cafe");                       // open network
+    assert.equal((await cb.getWifi()).password, "");
+    await cb.close();
+});
+
+test("clearWifi sends an empty ssid and info follows", async () => {
+    const { dev, cb } = await connected({ wifi: { ssid: "Home", pass: "password1" } });
+    assert.equal(cb.info.wifiCredentials, true);
+    await cb.clearWifi();
+    assert.equal(cb.info.wifiCredentials, false);
+    assert.deepEqual([...dev.requests.filter(m => m.type === Msg.WIFI_SET)[0].payload], [0, 0]);
+    assert.equal((await cb.getWifi()).ssid, "");
+    await cb.close();
+});
+
+test("setWifi refuses invalid credentials before sending anything", async () => {
+    const { dev, cb } = await connected({ wifi: {} });
+    await assert.rejects(cb.setWifi("Home", "short"), RangeError);
+    await assert.rejects(cb.setWifi("", "password1"), TypeError);
+    assert.equal(dev.requests.filter(m => m.type === Msg.WIFI_SET).length, 0);
+    assert.equal(cb.info.wifiCredentials, false);
+    await cb.close();
+});
+
+test("a device that refuses setWifi throws and leaves info alone", async () => {
+    const { cb } = await connected({ handler: () => ({ status: Status.IO_ERROR, data: new Uint8Array(0) }) });
+    await assert.rejects(cb.setWifi("Home", "password1"), err => err instanceof ControlBlockError && err.status === Status.IO_ERROR);
+    assert.equal(cb.info.wifiCredentials, false);
+    await cb.close();
+});
+
+test("wifiStatus reports the connection", async () => {
+    const { dev, cb } = await connected({ wifi: {} });
+    assert.equal((await cb.wifiStatus()).stateName, "NO_CREDENTIALS");
+    dev.wifi.status = { state: WifiState.CONNECTED, reason: 0, rssi: -61, ip: [192, 168, 0, 9], mac: [1, 2, 3, 4, 5, 6] };
+    const st = await cb.wifiStatus();
+    assert.deepEqual(st, { state: 2, stateName: "CONNECTED", reason: 0, rssi: -61, ip: "192.168.0.9", mac: "01:02:03:04:05:06" });
+    await cb.close();
+});
+
+test("wifiState events are emitted", async () => {
+    const { dev, cb } = await connected();
+    const got = new Promise(resolve => cb.on("wifiState", resolve));
+    dev.event(Msg.WIFI_STATE, 8, Uint8Array.of(2, 0, 0, 0, 192, 168, 1, 5));
+    const ev = await got;
+    assert.equal(ev.state, WifiState.CONNECTED);
+    assert.equal(ev.ip, "192.168.1.5");
+    await cb.close();
 });

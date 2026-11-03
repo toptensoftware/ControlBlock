@@ -88,7 +88,7 @@ Any data specific to that response follows these two fields.
 | 7 | — | Reserved (was IN_USE; freeing is never refused now) |
 | 8 | BAD_SEQUENCE | Upload chunk out of order or not started, or a config commit before all the data arrived |
 | 9 | BAD_CRC | Config upload: the data doesn't match the CRC-32 given at `CONFIG_BEGIN` |
-| 10 | IO_ERROR | Config upload: a flash erase, write or read-back failed |
+| 10 | IO_ERROR | Config upload: a flash erase, write or read-back failed. `WIFI_SET`: the credentials couldn't be stored |
 
 ## Host → device requests
 
@@ -109,6 +109,9 @@ Any data specific to that response follows these two fields.
 | `0x30` | CONFIG_BEGIN | Start uploading the standalone config (erases the stored one) |
 | `0x31` | CONFIG_DATA | One chunk of the config |
 | `0x32` | CONFIG_COMMIT | Finish: verify, save and restart the device |
+| `0x40` | WIFI_SET | Store Wi-Fi credentials and connect; an empty ssid clears |
+| `0x41` | WIFI_GET | Read the stored Wi-Fi credentials |
+| `0x42` | WIFI_STATUS | Wi-Fi connection state, IP, signal |
 
 ### `0x00` PING
 
@@ -123,7 +126,7 @@ Any data specific to that response follows these two fields.
 | Type | Field | Notes |
 |---|---|---|
 | u16 | protocol_version | `1` |
-| u16 | flags | Bit 0: backlight is on (see [`backlight.md`](backlight.md)). Other bits 0 |
+| u16 | flags | Bit 0: backlight is on (see [`backlight.md`](backlight.md)). Bit 1: Wi-Fi credentials are stored (see [`wifi.md`](wifi.md)). Other bits 0 |
 | u32 | max_payload | Largest payload the device accepts, for every message type (8192 in v1) |
 | u32 | image_capacity | Bytes available for images |
 | u32 | image_used | Bytes in use, counting memory not yet released (retired or mid-replace images) |
@@ -346,6 +349,63 @@ CONFIG_BEGIN(size, crc)  →  CONFIG_DATA(0, …) … CONFIG_DATA(n, …)  →  
 
 **Other messages and the upload:** `RESET_STREAM` abandons the upload (the config stays destroyed). `RESET` doesn't touch it. Everything else works as usual during an upload, but the screen is dark.
 
+## Wi-Fi
+
+The host sets the Wi-Fi credentials; the device keeps them in NVS and connects in the background. Design, storage and the connection state machine: [`wifi.md`](wifi.md). These messages work in every mode, and `RESET`, `RESET_STREAM`, taking control and releasing leave the credentials and the connection alone.
+
+### `0x40` WIFI_SET
+
+**Request:**
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | ssid_len | 0..32 |
+| u8 | pass_len | 0, or 8..63 |
+| u8[ssid_len] | ssid | Raw bytes (an SSID need not be UTF-8) |
+| u8[pass_len] | pass | Raw bytes. `pass_len` 0 = an open network |
+
+- `BAD_LENGTH` if the payload is shorter than the two lengths say (checked first). Trailing bytes are ignored.
+- `BAD_ARG` if `ssid_len` is over 32, `pass_len` is 1..7 or over 63, `ssid_len` is 0 with a non-zero `pass_len`, or either string contains a NUL byte. Nothing changes.
+- `ssid_len` 0 (with `pass_len` 0) **clears** the credentials: they are erased, the device disconnects and Wi-Fi stops.
+- `IO_ERROR` if the NVS write fails. The previously stored credentials are still in place.
+- Setting exactly the credentials already stored does nothing (no flash write, no reconnect) and responds `OK`.
+- On `OK` the credentials are stored. The connection attempt starts after the response and does not hold it up: poll `WIFI_STATUS` or watch for `WIFI_STATE` events. A 64-character hex pre-shared key is not accepted.
+
+### `0x41` WIFI_GET
+
+**Request:** No payload (any payload is ignored).
+
+**Response** (after the status field):
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | ssid_len | 0 if none are stored |
+| u8 | pass_len | |
+| u8[ssid_len] | ssid | |
+| u8[pass_len] | pass | In clear text (see [`wifi.md`](wifi.md#security)) |
+
+### `0x42` WIFI_STATUS
+
+**Request:** No payload (any payload is ignored).
+
+**Response** (after the status field):
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | state | See below |
+| u8 | reason | The last disconnect reason (ESP-IDF `wifi_err_reason_t`), 0 if none. For diagnostics only |
+| i8 | rssi | dBm while connected, else 0 |
+| u8 | reserved | 0 |
+| u8[4] | ip | `a.b.c.d` in that order while `CONNECTED`, else 0 |
+| u8[6] | mac | The station MAC. All zeros in `NO_CREDENTIALS` (the driver isn't running then) |
+
+| State | Name | Meaning |
+|---|---|---|
+| 0 | `NO_CREDENTIALS` | Nothing stored; Wi-Fi is not running |
+| 1 | `CONNECTING` | The first attempt: associating or waiting for an IP |
+| 2 | `CONNECTED` | Has an IP |
+| 3 | `RETRYING` | An attempt failed or the link dropped. It stays `RETRYING` across the retries (1 s, doubling to 30 s; at once to 30 s after an authentication failure) until it connects |
+
 ## Device → host events
 
 Events have the `EVENT` flag set, and `seq` is the device's event counter.
@@ -361,6 +421,7 @@ Events have the `EVENT` flag set, and `seq` is the device's event counter.
 | `0x81` | PAGE_CHANGED |
 | `0x82` | WAKE |
 | `0x83` | HEARTBEAT |
+| `0x84` | WIFI_STATE |
 
 ### `0x80` KEY
 
@@ -419,6 +480,17 @@ Sent about once a second (`PROTO_HEARTBEAT_MS`), whether or not anything else is
 - **Not queued:** it is written straight out, not through the event queue, so it can never overflow it or set a `lost` flag. It shares the events' `seq` counter.
 - **Only into free room:** it is sent only while at least half of the transmit FIFO is free (`PROTO_HEARTBEAT_ROOM`, 1024 of 2048 bytes). With no app reading, the unread ones stop at half full, so responses and key events are never crowded out; they are drained and ignored when a host connects.
 - Older firmware doesn't send it. A host that sets a long read timeout needs this firmware.
+
+### `0x84` WIFI_STATE
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | state | As in `WIFI_STATUS` |
+| u8 | lost | Event-overflow flag (see above) |
+| u8[2] | reserved | 0 |
+| u8[4] | ip | As in `WIFI_STATUS` |
+
+Sent when the state or the address changes (not on every retry), so a host can show "connected" without polling. A host that doesn't care ignores it.
 
 ## Typical session
 

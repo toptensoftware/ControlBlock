@@ -6,13 +6,15 @@
 // response arrives (responses come back in order, matched by seq).
 // Events: "key" ({ page, key, action, lost, timeMs }), "pageChanged"
 // ({ page, cause }), "wake" ({ lost, timeMs }: the screen was touched while
-// the backlight is off; docs/backlight.md), "error" (the read loop failed), "close".
+// the backlight is off; docs/backlight.md), "wifiState" ({ state, stateName,
+// lost, ip }: the Wi-Fi connection changed; docs/wifi.md), "error" (the read loop failed), "close".
 // uploadConfig() saves a standalone config in the device's flash (docs/protocol.md).
 
 import { Emitter } from "./Emitter.js";
 import {
     USB_VID, USB_PID, INTERFACE, ENDPOINT, PROTOCOL_VERSION, REQ_RESET_STREAM,
     PUT_IMAGE_PREFIX, CONFIG_DATA_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
+    encodeWifiSet, decodeWifiCredentials, decodeWifiStatus,
     encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeConfigBegin, encodeConfigData, crc32,
     decodeInfo, decodeQuery, decodeEvent, statusName, HEARTBEAT_INTERVAL_MS,
 } from "./protocol.js";
@@ -199,6 +201,39 @@ export class ControlBlock extends Emitter
         await this.call(Msg.SET_BACKLIGHT, Uint8Array.of(on ? 1 : 0));
         if (this.info)
             this.info.backlight = !!on;
+    }
+
+    // Wi-Fi (docs/wifi.md). Independent of the operating mode.
+    // Store a network and connect to it in the background (an empty ssid
+    // clears it; a missing password is an open network). Resolves once the
+    // credentials are stored: watch "wifiState" or poll wifiStatus() for the
+    // connection. Throws before sending anything if the device would refuse.
+    async setWifi(ssid, password = "")
+    {
+        await this.call(Msg.WIFI_SET, encodeWifiSet(ssid, password));
+        if (this.info)
+            this.info.wifiCredentials = ssid.length > 0;
+    }
+
+    // Forget the stored network and turn Wi-Fi off
+    async clearWifi()
+    {
+        await this.setWifi("");
+    }
+
+    // The stored network: { ssid, password, ssidBytes } (empty if none).
+    // The password is in clear text (docs/wifi.md, Security).
+    async getWifi()
+    {
+        return decodeWifiCredentials(await this.call(Msg.WIFI_GET));
+    }
+
+    // { state, stateName, reason, rssi, ip, mac }: state is WifiState; `ip`
+    // is null unless connected; `reason` is the last disconnect reason
+    // (diagnostics only)
+    async wifiStatus()
+    {
+        return decodeWifiStatus(await this.call(Msg.WIFI_STATUS));
     }
 
     // Upload (or replace) an rle565 image under `id`, in pipelined chunks

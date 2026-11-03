@@ -1,6 +1,6 @@
 # Wi-Fi
 
-Design stage: nothing here is built yet. The host sets the Wi-Fi credentials over USB; the device keeps them in NVS, reads them back on request, and connects in the background. Wi-Fi is needed by standalone mode's HTTP and UDP actions and, later, NTP for the status bar clock ([`standalone.md`](standalone.md)).
+**Built and working on the hardware:** it connects to a WPA2 and a WPA3 network (see [Built](#built-and-where-it-differs-from-the-design) for the differences from this design, and the plan's step 8 for the hardware checks still to do). The host sets the Wi-Fi credentials over USB; the device keeps them in NVS, reads them back on request, and connects in the background. Wi-Fi is needed by standalone mode's HTTP and UDP actions and, later, NTP for the status bar clock ([`standalone.md`](standalone.md)).
 
 ## Goals and non-goals
 
@@ -22,7 +22,7 @@ Design stage: nothing here is built yet. The host sets the Wi-Fi credentials ove
 
 ## Protocol
 
-New message types (`0x40`..`0x42`) and one event. The wire spec moves into `protocol.md` when this is built, so that stays the source of truth.
+New message types (`0x40`..`0x42`) and one event. The wire spec is in [`protocol.md`](protocol.md#wi-fi), which is the source of truth; this section is the design it came from.
 
 | Type | Name | Purpose |
 |---|---|---|
@@ -139,7 +139,7 @@ To change or clear the credentials while running: `esp_wifi_disconnect()`, `esp_
 - `STA_CONNECTED` moves to waiting for an IP; `GOT_IP` moves to `CONNECTED` and posts a `WIFI_STATE` event.
 - A new `WIFI_SET` resets the backoff and connects at once.
 
-The state machine is separate from the driver calls (pure: events and a clock in, "connect now" / "retry in N ms" / "state changed" out) so it is host tested.
+The state machine is separate from the driver calls (pure: events in, "connect now" / "retry in N ms" / "state changed" out; the device layer owns the timer) so it is host tested.
 
 **Settings to review** (in `sdkconfig.defaults`; measure the heap before and after, see the RAM note):
 - `esp_wifi_set_ps(WIFI_PS_NONE)` after connecting. The default modem sleep adds tens of ms to each request, which hurts button-to-action latency; the board is USB powered.
@@ -149,10 +149,10 @@ The state machine is separate from the driver calls (pure: events and a clock in
 
 ### Cores, RAM and the bounce fill
 
-- **Internal RAM** is the tight resource (~95 KB free before Wi-Fi, largest block 53 KB). The Wi-Fi driver and lwIP typically want tens of KB of it. Measure free heap and the largest block at boot with Wi-Fi up, before deciding what to shrink (status-bar buffers, the protocol buffer, task stacks: see CLAUDE.md Open Items and [`status-bar.md`](status-bar.md)).
+- **Internal RAM** is the tight resource; see [Internal RAM](#internal-ram) for the measured budget (~120 KB free with the driver up and connected).
 - **Wi-Fi/lwIP buffers in PSRAM** (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`) would save the internal RAM but means heavy PSRAM writes while receiving, and **nothing else may write PSRAM heavily while fills run** (CLAUDE.md). Only do this with a `RUN_STRESS` pass that adds Wi-Fi traffic, and look at the late-fill counts.
 - **Cores:** keep the Wi-Fi driver and the lwIP task on core 0 (the defaults; check `CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_0` and `CONFIG_LWIP_TCPIP_TASK_AFFINITY`). Core 1 belongs to the compositor and the fill. The Wi-Fi radio interrupt runs on whichever core started the driver, so start it from a task pinned to core 0.
-- **Code in PSRAM:** the Wi-Fi driver is largely IRAM/flash code and has IRAM-safe parts; with `SPIRAM_FETCH_INSTRUCTIONS` on, check that the build and the first connection work, since this combination is untested here.
+- **Code in PSRAM:** the Wi-Fi driver is largely IRAM/flash code and has IRAM-safe parts; with `SPIRAM_FETCH_INSTRUCTIONS` on, the build and the connection work (WPA2 and WPA3 networks).
 - **Boot order:** `i2c_init`, `ch422g_init`, display, touch, USB, then Wi-Fi last, so a Wi-Fi problem can never keep the screen from coming up.
 
 ## Code layout
@@ -180,10 +180,41 @@ Each step: write or adjust the tests first, see them fail, then implement. Steps
 7. **Doc sweep:** `protocol.md` (done in step 5), `standalone.md` (its Wi-Fi section now points here), `status-bar.md` (RAM note), `CLAUDE.md` (Wi-Fi in the firmware module list and Open Items once built).
 8. **Hardware checks** (the user flashes): set, read back, clear and reconnect from the CLI; credentials survive a reboot and a reflash; wrong password backs off; the router restarting recovers; flash write from `WIFI_SET` and the connect itself don't glitch the display; free heap and the largest block with Wi-Fi up; late-fill counts with Wi-Fi traffic running (extend `RUN_STRESS` with a UDP/HTTP loop); the `SPIRAM_FETCH_INSTRUCTIONS` combination; button-to-request latency with power save off.
 
+## Built, and where it differs from the design
+
+Steps 1 to 7 of the plan are done. Step 6 (`wifi.cpp`) connects on the board; the remaining checks of step 8 are the user's (not yet confirmed: reboot and reflash persistence, wrong password backoff, router restart recovery, display glitches from the NVS write and the connect, power-save latency).
+
+- **Files:** `wifi_credentials.cpp/.h`, `wifi_state.cpp/.h` (pure, host tested), `wifi.cpp/.h` (device), `heap_log.h` (the heap log line, shared with `main.cpp`). Tests: `TestWifiCredentials.cpp`, `TestWifiState.cpp`, the Wi-Fi facts at the end of `TestProtocol.cpp`, with `wifi_env.h` (a fake storage). Host library: `setWifi`, `clearWifi`, `getWifi`, `wifiStatus`, the `wifiState` event, and `host/demo/wifi.js`.
+- **Set and get are not `ProtocolHost` callbacks.** `Protocol` is given the `WifiConfig` (as it is given the `ConfigStore`) and calls `Set` / `Get` / `Stored` itself, so the rules and the storage logic exist once. Only `wifi_status` is a callback (the state lives in the Wi-Fi task). The change notification is `WifiConfig::SetChangedCallback`.
+- **Equality check against the in-memory copy**, loaded from NVS at boot, rather than reading the blob back before every write. Same result without the extra flash read.
+- **`RETRYING` stays `RETRYING` across the attempts** after the first failure, until it connects. This is what makes "events on state change, not on every retry" hold; `CONNECTING` is only the very first attempt (and the one after a new `WIFI_SET`, or after the IP is lost).
+- **`STA_CONNECTED` is ignored**: it would not change the state (still waiting for an IP).
+- **Our own disconnect is not a failure.** `esp_wifi_disconnect()` and stop produce a `STA_DISCONNECTED` with reason `ASSOC_LEAVE` (8). The machine remembers when it asked for one and ignores that event once. A stray disconnect when no attempt was made is ignored too, and so is every event after a clear.
+- **Boot order:** `wifi_init()` (load the credentials from NVS; no radio, no task) runs before `host_link_init()`, so the first `GET_INFO` already has the flag. `wifi_start()` (the task, and the connect) runs last. A `WIFI_SET` between the two is queued and handled when the task starts.
+- **NVS:** `nvs_flash_init()` is `init_nvs()` in `main.cpp`, early, with the erase-and-retry. A failure that remains is logged and the device boots without Wi-Fi settings (`WIFI_SET` answers `IO_ERROR`).
+- **sdkconfig (`sdkconfig.defaults`):** static RX buffers 6 (default 10), dynamic RX and TX 16 (32), AMPDU windows RX 6 and TX 4, SoftAP support off, `ESP_WIFI_IRAM_OPT` and `RX_IRAM_OPT` off (they default to on, and IRAM and internal RAM are one SRAM), lwIP's task on core 0 (`LWIP_TCPIP_TASK_AFFINITY_CPU0`; the driver's own task is core 0 by default). `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` stays off, so nothing here writes PSRAM. The numbers are a first guess; the heap left (below) shows there is room.
+- **Logging:** the SSID and the password length only. `wifi.cpp` logs the heap (free, largest block) with the driver up, down and connected.
+
+## Internal RAM
+
+The first hardware runs failed the WPA2 handshake (reason 204) and the WPA3 one (reason 202) because the driver left under 1 KB of internal RAM. The fix was moving the status bar's two 64 KB buffers to PSRAM ([`status-bar.md`](status-bar.md)). Both networks connect now.
+
+Boot heap log (`heap_log.h`, internal RAM free, release build):
+
+| Step | Free |
+|---|---|
+| before `esp_wifi_init()` | 152,879 (largest block 112,640) |
+| after init | 142,751 (largest 102,400) |
+| Wi-Fi driver up | 120,715 (largest 79,872) |
+| connected | 118,839 (largest 75,776) |
+
+- Fills at rest were unaffected by Wi-Fi coming up (61 fps, 0 over budget). Wi-Fi traffic during a swipe is not tested and not a concern: actions are a quick fire-and-forget after a press.
+- `ESP_WIFI_IRAM_OPT` and `ESP_WIFI_RX_IRAM_OPT` stay off. IRAM and internal RAM are one SRAM, so turning them on takes memory the driver needs (with the memory then tight, the Wi-Fi task couldn't be created or `esp_wifi_init()` failed with `ESP_ERR_NO_MEM`). They might fit now; untried.
+- More room if ever needed: trim the Wi-Fi/lwIP buffers (static RX, dynamic RX/TX, TCP windows, mailboxes), or move them to PSRAM (`SPIRAM_TRY_ALLOCATE_WIFI_LWIP`; needs a `RUN_STRESS` pass with Wi-Fi traffic).
+
 ## Open questions
 
 - Whether the right-hand status text should show the Wi-Fi state or the IP until NTP exists (the right text is blank for now).
 - Several saved networks, and a way to set credentials without a host (touch entry, a setup access point): later.
 - Whether `WIFI_GET` should stay in clear text (see Security).
-- The exact RAM budget: unknown until step 6 measures it.
 - Whether the Wi-Fi task should wait for the host's first message or for a quiet moment at boot, if the connect shows up as a display glitch.

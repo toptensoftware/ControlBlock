@@ -15,12 +15,16 @@ idf_component_register(
         "screen_view.cpp"
         "status_bar.cpp"
         "status.cpp"
+        "fill_gap.cpp"
         "compositor.cpp"
         "page_compositor.cpp"
         "image_store.cpp"
         "key_layout.cpp"
         "model.cpp"
         "protocol.cpp"
+        "wifi_credentials.cpp"
+        "wifi_state.cpp"
+        "wifi.cpp"
         "config_store.cpp"
         "config_flash.cpp"
         "config_blob.cpp"
@@ -46,15 +50,19 @@ idf_component_register(
         esp_app_format
         esp_driver_gpio
         esp_driver_i2c
+        esp_event
         esp_hw_support
         esp_lcd
         esp_partition
         esp_system
         esp_mm
+        esp_netif
         esp_rom
         esp_timer
+        esp_wifi
         espressif__esp_lcd_touch_gt911
         espressif__esp_tinyusb
+        nvs_flash
 )
 
 if(CB_RUN_STRESS)

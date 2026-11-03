@@ -5,6 +5,8 @@ import {
     Msg, Flags, KeyFlags, HEADER_SIZE, KEYDEF_SIZE, MAGIC, statusName, Status,
     encodeStatusText, StatusText, STATUS_TEXT_MAX_BYTES,
     crc32, encodeConfigBegin, encodeConfigData, CONFIG_DATA_PREFIX, HEARTBEAT_INTERVAL_MS,
+    InfoFlags, Writer, WifiState, WIFI_SSID_MAX_BYTES, WIFI_PASS_MIN_BYTES, WIFI_PASS_MAX_BYTES,
+    encodeWifiSet, decodeWifiCredentials, decodeWifiStatus,
 } from "../src/protocol.js";
 import { infoPayload } from "./FakeDevice.js";
 
@@ -169,4 +171,86 @@ test("GET_INFO ends with the stored config, and older devices have none", () => 
     assert.equal(old.configSize, 0);
     assert.equal(old.configCrc, 0);
     assert.equal(old.serial, "SERIAL1");
+});
+
+// --- Wi-Fi (docs/wifi.md) ---
+
+test("wifi message types and the info flag", () => {
+    assert.equal(Msg.WIFI_SET, 0x40);
+    assert.equal(Msg.WIFI_GET, 0x41);
+    assert.equal(Msg.WIFI_STATUS, 0x42);
+    assert.equal(Msg.WIFI_STATE, 0x84);
+    assert.equal(InfoFlags.WIFI_CREDENTIALS, 0x0002);
+    assert.deepEqual({ ...WifiState }, { NO_CREDENTIALS: 0, CONNECTING: 1, CONNECTED: 2, RETRYING: 3 });
+});
+
+test("get info reports whether wifi credentials are stored, independent of the backlight", () => {
+    assert.equal(decodeInfo(infoPayload()).wifiCredentials, false);
+    assert.equal(decodeInfo(infoPayload({ wifiCredentials: true })).wifiCredentials, true);
+    const both = decodeInfo(infoPayload({ wifiCredentials: true, backlight: false }));
+    assert.equal(both.wifiCredentials, true);
+    assert.equal(both.backlight, false);
+    assert.equal(both.maxPayload, 8192);
+});
+
+test("wifi set is two lengths, the ssid and the password", () => {
+    assert.deepEqual([...encodeWifiSet("Home", "password1")],
+                     [4, 9, ...new TextEncoder().encode("Home"), ...new TextEncoder().encode("password1")]);
+    assert.deepEqual([...encodeWifiSet("Cafe")], [4, 0, 67, 97, 102, 101]);            // open network
+    assert.deepEqual([...encodeWifiSet("Cafe", "")], [4, 0, 67, 97, 102, 101]);
+    assert.deepEqual([...encodeWifiSet("")], [0, 0]);                                  // clears
+    assert.deepEqual([...encodeWifiSet("é", "")], [2, 0, 0xC3, 0xA9]);                 // bytes, not characters
+    assert.deepEqual([...encodeWifiSet(Uint8Array.of(0xFF, 0xFE), "")], [2, 0, 0xFF, 0xFE]);   // raw ssid bytes
+});
+
+test("wifi set refuses what the device would refuse", () => {
+    assert.throws(() => encodeWifiSet("x".repeat(WIFI_SSID_MAX_BYTES + 1)), RangeError);
+    assert.equal(encodeWifiSet("x".repeat(WIFI_SSID_MAX_BYTES)).length, 2 + WIFI_SSID_MAX_BYTES);
+    assert.throws(() => encodeWifiSet("é".repeat(17)), RangeError);                    // 34 bytes
+    assert.throws(() => encodeWifiSet("Home", "short"), RangeError);                   // 1..7
+    assert.throws(() => encodeWifiSet("Home", "x".repeat(WIFI_PASS_MIN_BYTES - 1)), RangeError);
+    assert.equal(encodeWifiSet("Home", "x".repeat(WIFI_PASS_MIN_BYTES)).length, 2 + 4 + WIFI_PASS_MIN_BYTES);
+    assert.equal(encodeWifiSet("Home", "x".repeat(WIFI_PASS_MAX_BYTES)).length, 2 + 4 + WIFI_PASS_MAX_BYTES);
+    assert.throws(() => encodeWifiSet("Home", "x".repeat(WIFI_PASS_MAX_BYTES + 1)), RangeError);
+    assert.throws(() => encodeWifiSet("", "password1"), TypeError);                    // a password needs an ssid
+    assert.throws(() => encodeWifiSet("a\0b"), TypeError);
+    assert.throws(() => encodeWifiSet("Home", "pass\0word"), TypeError);
+    assert.throws(() => encodeWifiSet(12), TypeError);
+    assert.throws(() => encodeWifiSet("Home", 12), TypeError);
+});
+
+test("wifi credentials decode", () => {
+    const none = decodeWifiCredentials(Uint8Array.of(0, 0));
+    assert.deepEqual(none, { ssid: "", password: "", ssidBytes: new Uint8Array(0) });
+    const got = decodeWifiCredentials(encodeWifiSet("Home é", "password1"));
+    assert.equal(got.ssid, "Home é");
+    assert.equal(got.password, "password1");
+    assert.deepEqual([...got.ssidBytes], [...new TextEncoder().encode("Home é")]);
+    // Trailing bytes are ignored
+    assert.equal(decodeWifiCredentials(Uint8Array.of(1, 0, 65, 99, 99)).ssid, "A");
+});
+
+test("wifi status decodes", () => {
+    const w = new Writer(14).u8(2).u8(201).u8(0xC7).u8(0).raw(Uint8Array.of(192, 168, 1, 50)).raw(Uint8Array.of(0xA0, 1, 2, 3, 4, 0xFF));
+    assert.deepEqual(decodeWifiStatus(w.done()), {
+        state: WifiState.CONNECTED, stateName: "CONNECTED", reason: 201, rssi: -57,
+        ip: "192.168.1.50", mac: "a0:01:02:03:04:ff",
+    });
+    const idle = decodeWifiStatus(new Uint8Array(14));
+    assert.equal(idle.state, WifiState.NO_CREDENTIALS);
+    assert.equal(idle.stateName, "NO_CREDENTIALS");
+    assert.equal(idle.ip, null);
+    assert.equal(idle.rssi, 0);
+    assert.equal(idle.mac, "00:00:00:00:00:00");
+    // Retrying: the address is not reported even if the bytes are there
+    const retry = decodeWifiStatus(new Writer(14).u8(3).u8(15).u8(0).u8(0).raw(Uint8Array.of(1, 2, 3, 4)).raw(new Uint8Array(6)).done());
+    assert.equal(retry.stateName, "RETRYING");
+    assert.equal(retry.ip, null);
+});
+
+test("wifi state event", () => {
+    const ev = decodeEvent({ type: Msg.WIFI_STATE, seq: 6, payload: Uint8Array.of(2, 0, 0, 0, 10, 0, 0, 7) });
+    assert.deepEqual(ev, { type: "wifiState", seq: 6, state: WifiState.CONNECTED, stateName: "CONNECTED", lost: false, ip: "10.0.0.7" });
+    const lost = decodeEvent({ type: Msg.WIFI_STATE, seq: 7, payload: Uint8Array.of(3, 1, 0, 0, 0, 0, 0, 0) });
+    assert.deepEqual(lost, { type: "wifiState", seq: 7, state: WifiState.RETRYING, stateName: "RETRYING", lost: true, ip: null });
 });

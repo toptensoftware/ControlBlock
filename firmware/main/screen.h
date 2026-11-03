@@ -24,11 +24,14 @@ void screen_set_page_count(int num_pages);
 void screen_set_scroll(int scroll_px);
 
 // The status bar's pixels (SCREEN_W x SCREEN_STATUS_H, see status_bar.h), or
-// NULL for a blank bar. Must be in internal RAM: the bounce fill copies it
-// every frame and PSRAM reads would make fills late. Takes effect at the
-// next frame start; the buffer must stay valid while shown. status.cpp
-// double buffers it.
+// NULL for a blank bar. Normally in PSRAM, 64-byte aligned and written back
+// (the fill preloads its chunks); status.cpp writes it only in fill gaps.
+// Takes effect at the next frame start; the buffer must stay valid while
+// shown. status.cpp double buffers it.
 void screen_set_status_bar(const uint16_t *px);
+
+// Two pages are in view (mid-swipe) at the last frame start
+bool screen_two_pages_in_view(void);
 
 // The status bar buffer latched at the last frame start. Once this is the
 // buffer last set, any earlier one is no longer read.

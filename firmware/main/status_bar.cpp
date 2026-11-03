@@ -22,7 +22,8 @@ static int text_baseline(const FONT *font)
     return (SCREEN_STATUS_H + cap_h) / 2;
 }
 
-static void draw_pager(IMAGE_BUFFER *buf, const status_bar_style_t *style, int selected, int count)
+// All drawing is relative to `y0`, the bar row at the top of `buf`
+static void draw_pager(IMAGE_BUFFER *buf, int y0, const status_bar_style_t *style, int selected, int count)
 {
     if (count <= 0)
         return;
@@ -35,18 +36,20 @@ static void draw_pager(IMAGE_BUFFER *buf, const status_bar_style_t *style, int s
     for (int i = 0; i < count; i++) {
         const void *img = i == selected ? style->pill_selected : style->pill_other;
         int w = get_image_width(img), h = get_image_height(img);
-        draw_image(buf, img, x, (SCREEN_STATUS_H - h) / 2, 0, 0, w, h, NULL, 255, NULL);
+        draw_image(buf, img, x, (SCREEN_STATUS_H - h) / 2 - y0, 0, 0, w, h, NULL, 255, NULL);
         x += w + STATUS_BAR_PILL_GAP;
     }
 }
 
-void status_bar_render(uint16_t *px, const status_bar_style_t *style, const status_bar_content_t *content)
+void status_bar_render_rows(uint16_t *px, int y0, int rows, const status_bar_style_t *style, const status_bar_content_t *content)
 {
+    // Drawing is clipped to the band, so shifting everything up by y0 draws
+    // just those rows
     IMAGE_BUFFER buf;
-    init_image_buffer(&buf, SCREEN_W, SCREEN_STATUS_H, px, SCREEN_W);
-    fill_rect(&buf, 0, 0, SCREEN_W, SCREEN_STATUS_H, STATUS_BAR_BACKGROUND);
+    init_image_buffer(&buf, SCREEN_W, rows, px, SCREEN_W);
+    fill_rect(&buf, 0, 0, SCREEN_W, rows, STATUS_BAR_BACKGROUND);
 
-    int baseline = text_baseline(style->font);
+    int baseline = text_baseline(style->font) - y0;
     if (content->left[0])
         draw_text(&buf, style->font, STATUS_BAR_MARGIN, baseline, content->left, -1, STATUS_BAR_TEXT, 255);
     if (content->right[0]) {
@@ -54,7 +57,12 @@ void status_bar_render(uint16_t *px, const status_bar_style_t *style, const stat
         draw_text(&buf, style->font, x, baseline, content->right, -1, STATUS_BAR_TEXT, 255);
     }
 
-    draw_pager(&buf, style, content->selected_pill, content->pill_count);
+    draw_pager(&buf, y0, style, content->selected_pill, content->pill_count);
+}
+
+void status_bar_render(uint16_t *px, const status_bar_style_t *style, const status_bar_content_t *content)
+{
+    status_bar_render_rows(px, 0, SCREEN_STATUS_H, style, content);
 }
 
 // ---------------------------------------------------------------------------

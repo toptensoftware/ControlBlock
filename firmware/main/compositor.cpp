@@ -9,6 +9,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "compositor.h"
+#include "fill_gap.h"
 
 static const char *TAG = "comp";
 
@@ -24,9 +25,8 @@ static PageCompositor    s_comp;
 static TaskHandle_t      s_task;
 static SemaphoreHandle_t s_reset_done, s_reset_mutex;
 
-// Fill gaps: the ISR only reports them while a key is being copied
-static volatile bool     s_wants_gaps;
-static volatile uint32_t s_fill_end_us;     // low 32 bits of esp_timer_get_time()
+// Fill gaps (fill_gap.h): only given to us while a key is being copied
+static fill_gap_client_t s_gap_client = { NULL, WAKE_GAP, false };
 
 static void comp_task(void *arg)
 {
@@ -34,11 +34,10 @@ static void comp_task(void *arg)
     while (1) {
         // A gap is only worth using if the fill finished just now: the copy
         // must be done before the next fill needs the bus
-        uint32_t now = (uint32_t)esp_timer_get_time();
-        bool gap = (bits & WAKE_GAP) && now - s_fill_end_us < COMP_GAP_FRESH_US;
+        bool gap = (bits & WAKE_GAP) && fill_gap_fresh(COMP_GAP_FRESH_US);
 
         PageCompositor::StepResult r = s_comp.Step(esp_timer_get_time(), gap);
-        s_wants_gaps = s_comp.WantsGaps();
+        s_gap_client.wants = s_comp.WantsGaps();
         if (r == PageCompositor::StepResult::ResetDone)
             xSemaphoreGive(s_reset_done);
 
@@ -78,6 +77,8 @@ esp_err_t comp_init(comp_get_page_t get_page, comp_is_retired_t is_retired, void
     if (xTaskCreatePinnedToCore(comp_task, "comp", COMP_TASK_STACK, NULL,
                                 COMP_TASK_PRIO, &s_task, COMP_TASK_CORE) != pdPASS)
         return ESP_FAIL;
+    s_gap_client.task = s_task;
+    fill_gap_register(&s_gap_client);
 
     ESP_LOGI(TAG, "%d page buffers, %u KB each; %u KB render cell in internal RAM",
              COMP_BUFFERS, (unsigned)(size / 1024), (unsigned)(cell_size / 1024));
@@ -94,14 +95,6 @@ IRAM_ATTR int comp_frame(int first, int count, int offset, comp_view_t out[2])
     int n = s_comp.Frame(first, count, offset, esp_timer_get_time(), out);
     xTaskNotifyFromISR(s_task, WAKE_WORK, eSetBits, NULL);
     return n;
-}
-
-IRAM_ATTR void comp_fill_done(void)
-{
-    if (!s_wants_gaps || !s_task)
-        return;
-    s_fill_end_us = (uint32_t)esp_timer_get_time();
-    xTaskNotifyFromISR(s_task, WAKE_GAP, eSetBits, NULL);
 }
 
 void comp_page_changed(int page, uint32_t flags)

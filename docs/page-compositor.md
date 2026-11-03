@@ -83,7 +83,7 @@ When keys were drawn straight into PSRAM, the clear was the biggest single cost 
 2. **Copy** (`CopySlice`): the rows to copy go to the page buffer in slices of whole rows, **one slice per fill gap**, and each slice is written back to PSRAM at once (`port::CacheWriteback`) so all its bus traffic stays in the gap.
 3. **Finish** (`FinishKey`): the record is updated, and for an incremental job the back is offered if the swap rule holds. A key is "drawn" only when its last slice is copied.
 
-**Fill gaps.** At the end of every fill the bounce fill calls `comp_fill_done()`, which wakes the compositor task (only while a key is being copied). The task calls `Step(now, gap)` with `gap` true only if it got there within `COMP_GAP_FRESH_US` (50 µs) of the fill ending; a gap it reaches late (say, while rendering) is skipped. Page buffers are written only in gap steps; a host test checks this, and that no step writes more than a slice.
+**Fill gaps.** At the end of every fill the bounce fill calls `fill_gap_done()` (`fill_gap.cpp`), which wakes the compositor task (only while a key is being copied) or the status bar's task, one per gap in turn, so two PSRAM writers never overlap. The task calls `Step(now, gap)` with `gap` true only if it got there within `COMP_GAP_FRESH_US` (50 µs) of the fill ending; a gap it reaches late (say, while rendering) is skipped. Page buffers are written only in gap steps; a host test checks this, and that no step writes more than a slice.
 
 **Slice size** (`COMP_SLICE_ROWS_*`), from a copy-gap experiment on the device (copy + write-back straight after each fill, compositor idle):
 
@@ -261,7 +261,7 @@ void comp_reset(void);
 
 // At the end of every fill: the gap before the next fill is when the
 // compositor copies key slices to PSRAM. Wakes it only while it's copying.
-void comp_fill_done(void);
+// (now fill_gap_done() in fill_gap.h, shared with the status bar)
 
 // At frame start:
 
@@ -301,7 +301,7 @@ Making sure an image isn't referenced before it's freed is **the client's job**,
 
 | Who | Core, priority | Woken by | Does |
 |---|---|---|---|
-| **Bounce fill** | ISR, core 0 | LCD DMA, every 15 lines (32× a frame) | At `y == 0`: latches the scroll, calls `comp_frame()`, wakes the swipe and compositor tasks. Every chunk: copies rows from the on-screen buffers, then calls `comp_fill_done()`. |
+| **Bounce fill** | ISR, core 0 | LCD DMA, every 15 lines (32× a frame) | At `y == 0`: latches the scroll, calls `comp_frame()`, wakes the swipe and compositor tasks. Every chunk: copies rows from the on-screen buffers, then calls `fill_gap_done()`. |
 | **Touch task** | core 1, 5 | 100 Hz timer | Reads the GT911 over I2C, passes touches to the swipe code (and later the key router). |
 | **Swipe task** | core 1, 10 | Frame start | Works out the next scroll and sets it. Never touches the compositor. |
 | **Compositor task** | core 1, 4 | Frame start, `comp_page_changed()`, `comp_reset()`, and each fill end while copying a key | Takes snapshots, renders keys into the cell, copies slices into the back in fill gaps, puts up and withdraws the offer. |
@@ -320,7 +320,7 @@ Making sure an image isn't referenced before it's freed is **the client's job**,
 | | | **Compositor task** reads the frame info, picks or continues its job, renders keys into the cell one at a time. After each key's last slice, it puts up the offer if the swap rule holds. |
 | Every ~10 ms | | **Touch task** pre-empts briefly to poll the GT911. |
 | Chunks 1–31 | Bounce fill copies rows from the on-screen buffers. It never sees the back. | |
-| After each fill | `comp_fill_done()` | **Compositor task** (while mid-key) copies one slice into the back and writes it back to PSRAM, before the next fill. |
+| After each fill | `fill_gap_done()` | **Compositor task** (while mid-key; alternating with the status task when it also has rows to copy) copies one slice into the back and writes it back to PSRAM, before the next fill. |
 | Any time | Client tasks change the model and call `comp_page_changed()`. | |
 | Last ~2 ms | | With an offer up, the compositor **waits for the frame start** rather than starting a key (the guard). |
 

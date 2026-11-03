@@ -18,6 +18,7 @@
 #include "status_bar.h"
 #include "swipe.h"
 #include "usb.h"
+#include "wifi.h"
 #include "host_link.h"
 
 static const char *TAG = "host";
@@ -75,6 +76,7 @@ static void   cf_busy(bool busy, void *)
 {
     display_enable_backlight(busy ? false : s_backlight);
 }
+static void   ph_wifi_status(WifiStatus *out, void *)          { wifi_get_status(out); }
 static void   ph_restart(void *)
 {
     ESP_LOGI(TAG, "config saved: restarting");
@@ -96,6 +98,13 @@ static void wake(void)
 {
     if (s_task)
         xTaskNotifyGive(s_task);
+}
+
+// The Wi-Fi task: the connection changed
+static void on_wifi_state(WifiState state, const uint8_t ip[4])
+{
+    s_proto.PostWifiState(state, ip);
+    wake();
 }
 
 static void on_page_changed(int page, int cause)
@@ -167,13 +176,14 @@ esp_err_t host_link_init(void)
     h.backlight_on     = ph_backlight_on;
     h.set_status_text  = ph_set_status_text;
     h.restart          = ph_restart;
+    h.wifi_status      = ph_wifi_status;
     h.fw_version       = esp_app_get_description()->version;
     h.serial           = s_serial;
     ConfigFlash cf = {};
     config_flash_open(&cf);
     cf.busy = cf_busy;
     s_config.Init(cf);
-    s_proto.Init(model_store(), model_layout(), &s_config, h);
+    s_proto.Init(model_store(), model_layout(), &s_config, wifi_config(), h);
 
     if (xTaskCreatePinnedToCore(protocol_task, "protocol", PROTOCOL_TASK_STACK, nullptr,
                                 PROTOCOL_TASK_PRIO, &s_task, PROTOCOL_TASK_CORE) != pdPASS)
@@ -181,6 +191,7 @@ esp_err_t host_link_init(void)
     swipe_set_page_changed_cb(on_page_changed);
     swipe_set_key_cb(on_key);
     swipe_set_wake_cb(on_wake);
+    wifi_set_state_cb(on_wifi_state);
 
     usb_callbacks_t cb = {};
     cb.rx           = wake;
