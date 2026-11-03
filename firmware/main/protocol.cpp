@@ -94,6 +94,19 @@ namespace
         return ST_BAD_ARG;
     }
 
+    uint16_t status_of(ConfigResult r)
+    {
+        switch (r) {
+        case ConfigResult::Ok:          return ST_OK;
+        case ConfigResult::BadArg:      return ST_BAD_ARG;
+        case ConfigResult::NoSpace:     return ST_NO_SPACE;
+        case ConfigResult::BadSequence: return ST_BAD_SEQUENCE;
+        case ConfigResult::BadCrc:      return ST_BAD_CRC;
+        case ConfigResult::IoError:     return ST_IO_ERROR;
+        }
+        return ST_BAD_ARG;
+    }
+
     uint16_t status_of(LayoutResult r)
     {
         switch (r) {
@@ -108,10 +121,11 @@ namespace
     void put32(uint8_t *p, uint32_t v) { put16(p, v); put16(p + 2, v >> 16); }
 }
 
-void Protocol::Init(ImageStore *store, KeyLayout *layout, const ProtocolHost &host)
+void Protocol::Init(ImageStore *store, KeyLayout *layout, ConfigStore *config, const ProtocolHost &host)
 {
     m_store  = store;
     m_layout = layout;
+    m_config = config;
     m_host   = host;
 }
 
@@ -122,7 +136,7 @@ void Protocol::Init(ImageStore *store, KeyLayout *layout, const ProtocolHost &ho
 void Protocol::Receive(const void *data, size_t len)
 {
     const uint8_t *p = (const uint8_t *)data;
-    while (len && !m_corrupt) {
+    while (len && !m_corrupt && !m_restart) {
         uint32_t n = 0;
         switch (m_state) {
         case State::Header:
@@ -184,6 +198,12 @@ void Protocol::Receive(const void *data, size_t len)
         len -= n;
     }
     m_host.flush(m_host.ctx);
+
+    // A committed config: its response is out, now restart
+    if (m_restart && !m_restarted) {
+        m_restarted = true;
+        m_host.restart(m_host.ctx);
+    }
 }
 
 void Protocol::OnHeader()
@@ -257,6 +277,7 @@ void Protocol::EndMessage()
 void Protocol::ResetStream()
 {
     m_store->AbortUpload();
+    m_config->Abort();
     m_state   = State::Header;
     m_have    = 0;
     m_left    = 0;
@@ -316,6 +337,9 @@ void Protocol::Dispatch()
     case MSG_SET_PAGE_COUNT: OnSetPageCount(); break;
     case MSG_SET_KEYS:       OnSetKeys();      break;
     case MSG_SET_PAGE:       OnSetPage();      break;
+    case MSG_CONFIG_BEGIN:   OnConfigBegin();  break;
+    case MSG_CONFIG_DATA:    OnConfigData();   break;
+    case MSG_CONFIG_COMMIT:  OnConfigCommit(); break;
     default:                 Respond(ST_UNKNOWN_TYPE); break;
     }
 }
@@ -355,6 +379,11 @@ void Protocol::OnGetInfo()
     w.U8(m_host.current_page(m_host.ctx));
     w.Str(m_host.fw_version);
     w.Str(m_host.serial);
+    ConfigInfo config = {};
+    m_config->Stored(&config);          // none: size and CRC stay 0
+    w.U32(m_config->MaxSize());
+    w.U32(config.size);
+    w.U32(config.crc);
     Respond(ST_OK, out, w.len);
 }
 
@@ -489,6 +518,37 @@ void Protocol::OnSetPage()
         return Respond(ST_BAD_ARG);
     m_host.set_page(page, (flags & 1) != 0, m_host.ctx);
     Respond(ST_OK);
+}
+
+// u32 total size, u32 CRC-32 of the blob
+void Protocol::OnConfigBegin()
+{
+    Reader r = { m_buf, m_len, 0 };
+    if (!r.Has(8))
+        return Respond(ST_BAD_LENGTH);
+    uint32_t size = r.U32();
+    uint32_t crc  = r.U32();
+    Respond(status_of(m_config->Begin(size, crc)));
+}
+
+// u32 offset, bytes
+void Protocol::OnConfigData()
+{
+    Reader r = { m_buf, m_len, 0 };
+    if (m_len <= 4)
+        return Respond(ST_BAD_LENGTH);
+    uint32_t offset = r.U32();
+    Respond(status_of(m_config->Data(offset, m_buf + 4, m_len - 4)));
+}
+
+// Responds first: the device restarts once the response is out (Receive)
+void Protocol::OnConfigCommit()
+{
+    // The payload is empty, so its buffer is free to read the flash back into
+    ConfigResult res = m_config->Commit(m_buf, PROTO_MAX_PAYLOAD);
+    Respond(status_of(res));
+    if (res == ConfigResult::Ok)
+        m_restart = true;
 }
 
 // ===========================================================================

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "defaults": {
+    "color": "#22262e",
+    "iconColor": "white",
+    "pressed": { "color": "#3a86ff" }
+  },
+  "home": {
+    "keys": [
+      { "icon": "#play", "label": "Play", "action": { "op": "hidKey", "keys": "space" } },
+      { "icon": "#next-track", "label": "Next", "action": { "op": "hidKey", "keys": "ctrl+right" } },
+      { "icon": "#volume-mute", "label": "Mute", "action": { "op": "hidKey", "keys": "f5" } }
+    ]
+  }
+}

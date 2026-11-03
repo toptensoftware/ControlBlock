@@ -8,6 +8,11 @@ CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
+# Partition table: the app (2 MB) and the standalone config (partitions.csv).
+# Changing it needs a full flash (idf.py flash), not just the app.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
 # 8 MB octal PSRAM. Running code and read-only data from PSRAM keeps the
 # RGB panel fed while flash is busy.
 CONFIG_SPIRAM=y

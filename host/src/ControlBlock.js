@@ -7,12 +7,13 @@
 // Events: "key" ({ page, key, action, lost, timeMs }), "pageChanged"
 // ({ page, cause }), "wake" ({ lost, timeMs }: the screen was touched while
 // the backlight is off; docs/backlight.md), "error" (the read loop failed), "close".
+// uploadConfig() saves a standalone config in the device's flash (docs/protocol.md).
 
 import { Emitter } from "./Emitter.js";
 import {
     USB_VID, USB_PID, INTERFACE, ENDPOINT, PROTOCOL_VERSION, REQ_RESET_STREAM,
-    PUT_IMAGE_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
-    encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys,
+    PUT_IMAGE_PREFIX, CONFIG_DATA_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
+    encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeConfigBegin, encodeConfigData, crc32,
     decodeInfo, decodeQuery, decodeEvent, statusName,
 } from "./protocol.js";
 
@@ -20,8 +21,14 @@ const READ_SIZE        = 4096;      // a multiple of the 64-byte packet size
 // node usb only: an idle read is cancelled after this and the loop reads
 // again. The device ends every burst with a short or zero-length packet, so
 // a read in progress completes when the data stops; only idle reads time out.
-const READ_TIMEOUT_MS  = 5000;
+// A pending read can't be cancelled (usb 3.x), and close() and the process
+// exit wait for it, so this is the worst-case delay on closing an idle device
+const READ_TIMEOUT_MS  = 250;
 const DEFAULT_TIMEOUT  = 5000;      // per request
+const CONFIG_COMMIT_TIMEOUT = 30000; // the device checks and reads back the whole config
+const CONFIG_WINDOW    = 4;         // config chunks in flight: each takes the device a while (flash erases)
+const RESTART_TIMEOUT  = 15000;     // a device restarting after a config commit
+const RESTART_POLL     = 250;
 
 function typeName(type)
 {
@@ -55,6 +62,7 @@ export class ControlBlock extends Emitter
         this._pending  = new Map();     // seq -> { type, resolve, reject, timer }
         this._seq      = 0;
         this._writes   = Promise.resolve();
+        this._restarting = false;       // a config was committed: the device is about to drop off the bus
     }
 
     // Node: find a ControlBlock (by serial, or the first with our VID/PID),
@@ -128,13 +136,13 @@ export class ControlBlock extends Emitter
     // --- Requests ---
 
     // Send a request; resolves to { status, data } (data after the status)
-    request(type, payload = new Uint8Array(0))
+    request(type, payload = new Uint8Array(0), { timeoutMs = this.timeoutMs } = {})
     {
         if (!this.connected)
             return Promise.reject(new Error("Not connected"));
         const seq = this._nextSeq();
         return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => this._timeout(seq), this.timeoutMs);
+            const timer = setTimeout(() => this._timeout(seq), timeoutMs);
             this._pending.set(seq, { type, resolve, reject, timer });
             this._write(encodeMessage(type, seq, payload)).catch(err => this._fail(seq, err));
         });
@@ -142,9 +150,9 @@ export class ControlBlock extends Emitter
 
     // A request that must succeed: resolves to its data, or throws a
     // ControlBlockError
-    async call(type, payload)
+    async call(type, payload, options)
     {
-        const r = await this.request(type, payload);
+        const r = await this.request(type, payload, options);
         if (r.status !== Status.OK)
             throw new ControlBlockError(type, r.status);
         return r.data;
@@ -201,6 +209,91 @@ export class ControlBlock extends Emitter
         for (let offset = 0; offset < data.length; offset += chunk)
             sends.push(this.call(Msg.PUT_IMAGE, encodePutImage(id, data.length, offset, data.subarray(offset, offset + chunk))));
         await Promise.all(sends);
+    }
+
+    // Save a standalone config (a BPAK blob from tools/bake) in the device's
+    // flash. Skipped (resolves { uploaded: false }) if the device already has
+    // exactly this blob, unless `force`. onProgress(sent, total) after each
+    // chunk. The device blanks its screen while it writes, and restarts when
+    // it's done: the connection ends, and reconnect() finds it again.
+    async uploadConfig(blob, { force = false, onProgress } = {})
+    {
+        if (!blob.length)
+            throw new Error("Empty config");
+        const size = blob.length, crc = crc32(blob);
+        const capacity = this.info?.configCapacity;
+        if (capacity && size > capacity)
+            throw new RangeError(`Config is ${size} bytes; the device stores at most ${capacity}`);
+        if (!force && this.info && this.info.configSize === size && this.info.configCrc === crc)
+            return { uploaded: false, size, crc };
+
+        await this.call(Msg.CONFIG_BEGIN, encodeConfigBegin(size, crc));
+
+        // A small window of chunks in flight (the device answers each once
+        // it's in flash); after a failure nothing more is sent
+        const chunk = this._maxPayload() - CONFIG_DATA_PREFIX;
+        const active = new Set();
+        let offset = 0, sent = 0, failure = null;
+        while (true) {
+            while (!failure && offset < size && active.size < CONFIG_WINDOW) {
+                const part = blob.subarray(offset, offset + chunk);
+                offset += part.length;
+                const p = this.call(Msg.CONFIG_DATA, encodeConfigData(offset - part.length, part))
+                    .then(() => { sent += part.length; onProgress?.(sent, size); },
+                          err => { failure ??= err; })
+                    .finally(() => active.delete(p));
+                active.add(p);
+            }
+            if (!active.size)
+                break;
+            await Promise.race(active);
+        }
+        if (failure)
+            throw failure;
+
+        this._restarting = true;        // expected from here: the device drops off the bus
+        try {
+            await this.call(Msg.CONFIG_COMMIT, undefined, { timeoutMs: CONFIG_COMMIT_TIMEOUT });
+        } catch (err) {
+            this._restarting = false;
+            throw err;
+        }
+        if (this.info) {
+            this.info.configSize = size;
+            this.info.configCrc = crc;
+        }
+        return { uploaded: true, size, crc };
+    }
+
+    // After uploadConfig() (or any restart): wait for this connection to end,
+    // then for the same device (by serial) to come back. Resolves to a new,
+    // connected ControlBlock. This one is closed.
+    async reconnect({ timeoutMs = RESTART_TIMEOUT, intervalMs = RESTART_POLL, opener } = {})
+    {
+        const serial = this.info?.serial;
+        const deadline = Date.now() + timeoutMs;
+        while (this.connected && Date.now() < deadline)
+            await new Promise(resolve => setTimeout(resolve, Math.min(intervalMs, 50)));
+        await this.close();
+        return ControlBlock.waitOpen({ serial, timeoutMs: Math.max(0, deadline - Date.now()), intervalMs, opener });
+    }
+
+    // Open a device, trying again until it appears (it takes a second or two
+    // to restart). `opener` replaces ControlBlock.open (for tests).
+    static async waitOpen({ timeoutMs = RESTART_TIMEOUT, intervalMs = RESTART_POLL, opener = o => ControlBlock.open(o), ...options } = {})
+    {
+        const deadline = Date.now() + timeoutMs;
+        let last = null;
+        while (true) {
+            try {
+                return await opener(options);
+            } catch (err) {
+                last = err;
+            }
+            if (Date.now() >= deadline)
+                throw new Error(`Device did not come back within ${timeoutMs} ms: ${last?.message}`);
+            await new Promise(resolve => setTimeout(resolve, intervalMs));
+        }
     }
 
     // The ID goes at once; the memory once no key uses it
@@ -298,6 +391,10 @@ export class ControlBlock extends Emitter
                 // "Cancelled" (other versions may say "timed out")
                 if (/time|cancel/i.test(String(err?.message ?? err)))
                     continue;
+                if (this._restarting) {         // the device restarted after a config commit
+                    await this.close();
+                    break;
+                }
                 this.emit("error", err);
                 await this.close();
                 break;

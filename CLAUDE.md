@@ -45,10 +45,14 @@ FUZZ_SEEDS=200 mk config=release run     # long fuzz soak
 
 From `host/`: `npm install` once, then `npm test` (Node's test runner, no device: `test/FakeDevice.js` stands in for the WebUSB device). On a device: `npm run demo` and `node demo/bench.js`.
 
+### Bake tool and binpack tests
+
+From `tools/bake/`: `npm install` once, then `npm test` (no device; includes a CLI test that renders real images). From `binpack/`: `node --test test.js`.
+
 ## Repository Layout
 
 ```
-docs/              Specs: protocol.md, image-assets.md, page-compositor.md, status-bar.md, interactions.md, backlight.md (screen-buffers.md is partly superseded)
+docs/              Specs: protocol.md, image-assets.md, page-compositor.md, status-bar.md, interactions.md, backlight.md, standalone.md, config-format.md, config-upload-plan.md (screen-buffers.md is partly superseded)
 firmware/          ESP-IDF project for the device (C++)
   assets/          Generated binaries embedded in the firmware (ui.bin; test_keys.bin only for the stress run)
   test/            Host unit tests
@@ -57,7 +61,9 @@ web/               Optional web front end for configuring the device
 rle565/            Submodule: rle565 renderer (src/) and encoder (encoder/)
 node-buttonImage/  Submodule: host-side key image rendering
 SimpleLib/         Submodule: C++ utility library used instead of STL (only Core/ is used)
+binpack/           Submodule: packs JS objects into C-struct blobs (BPAK); used by the bake tool for the standalone config
 tools/test-icons/  Generates firmware/assets/*.bin (npm install && npm run build)
+tools/bake/        Bakes a standalone config file (docs/config-format.md) into the BPAK blob for the device (npm install, then node cli.js config.json -o out.bin)
 scratch/           Throwaway scripts (gitignored)
 ```
 
@@ -65,11 +71,8 @@ Clone with `--recursive` or run `git submodule update --init`.
 
 ## Operating Modes
 
-1. **Host-controlled (current goal):** Like a Stream Deck. PC software decides what each key shows; the device reports key events and the PC acts on them. Long press and double press are detected host side.
-2. **Pre-programmed (later):** USB keyboard and/or USB MIDI; each key sends configured keystrokes or MIDI.
-3. **Stand-alone (later):** Wi-Fi universal remote with "activities", each with its own pages; keys send UDP or HTTP requests.
-
-Build mode 1 now; don't block modes 2 and 3.
+1. **Host-controlled:** Like a Stream Deck. PC software decides what each key shows; the device reports key events and the PC acts on them. Long press and double press are detected host side. Built.
+2. **Standalone (designing; the default):** the device boots into it. It holds a Home page plus "activities" (each a set of pages) in flash, and keys run actions on the device: USB HID keyboard first, then MIDI, HTTP and UDP. A connected host can take over (mode 1); when it disconnects the device reverts to standalone. Spec: [`docs/standalone.md`](docs/standalone.md).
 
 ## Firmware
 
@@ -87,6 +90,7 @@ Modules in `firmware/main/` (all C++; `rle565.c` from the submodule stays C):
 - **`swipe.cpp/.h`:** drag, flick and spring glide between pages, in a task woken each frame; tuning constants at the top. Sets the status bar's selected pill. Also takes the host's page count and go-to-page (through its queue) and reports page changes once settled. Feeds touches through the touch router and shows each key's pressed look from touch-down (reverted if it becomes a swipe) until RELEASE/CANCEL.
 - **`touch_router.cpp/.h`:** swipe or key press: the swipe window, edge-ambiguous zone, and PRESS/RELEASE/CANCEL. Pure and tested; tuning constants in the header. Spec: [`docs/interactions.md`](docs/interactions.md).
 - **Backlight wake gate** ([`docs/backlight.md`](docs/backlight.md); built and unit tested, **not yet run on the hardware**): while the host has the backlight off, touches skip the router and swipe and send a WAKE event (`0x82`) per touch-down instead; the rest of that touch is swallowed. The state is in GET_INFO `flags` bit 0. Pure and tested: `touch_gate.cpp/.h` wraps `touch_router`; `swipe.cpp` feeds it, `host_link.cpp` holds the state and drives the light and the gate.
+- **`config_store.cpp/.h`, `config_flash.cpp/.h`, `crc32.h`:** the standalone config upload to the `config` flash partition (`partitions.csv`: app 2 MB, config 4 MB; header sector written last). `config_store` is platform independent and tested over a fake NOR flash; `config_flash` is the device layer; `host_link.cpp` blanks the screen during an upload and restarts after the commit. Spec: [`docs/protocol.md`](docs/protocol.md#configuration-upload), [`docs/config-upload-plan.md`](docs/config-upload-plan.md). Run on the hardware with a small blob. A changed partition table needs a full `idf.py flash` (not app only). The boot-time loader isn't built.
 - **`image_store.cpp/.h`:** the host's rle565 images under 32-bit IDs in PSRAM: streamed uploads, replace in place, deferred free, reset. Platform independent and tested. Spec: [`docs/image-assets.md`](docs/image-assets.md).
 - **`key_layout.cpp/.h`:** pages of keys, four image slots each (normal and pressed bg/fg), ref counted; all-or-nothing `SetKeys`. The compositor's client. Tested.
 - **`protocol.cpp/.h`:** the mode 1 protocol: stream parser, every request (including SET_STATUS_TEXT: the host sets the status bar's left and right text), event queue. Platform independent and tested. Spec: [`docs/protocol.md`](docs/protocol.md).
@@ -140,7 +144,7 @@ All custom. Do **not** use LVGL.
 - No driver needed: MS OS 2.0 descriptors (WinUSB) and WebUSB BOS descriptors (see TinyUSB's `webusb_serial` example). Linux needs a udev rule. Fallback if troublesome: CDC-ACM.
 - Clients: Node.js (`usb` package 3.x, which follows the WebUSB API) and browsers (WebUSB), same code in `host/src/ControlBlock.js`. Quirks of `usb` 3.x: a read timeout throws "Cancelled"; `controlTransferOut` needs a data argument.
 - Development IDs `303a:4020`. Windows caches the MS OS 2.0 descriptor per VID/PID/bcdDevice: bump `USB_BCD_DEVICE` in `usb.cpp` when it changes.
-- Composite device from the start, so modes 2 and 3 can add HID keyboard/MIDI interfaces.
+- Composite device from the start, so standalone mode can add HID keyboard/MIDI interfaces.
 - Vendor bulk carries every mode-1 message (not split with HID: one interface keeps uploads and key definitions in order).
 - Images go rle565-encoded under host-chosen 32-bit IDs (0 = none; a CRC makes a good one) and stay on the device, so the host only resends what changed. Uploading to an existing ID replaces it everywhere; freeing is deferred while keys still use the image. See [`docs/image-assets.md`](docs/image-assets.md).
 - **Host-side key images:** [node-buttonImage](https://github.com/toptensoftware/node-buttonImage) renders faces and icons from SVG to RGBA (stock icons `svgFile: "#name"` make handy test content); `host/` encodes them to rle565 with alpha, 128x128 with transparent padding.
@@ -158,7 +162,8 @@ All custom. Do **not** use LVGL.
 - **Backlight-on USB glitch:** when the backlight turns on, the CH343P UART USB port disconnects and reconnects (Windows connect sound), with both USB ports powered. Cause unknown: the CH422G bytes match `aclock`'s and `USB_SEL` is untouched, and a web search found nothing. Isolate with `BACKLIGHT_CYCLE_S`: check for an ESP32 reboot in the log, try with only one cable, and see whether it happens on every wake.
 - Host library: long and double press helpers (protocol.md says the host detects them).
 - Flash writes (icon cache, NVS) may stall the bounce ISR (`CONFIG_LCD_RGB_ISR_IRAM_SAFE` is off). Test for display glitches when they arrive.
-- How pages and keys are stored and configured for modes 2 and 3.
+- **Config upload:** works on the hardware (16 KB sample: blank, write, restart, re-enumerate, verify, skip when unchanged, `--force`, survives a reboot). Not yet checked: a host that vanishes mid-upload leaving the screen dark until the next RESET_STREAM (an upload idle timeout would fix it), a large blob (64 KB block erases, over-capacity refusal) and display glitches during erase. `tools/bake --upload` / `host/` `uploadConfig()` are the clients.
+- Standalone mode: the boot loader for the stored config, the action dispatch (http/udp library) and stateful actions: see [`docs/standalone.md`](docs/standalone.md).
 
 ## Conventions
 

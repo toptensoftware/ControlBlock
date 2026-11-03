@@ -6,6 +6,8 @@
 #include "Core.h"
 #include "protocol.h"
 #include "store_env.h"
+#include "flash_env.h"
+#include "crc32.h"
 
 using namespace SimpleLib;
 
@@ -50,6 +52,8 @@ namespace
         StoreEnv   env;
         ImageStore store;
         KeyLayout  layout;
+        FakeFlash  flash;
+        ConfigStore config;
         Protocol   proto;
 
         List<uint8_t> out;
@@ -58,10 +62,13 @@ namespace
         bool animate = false, backlight = true;
         char status_text[2][64] = {};           // last text per STATUS_LEFT / STATUS_RIGHT
         int  status_sets = 0;
+        int  restarts = 0;
         List<int> changed_pages;
 
-        explicit Fixture(uint32_t capacity = 1u << 20)
+        explicit Fixture(uint32_t capacity = 1u << 20) : flash(16 * CONFIG_SECTOR)
         {
+            config.Init(flash.Host());
+
             store.Init(env.Host(), capacity, COMP_KEY_SIZE, COMP_KEY_SIZE);
             store.SetListener(&layout);
             layout.Init(&store, Changed, this);
@@ -90,10 +97,11 @@ namespace
                 strcpy(f->status_text[field], t);
                 f->status_sets++;
             };
+            h.restart          = [](void *c) { ((Fixture *)c)->restarts++; };
             h.fw_version       = "1.2.3";
             h.serial           = "ABCDEF";
             h.ctx              = this;
-            proto.Init(&store, &layout, h);
+            proto.Init(&store, &layout, &config, h);
         }
 
         static void Changed(int page, uint32_t, void *c)
@@ -249,6 +257,8 @@ Fact("Protocol Get Info")
     Assert(m.U8At(i) == 0);                                   i += 1;     // current page
     Assert(m.U8At(i) == 5 && memcmp(m.data + i + 1, "1.2.3", 5) == 0); i += 6;
     Assert(m.U8At(i) == 6 && memcmp(m.data + i + 1, "ABCDEF", 6) == 0); i += 7;
+    Assert(m.U32At(i) == 15 * CONFIG_SECTOR);                 i += 4;     // config capacity
+    Assert(m.U32At(i) == 0 && m.U32At(i + 4) == 0);           i += 8;     // nothing stored
     Assert(m.len == i);
 }
 
@@ -690,4 +700,245 @@ Fact("Protocol Events Wait While The Host Isn't Reading")
     Assert(f.proto.SendEvents());
     List<Msg> e = f.Read();
     Assert(e.GetCount() == 1 && e[0].U8At(2) == KEY_ACTION_UP);
+}
+
+// ---------------------------------------------------------------------------
+// Config upload (docs/protocol.md "Configuration upload")
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    Bytes Blob(uint32_t size, uint32_t seed = 7)
+    {
+        Bytes b;
+        uint32_t x = seed;
+        for (uint32_t i = 0; i < size; i++) {
+            x = x * 1664525u + 1013904223u;
+            b.U8(x >> 24);
+        }
+        return b;
+    }
+
+    uint32_t CrcOf(const Bytes &b) { return crc32(0, b.b.GetBuffer(), (size_t)b.Count()); }
+
+    Bytes ConfigBegin(uint32_t size, uint32_t crc)
+    {
+        Bytes p;
+        p.U32(size).U32(crc);
+        return p;
+    }
+
+    Bytes ConfigData(const Bytes &blob, uint32_t offset, uint32_t len)
+    {
+        Bytes p;
+        p.U32(offset).Raw(blob.b.GetBuffer() + offset, len);
+        return p;
+    }
+
+    // Begin, chunked data, commit: returns the commit's status
+    uint16_t UploadConfig(Fixture &f, const Bytes &blob, uint32_t chunk, int piece = 0)
+    {
+        uint32_t size = (uint32_t)blob.Count();
+        Check(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(size, CrcOf(blob))).Status() == ST_OK);
+        for (uint32_t off = 0; off < size; off += chunk) {
+            uint32_t n = size - off < chunk ? size - off : chunk;
+            Check(f.Request(MSG_CONFIG_DATA, ConfigData(blob, off, n), piece).Status() == ST_OK);
+        }
+        return f.Request(MSG_CONFIG_COMMIT).Status();
+    }
+}
+
+Fact("Protocol Config Upload Saves Blanks And Restarts")
+{
+    Fixture f;
+    Bytes blob = Blob(20000);
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(20000, CrcOf(blob))).Status() == ST_OK);
+    Assert(f.flash.busy);                           // the screen is dark for the upload
+    for (uint32_t off = 0; off < 20000; off += 8188)
+        Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, off, 20000 - off < 8188 ? 20000 - off : 8188)).Status() == ST_OK);
+    Assert(f.restarts == 0);
+    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_OK);     // the response was sent...
+    Assert(f.restarts == 1);                                    // ...then the device restarted
+
+    ConfigInfo info;
+    Assert(f.config.Stored(&info) && info.size == 20000 && info.crc == CrcOf(blob));
+    Assert(memcmp(f.flash.mem + CONFIG_DATA_OFFSET, blob.b.GetBuffer(), 20000) == 0);
+}
+
+// A host can skip an upload of the config the device already has
+Fact("Protocol Get Info Reports The Stored Config")
+{
+    Fixture f;
+    Bytes blob = Blob(5000);
+    uint8_t scratch[512];
+    Assert(f.config.Begin(5000, CrcOf(blob)) == ConfigResult::Ok);
+    Assert(f.config.Data(0, blob.b.GetBuffer(), 5000) == ConfigResult::Ok);
+    Msg during = f.Request(MSG_GET_INFO);                   // an upload under way stores nothing yet
+    Assert(during.U32At(during.len - 8) == 0 && during.U32At(during.len - 4) == 0);
+    Assert(f.config.Commit(scratch, sizeof(scratch)) == ConfigResult::Ok);
+
+    Msg m = f.Request(MSG_GET_INFO);
+    int tail = m.len - 12;
+    Assert(m.U32At(tail) == 15 * CONFIG_SECTOR && m.U32At(tail + 4) == 5000 && m.U32At(tail + 8) == CrcOf(blob));
+}
+
+Fact("Protocol Config Upload Works Arriving In Any Pieces")
+{
+    static const int pieces[] = { 1, 5, 64 };
+    for (int piece : pieces) {
+        Fixture f;
+        Bytes blob = Blob(3000, piece);
+        Assert(UploadConfig(f, blob, 1000, piece) == ST_OK);
+        Assert(f.restarts == 1);
+        ConfigInfo info;
+        Assert(f.config.Stored(&info) && info.crc == CrcOf(blob));
+    }
+}
+
+Fact("Protocol Config Upload Pipelined")
+{
+    Fixture f;
+    Bytes blob = Blob(3000);
+    Bytes all;
+    all.Add(Message(MSG_CONFIG_BEGIN, 1, ConfigBegin(3000, CrcOf(blob))));
+    for (uint32_t off = 0; off < 3000; off += 1000)
+        all.Add(Message(MSG_CONFIG_DATA, (uint16_t)(2 + off / 1000), ConfigData(blob, off, 1000)));
+    all.Add(Message(MSG_CONFIG_COMMIT, 9));
+    f.Send(all);
+    List<Msg> r = f.Read();
+    Assert(r.GetCount() == 5);
+    for (int i = 0; i < 5; i++)
+        Assert(r[i].Status() == ST_OK);
+    Assert(f.restarts == 1);
+}
+
+Fact("Protocol Config Messages After The Commit Are Ignored")
+{
+    Fixture f;
+    Bytes blob = Blob(500);
+    Bytes all;
+    all.Add(Message(MSG_CONFIG_BEGIN, 1, ConfigBegin(500, CrcOf(blob))));
+    all.Add(Message(MSG_CONFIG_DATA, 2, ConfigData(blob, 0, 500)));
+    all.Add(Message(MSG_CONFIG_COMMIT, 3));
+    all.Add(Message(MSG_PING, 4));
+    f.Send(all);
+    List<Msg> r = f.Read();
+    Assert(r.GetCount() == 3 && r[2].type == MSG_CONFIG_COMMIT);
+    Assert(f.restarts == 1);
+}
+
+Fact("Protocol Config Begin Errors")
+{
+    Fixture f;
+    Bytes short_begin;
+    short_begin.U32(100).U16(1);
+    Assert(f.Request(MSG_CONFIG_BEGIN, short_begin).Status() == ST_BAD_LENGTH);
+    Assert(f.Request(MSG_CONFIG_BEGIN).Status() == ST_BAD_LENGTH);
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(0, 0)).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(15 * CONFIG_SECTOR + 1, 0)).Status() == ST_NO_SPACE);
+    Assert(!f.flash.busy && f.flash.erase_calls == 0);
+
+    // The biggest that fits
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(15 * CONFIG_SECTOR, 0)).Status() == ST_OK);
+
+    f.flash.fail_erase_in = 1;
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(100, 0)).Status() == ST_IO_ERROR);
+    Assert(!f.flash.busy);
+}
+
+Fact("Protocol Config Data Errors")
+{
+    Fixture f;
+    Bytes blob = Blob(3000);
+
+    // No begin
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 100)).Status() == ST_BAD_SEQUENCE);
+
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob))).Status() == ST_OK);
+    Bytes no_offset;
+    no_offset.U16(0);
+    Assert(f.Request(MSG_CONFIG_DATA, no_offset).Status() == ST_BAD_LENGTH);
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 0)).Status() == ST_BAD_LENGTH);      // no data
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 1000)).Status() == ST_OK);            // the upload survived
+
+    // A gap ends it; the stream stays in step
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 2000, 1000)).Status() == ST_BAD_SEQUENCE);
+    Assert(!f.flash.busy);
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 1000, 1000)).Status() == ST_BAD_SEQUENCE);
+    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_BAD_SEQUENCE);
+    Assert(f.Request(MSG_PING).Status() == ST_OK);
+    Assert(f.restarts == 0);
+
+    // Past the end
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(100, 0)).Status() == ST_OK);
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 101)).Status() == ST_BAD_ARG);
+
+    // A flash error
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob))).Status() == ST_OK);
+    f.flash.fail_write_in = 1;
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 1000)).Status() == ST_IO_ERROR);
+    Assert(!f.flash.busy);
+}
+
+Fact("Protocol Config Commit Errors")
+{
+    Fixture f;
+    Bytes blob = Blob(3000);
+    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_BAD_SEQUENCE);
+
+    // Incomplete: the upload carries on
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob))).Status() == ST_OK);
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 1000)).Status() == ST_OK);
+    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_BAD_SEQUENCE);
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 1000, 2000)).Status() == ST_OK);
+    Assert(f.restarts == 0);
+
+    // Wrong CRC
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob) + 1)).Status() == ST_OK);
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 3000)).Status() == ST_OK);
+    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_BAD_CRC);
+    ConfigInfo info;
+    Assert(!f.config.Stored(&info) && f.restarts == 0 && !f.flash.busy);
+
+    // A write that went wrong, found by the read-back
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob))).Status() == ST_OK);
+    f.flash.corrupt_next_write = true;
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 3000)).Status() == ST_OK);
+    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_IO_ERROR);
+    Assert(!f.config.Stored(&info) && f.restarts == 0);
+
+    // And a good one still works afterwards
+    Assert(UploadConfig(f, blob, 1500) == ST_OK);
+    Assert(f.restarts == 1);
+}
+
+Fact("Protocol Reset Stream Abandons A Config Upload But Reset Does Not")
+{
+    Fixture f;
+    Bytes blob = Blob(3000);
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob))).Status() == ST_OK);
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 1000)).Status() == ST_OK);
+    Assert(f.Request(MSG_RESET).Status() == ST_OK);
+    Assert(f.config.Active() && f.flash.busy);
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 1000, 1000)).Status() == ST_OK);
+
+    f.proto.ResetStream();
+    Assert(!f.config.Active() && !f.flash.busy);
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 2000, 1000)).Status() == ST_BAD_SEQUENCE);
+    ConfigInfo info;
+    Assert(!f.config.Stored(&info));
+}
+
+Fact("Protocol Config Upload Is Independent Of Image Uploads")
+{
+    Fixture f;
+    Bytes blob = Blob(2000);
+    const void *icon = f.env.Icon(0);
+    uint32_t size = f.env.Size(icon), half = size / 2;
+    Assert(f.Request(MSG_PUT_IMAGE, f.PutImage(2, icon, 0, half)).Status() == ST_OK);
+    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(2000, CrcOf(blob))).Status() == ST_OK);
+    Assert(f.Request(MSG_PUT_IMAGE, f.PutImage(2, icon, half)).Status() == ST_OK);
+    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 2000)).Status() == ST_OK);
+    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_OK);
+    Assert(f.store.IsLive(2));
 }

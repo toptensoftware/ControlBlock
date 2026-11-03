@@ -5,6 +5,7 @@
 // writes responses and events for bulk IN. Platform independent: the device
 // (host_link.cpp) supplies the transport and the screen through
 // ProtocolHost. Spec: docs/protocol.md (wire format), docs/image-assets.md.
+// The standalone config upload is ConfigStore's (config_store.h).
 //
 // Receive(), ResetStream(), SendEvents() and Idle() run on one task (the
 // protocol task). PostKey(), PostPageChanged() and PostWake() are safe from any task.
@@ -14,6 +15,7 @@
 #include "port.h"
 #include "image_store.h"
 #include "key_layout.h"
+#include "config_store.h"
 
 #define PROTO_VERSION        1
 #define PROTO_MAGIC          0x4243         // "CB" as bytes 43 42
@@ -42,6 +44,9 @@ enum : uint8_t
     MSG_SET_PAGE_COUNT = 0x20,
     MSG_SET_KEYS       = 0x21,
     MSG_SET_PAGE       = 0x22,
+    MSG_CONFIG_BEGIN   = 0x30,
+    MSG_CONFIG_DATA    = 0x31,
+    MSG_CONFIG_COMMIT  = 0x32,
 
     EVT_KEY            = 0x80,
     EVT_PAGE_CHANGED   = 0x81,
@@ -62,6 +67,8 @@ enum : uint16_t
     ST_BAD_IMAGE    = 5,
     ST_NOT_FOUND    = 6,
     ST_BAD_SEQUENCE = 8,
+    ST_BAD_CRC      = 9,
+    ST_IO_ERROR     = 10,
 };
 
 // KEY event actions, PAGE_CHANGED causes
@@ -108,6 +115,10 @@ struct ProtocolHost
     // for long (the bar is drawn by its own task).
     void (*set_status_text)(int field, const char *text, void *ctx);
 
+    // After a config commit's response has been sent: restart the device.
+    // Should give USB a moment to send it first; need not return.
+    void (*restart)(void *ctx);
+
     const char *fw_version;
     const char *serial;
     void       *ctx;
@@ -116,7 +127,7 @@ struct ProtocolHost
 class Protocol
 {
 public:
-    void Init(ImageStore *store, KeyLayout *layout, const ProtocolHost &host);
+    void Init(ImageStore *store, KeyLayout *layout, ConfigStore *config, const ProtocolHost &host);
 
     // Bytes from the host (bulk OUT), in order, in any pieces. Complete
     // messages are handled as they arrive and their responses flushed.
@@ -175,17 +186,23 @@ private:
     void OnSetPageCount();
     void OnSetKeys();
     void OnSetPage();
+    void OnConfigBegin();
+    void OnConfigData();
+    void OnConfigCommit();
     bool ReadIds(uint16_t *count);
     void PostEvent(const Event &e);
 
     ImageStore  *m_store = nullptr;
     KeyLayout   *m_layout = nullptr;
+    ConfigStore *m_config = nullptr;
     ProtocolHost m_host = {};
 
     // Parser
     State    m_state = State::Header;
     bool     m_corrupt = false;
     bool     m_host_seen = false;
+    bool     m_restart = false;     // a config was committed: nothing more is read, the device restarts
+    bool     m_restarted = false;
     uint8_t  m_hdr[PROTO_HEADER_SIZE];
     uint32_t m_have = 0;            // bytes of the current part (header, prefix, payload)
     uint8_t  m_type = 0;

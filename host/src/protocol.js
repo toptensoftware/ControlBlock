@@ -13,6 +13,7 @@ export const HEADER_SIZE       = 12;
 export const REQ_RESET_STREAM  = 0x10;
 export const KEYDEF_SIZE       = 20;
 export const PUT_IMAGE_PREFIX  = 12;
+export const CONFIG_DATA_PREFIX = 4;       // CONFIG_DATA: u32 offset, then the bytes
 
 export const STATUS_TEXT_MAX_BYTES = 47;        // SET_STATUS_TEXT: bytes of UTF-8 per text
 export const StatusText = Object.freeze({ LEFT: 0, RIGHT: 1 });
@@ -34,6 +35,9 @@ export const Msg = Object.freeze({
     SET_PAGE_COUNT: 0x20,
     SET_KEYS:       0x21,
     SET_PAGE:       0x22,
+    CONFIG_BEGIN:   0x30,
+    CONFIG_DATA:    0x31,
+    CONFIG_COMMIT:  0x32,
     KEY:            0x80,       // events
     PAGE_CHANGED:   0x81,
     WAKE:           0x82,
@@ -51,6 +55,8 @@ export const Status = Object.freeze({
     BAD_IMAGE:    5,
     NOT_FOUND:    6,
     BAD_SEQUENCE: 8,
+    BAD_CRC:      9,
+    IO_ERROR:     10,
 });
 
 export const KeyAction = Object.freeze({ PRESS: 0, RELEASE: 1, CANCEL: 2 });
@@ -132,6 +138,27 @@ export class MessageParser
     }
 }
 
+// CRC-32 as zlib's crc32() (the device's config check: firmware/main/crc32.h).
+// Pass the previous result as `crc` to chain pieces. Always unsigned.
+const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++)
+            c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+        t[i] = c >>> 0;
+    }
+    return t;
+})();
+
+export function crc32(data, crc = 0)
+{
+    crc = ~crc >>> 0;
+    for (let i = 0; i < data.length; i++)
+        crc = CRC_TABLE[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+    return ~crc >>> 0;
+}
+
 // Little-endian payload builder
 export class Writer
 {
@@ -201,6 +228,18 @@ export function encodePutImage(id, total, offset, chunk)
     return new Writer(PUT_IMAGE_PREFIX + chunk.length).u32(id).u32(total).u32(offset).raw(chunk).done();
 }
 
+// CONFIG_BEGIN: the blob's size and CRC-32
+export function encodeConfigBegin(size, crc)
+{
+    return new Writer(8).u32(size).u32(crc).done();
+}
+
+// One CONFIG_DATA chunk
+export function encodeConfigData(offset, chunk)
+{
+    return new Writer(CONFIG_DATA_PREFIX + chunk.length).u32(offset).raw(chunk).done();
+}
+
 // keys: [{ page, key, bg, fg, pressedBg, pressedFg, disabled, empty }], IDs 0/undefined = none
 export function encodeKeys(keys)
 {
@@ -239,6 +278,9 @@ export function decodeInfo(data)
     info.currentPage       = r.u8();
     info.firmwareVersion   = r.str();
     info.serial            = r.str();
+    info.configCapacity    = r.u32();      // 0 from a device without config storage
+    info.configSize        = r.u32();      // 0: nothing stored
+    info.configCrc         = r.u32();
     return info;
 }
 

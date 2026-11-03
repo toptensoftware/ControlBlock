@@ -40,5 +40,11 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: Ke
   - It sets the status bar's texts. Only the fields given change, and `""` clears one.
   - Each is at most 47 bytes of UTF-8 (the font is ASCII only for now). A longer or invalid text throws before anything is sent.
   - The device has no clock: send the time yourself, e.g. `setStatusText({ right: "12:35" })`.
+- **`uploadConfig(blob, { force, onProgress })`:**
+  - It saves a standalone config (the BPAK blob from `tools/bake`) in the device's flash ([`docs/protocol.md`](../docs/protocol.md#configuration-upload)).
+  - The device's screen goes dark while it writes, and the device **restarts** when it's done: the connection closes by itself (no `error` event). `reconnect()` waits for the same device (by serial) to come back and resolves to a new `ControlBlock`; its `info.configSize` and `info.configCrc` show what the device kept.
+  - It resolves `{ uploaded: false }` and sends nothing if the device already has exactly this blob (`force: true` sends it anyway).
+  - A failure (`ControlBlockError`: `NO_SPACE`, `BAD_CRC`, `IO_ERROR`…) leaves the device with no config until the next good upload.
+  - `crc32(bytes)` (zlib's) is exported, as are `info.configCapacity`, `configSize` and `configCrc`.
 - **`freeImages(ids)`:** the ID goes at once, and the memory once no key uses it.
 - **Browsers:** `ControlBlock` and `src/protocol.js` work on any WebUSB `USBDevice`, so you can pass `navigator.usb`'s. `src/images.js` is Node only (it uses sharp and the rle565 encoder).

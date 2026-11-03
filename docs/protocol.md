@@ -2,7 +2,7 @@
 
 This is the host ↔ device protocol for **mode 1 (host-controlled)**. The PC software uploads images and key layouts. The device draws them, runs paging, swiping and press feedback on its own, and reports key presses back to the PC.
 
-How images are stored, replaced and freed on the device is in [`image-assets.md`](image-assets.md). Backlight on/off and the wake-on-touch event are in [`backlight.md`](backlight.md).
+How images are stored, replaced and freed on the device is in [`image-assets.md`](image-assets.md). Backlight on/off and the wake-on-touch event are in [`backlight.md`](backlight.md). Uploading the standalone config to flash is [below](#configuration-upload); how it's stored is in [`standalone.md`](standalone.md).
 
 ## Design summary
 
@@ -86,7 +86,9 @@ Any data specific to that response follows these two fields.
 | 5 | BAD_IMAGE | Data failed rle565 validation, or isn't `key_w`×`key_h` |
 | 6 | NOT_FOUND | Referenced image ID doesn't exist |
 | 7 | — | Reserved (was IN_USE; freeing is never refused now) |
-| 8 | BAD_SEQUENCE | Upload chunk out of order or not started |
+| 8 | BAD_SEQUENCE | Upload chunk out of order or not started, or a config commit before all the data arrived |
+| 9 | BAD_CRC | Config upload: the data doesn't match the CRC-32 given at `CONFIG_BEGIN` |
+| 10 | IO_ERROR | Config upload: a flash erase, write or read-back failed |
 
 ## Host → device requests
 
@@ -104,6 +106,9 @@ Any data specific to that response follows these two fields.
 | `0x20` | SET_PAGE_COUNT | Set the number of pages |
 | `0x21` | SET_KEYS | Define one or more keys (applied together) |
 | `0x22` | SET_PAGE | Go to a page |
+| `0x30` | CONFIG_BEGIN | Start uploading the standalone config (erases the stored one) |
+| `0x31` | CONFIG_DATA | One chunk of the config |
+| `0x32` | CONFIG_COMMIT | Finish: verify, save and restart the device |
 
 ### `0x00` PING
 
@@ -137,6 +142,11 @@ Any data specific to that response follows these two fields.
 | u8 | current_page | |
 | u8 | fw_version_len | Followed by `fw_version` (UTF-8) |
 | u8 | serial_len | Followed by `serial` (UTF-8). Lets the host tell several devices apart |
+| u32 | config_capacity | Largest config the device can store, in bytes |
+| u32 | config_size | Size of the stored config; `0` if there is none (or an upload is in progress) |
+| u32 | config_crc | CRC-32 of the stored config; `0` if there is none |
+
+`config_size` and `config_crc` let a host skip an upload when the device already has the same config. They describe what was committed; the CRC is not re-checked against the flash for each `GET_INFO`.
 
 ### `0x02` RESET
 
@@ -290,6 +300,52 @@ Each `KeyDef`:
 | u8 | page | |
 | u8 | flags | bit 0 `ANIMATE`: glide there as if the user had swiped |
 
+## Configuration upload
+
+Saves the standalone-mode config (a BPAK blob from `tools/bake`, see [`standalone.md`](standalone.md)) in the device's `config` flash partition. The device doesn't look inside the blob here: it checks the size and a CRC-32 and stores the bytes. The CRC-32 is the usual zlib one (polynomial `0xEDB88320`, initial and final XOR `0xFFFFFFFF`; the CRC of `"123456789"` is `0xCBF43926`).
+
+```
+CONFIG_BEGIN(size, crc)  →  CONFIG_DATA(0, …) … CONFIG_DATA(n, …)  →  CONFIG_COMMIT  →  device restarts
+```
+
+### `0x30` CONFIG_BEGIN
+
+**Request:**
+
+| Type | Field | Notes |
+|---|---|---|
+| u32 | total_size | Size of the blob in bytes, at least 1 and at most `config_capacity` |
+| u32 | crc32 | CRC-32 of the whole blob |
+
+- Starts a new upload, abandoning one in progress.
+- **The stored config is destroyed** as soon as the upload starts (the response is `OK`), even if the upload later fails: the device then has no config and boots to an empty Home.
+- `BAD_LENGTH` if the payload is shorter than 8 bytes. `BAD_ARG` if `total_size` is 0, `NO_SPACE` if it is more than `config_capacity`; in both cases nothing changes. `IO_ERROR` if the flash can't be erased.
+- **The screen goes dark** (backlight off) until the upload ends. Flash erases and writes stall the display, so it is blanked rather than glitching. A failed upload, `RESET_STREAM` or a new `BEGIN` that fails restores the backlight to the host's setting ([`SET_BACKLIGHT`](#0x05-set_backlight)).
+
+### `0x31` CONFIG_DATA
+
+**Request:**
+
+| Type | Field | Notes |
+|---|---|---|
+| u32 | offset | Where this chunk goes in the blob |
+| … | data | Chunk bytes, at least 1, up to `max_payload − 4` |
+
+- **Order:** the first chunk has `offset = 0` and each later chunk starts where the previous one ended (like [`PUT_IMAGE`](#0x10-put_image)). Chunks may be pipelined; other message types may be interleaved.
+- **Errors end the upload:** `BAD_SEQUENCE` (no upload in progress, or the offset isn't the next one), `BAD_ARG` (the chunk runs past `total_size`) or `IO_ERROR`. The stored config stays destroyed and every later `CONFIG_DATA` gets `BAD_SEQUENCE` until a new `CONFIG_BEGIN`. `BAD_LENGTH` (no data) changes nothing.
+- A chunk's response arrives once it is in flash. A chunk can take tens of milliseconds (erases), so a host shouldn't have unlimited chunks in flight with a fixed timeout; the `host/` library keeps a small window.
+
+### `0x32` CONFIG_COMMIT
+
+**Request:** No payload.
+
+- `BAD_SEQUENCE` if no upload is in progress, or if fewer than `total_size` bytes have arrived (the upload carries on).
+- Otherwise the device checks the CRC-32 of the bytes it received (`BAD_CRC` if wrong), re-reads the flash and checks it again (`IO_ERROR` if wrong), then writes the config's header. Any failure ends the upload with the config destroyed, as above.
+- On `OK` the config is saved and **the device restarts** right after sending the response. The host sees its USB connection drop and should wait for the device to come back (about a second or two), then read `config_size` / `config_crc` from `GET_INFO` to confirm.
+- Bytes sent after `CONFIG_COMMIT` in the same stream are ignored.
+
+**Other messages and the upload:** `RESET_STREAM` abandons the upload (the config stays destroyed). `RESET` doesn't touch it. Everything else works as usual during an upload, but the screen is dark.
+
 ## Device → host events
 
 Events have the `EVENT` flag set, and `seq` is the device's event counter.
@@ -351,6 +407,10 @@ The screen was touched while the backlight is off (see [`SET_BACKLIGHT`](#0x05-s
 
 ## Typical session
 
+Uploading a standalone config instead: `RESET_STREAM`, `GET_INFO` (skip the rest if `config_size` and `config_crc` already match), `CONFIG_BEGIN`, pipelined `CONFIG_DATA`, `CONFIG_COMMIT`, then wait for the device to restart.
+
+And for a host-controlled session:
+
 1. Open the device and send RESET_STREAM (control request).
 2. Send `GET_INFO`: check `protocol_version` and read the geometry.
 3. Render the faces and icons (with labels), encode them with the rle565 encoder and compute their IDs (CRC-32). Send `QUERY_IMAGES`, then `PUT_IMAGE` only for the missing ones, pipelined.
@@ -360,8 +420,7 @@ The screen was touched while the backlight is off (see [`SET_BACKLIGHT`](#0x05-s
 ## Device state lifetime
 
 - Layout and images are kept in PSRAM while the device is powered. A host app that restarts can reconnect, query what the device has, and avoid uploading it again.
-- Nothing is saved to flash in v1.
-- Modes 2 and 3 will need layout and images saved to flash. They'll reuse the same image and KeyDef formats.
+- Layout and images are never saved to flash. Only the standalone config is ([configuration upload](#configuration-upload)); the standalone mode that runs it is in [`standalone.md`](standalone.md).
 - The device can't tell when the host app closes, because there's no signal for it. The host can explicitly `RESET` before it exits if it wants the screen cleared.
 
 ## Open questions

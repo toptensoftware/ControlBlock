@@ -7,3 +7,6 @@
 [submodule "SimpleLib"]
 	path = SimpleLib
 	url = https://github.com/toptensoftware/SimpleLib.git
+[submodule "binpack"]
+	path = binpack
+	url = https://github.com/toptensoftware/binpack

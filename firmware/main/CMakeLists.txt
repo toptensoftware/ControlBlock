@@ -21,6 +21,8 @@ idf_component_register(
         "key_layout.cpp"
         "model.cpp"
         "protocol.cpp"
+        "config_store.cpp"
+        "config_flash.cpp"
         "host_link.cpp"
         "usb.cpp"
         "swipe.cpp"
@@ -43,6 +45,8 @@ idf_component_register(
         esp_driver_i2c
         esp_hw_support
         esp_lcd
+        esp_partition
+        esp_system
         esp_mm
         esp_rom
         esp_timer
