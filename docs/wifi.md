@@ -111,7 +111,7 @@ The `nvs` partition (24 KB at `0x9000`) already exists in `partitions.csv`.
 - **Equality check before writing:** read the stored blob and skip the write if identical, so repeated sets cost no wear.
 - **Boot:** `nvs_flash_init()` early in `main`. If it returns `ESP_ERR_NVS_NO_FREE_PAGES` or `ESP_ERR_NVS_NEW_VERSION_FOUND`, erase and init again (the credentials are lost; the host can set them again). The Wi-Fi driver uses NVS too (PHY calibration data), and so does the planned standalone state; they use their own namespaces.
 - **The driver must not store credentials itself.** Call `esp_wifi_set_storage(WIFI_STORAGE_RAM)` before setting the config, so there is exactly one copy of the credentials (ours), and the driver does not write to flash on every `esp_wifi_set_config`.
-- **Flash writes and the display:** an NVS write is a flash write, and flash writes stall the bounce ISR (`CONFIG_LCD_RGB_ISR_IRAM_SAFE` is off; this is the same issue as the config upload). A credentials write is small (one flash page, plus an occasional page erase when NVS garbage-collects) and rare. Accept a possible one-frame glitch at first and check on the hardware. If it shows, blank the screen around the write as the config upload does.
+- **Flash writes and the display:** an NVS write is a flash write, and flash writes stall the bounce ISR (`CONFIG_LCD_RGB_ISR_IRAM_SAFE` is off; this is the same issue as the config upload). A credentials write is small (one flash page, plus an occasional page erase when NVS garbage-collects) and rare. Not a problem on the hardware, since credentials are very rarely written.
 - The Wi-Fi stack also writes to NVS on its own (PHY calibration data, when it changes) around `esp_wifi_start`. Check for a display glitch there on the hardware too.
 
 ## Security
@@ -142,7 +142,7 @@ To change or clear the credentials while running: `esp_wifi_disconnect()`, `esp_
 The state machine is separate from the driver calls (pure: events in, "connect now" / "retry in N ms" / "state changed" out; the device layer owns the timer) so it is host tested.
 
 **Settings to review** (in `sdkconfig.defaults`; measure the heap before and after, see the RAM note):
-- `esp_wifi_set_ps(WIFI_PS_NONE)` after connecting. The default modem sleep adds tens of ms to each request, which hurts button-to-action latency; the board is USB powered.
+- `esp_wifi_set_ps(WIFI_PS_NONE)` after connecting. The default modem sleep adds tens of ms to each request, which hurts button-to-action latency, so power save is off while USB powered. **Later:** the device should also run off a battery for short periods; revisit power save (and the backlight) then, measuring the latency cost.
 - Fewer buffers: lower static RX buffers (`CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM`), dynamic RX/TX buffers and the AMPDU windows from their defaults. The traffic is a few small HTTP/UDP requests, not streaming.
 - Leave `CONFIG_ESP_WIFI_IRAM_OPT` / `RX_IRAM_OPT` off unless the IRAM is plentiful (they trade RAM for speed we don't need).
 - Don't enable BLE or the Wi-Fi/BLE coexistence code.
@@ -182,7 +182,7 @@ Each step: write or adjust the tests first, see them fail, then implement. Steps
 
 ## Built, and where it differs from the design
 
-Steps 1 to 7 of the plan are done. Step 6 (`wifi.cpp`) connects on the board; the remaining checks of step 8 are the user's (not yet confirmed: reboot and reflash persistence, wrong password backoff, router restart recovery, display glitches from the NVS write and the connect, power-save latency).
+Steps 1 to 7 of the plan are done. Step 6 (`wifi.cpp`) connects on the board; credentials survive a reboot and a reflash, and the NVS write doesn't glitch the display. Not yet confirmed: wrong password backoff and router restart recovery. Power save is for later (battery use).
 
 - **Files:** `wifi_credentials.cpp/.h`, `wifi_state.cpp/.h` (pure, host tested), `wifi.cpp/.h` (device), `heap_log.h` (the heap log line, shared with `main.cpp`). Tests: `TestWifiCredentials.cpp`, `TestWifiState.cpp`, the Wi-Fi facts at the end of `TestProtocol.cpp`, with `wifi_env.h` (a fake storage). Host library: `setWifi`, `clearWifi`, `getWifi`, `wifiStatus`, the `wifiState` event, and `host/demo/wifi.js`.
 - **Set and get are not `ProtocolHost` callbacks.** `Protocol` is given the `WifiConfig` (as it is given the `ConfigStore`) and calls `Set` / `Get` / `Stored` itself, so the rules and the storage logic exist once. Only `wifi_status` is a callback (the state lives in the Wi-Fi task). The change notification is `WifiConfig::SetChangedCallback`.
