@@ -1,47 +1,21 @@
 // Config blob validation and relocation. Spec: docs/standalone.md.
 //
-// The struct layouts below are the packed schema (tools/bake/src/schema.js;
-// `node cli.js config.json --header types.h` prints the C declarations).
-// Offsets are written out here instead of casting to those structs so the
-// loader also runs in the 64-bit host tests. test/data/sample_config.bin is
-// baked by the real packer, so a schema change that isn't mirrored here
-// fails TestConfigBlob.
+// The struct layouts are in config_layout.h (the packed schema, read by
+// offset instead of cast so the loader also runs in the 64-bit host tests).
+// test/data/sample_config.bin is baked by the real packer, so a schema change
+// that isn't mirrored there fails TestConfigBlob.
 
 #include <string.h>
 #include "Core.h"
 #include "rle565.h"
 #include "config_blob.h"
+#include "config_layout.h"
 
 using namespace SimpleLib;
+using namespace config_layout;
 
 namespace
 {
-    // --- Packed layouts (bytes) ---
-    enum
-    {
-        KEY_SIZE            = 36,       // 4 x (count, ptr), longPressMs
-        BINDING_SIZE        = 16,       // control, event, ops count, ops ptr
-        PAGE_SIZE           = KEY_SIZE * COMP_KEYS,
-        DEVICE_SIZE         = 20,       // name, turnOn (count, ptr), turnOff (count, ptr)
-        ACTIVITY_SIZE       = 64,
-
-        ROOT_SIZE           = 572,
-        ROOT_VERSION        = 0,
-        ROOT_LONGPRESS      = 4,
-        ROOT_HOME_KEYS      = 8,
-        ROOT_HOME_BINDINGS  = 8 + PAGE_SIZE,        // count, ptr
-        ROOT_DEVICES        = ROOT_HOME_BINDINGS + 8,
-        ROOT_ACTIVITIES     = ROOT_DEVICES + 8,
-
-        ACT_NAME = 0, ACT_DISPLAY = 4, ACT_DEVICES = 8, ACT_PAGES = 16, ACT_BINDINGS = 24, ACT_HOOKS = 32,
-    };
-    static_assert(ROOT_ACTIVITIES + 8 == ROOT_SIZE, "root layout");
-
-    // Op codes (tools/bake/src/consts.js OP)
-    enum { OP_DELAY = 1, OP_SWITCH_ACTIVITY, OP_HID_KEY, OP_HTTP_GET, OP_HTTP_POST, OP_UDP_PACKET, OP_SEND_WOL, OP_SCRIPT };
-    #define HID_MODE_MAX        3
-    #define CONFIG_MAX_OP_DATA  4096
-
     #define TRY(expr) do { ConfigError e_ = (expr); if (e_ != ConfigError::Ok) return e_; } while (0)
 
     class Validator

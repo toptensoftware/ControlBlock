@@ -17,6 +17,9 @@ typedef struct {
     // The host sent RESET_STREAM. The RX FIFO has been flushed and the
     // stream epoch moved on (see usb_vendor_read). TinyUSB task.
     void (*reset_stream)(void);
+    // The host went away: the device was unplugged or unmounted, or the bus
+    // suspended. TinyUSB task: just wake the reader.
+    void (*disconnected)(void);
 } usb_callbacks_t;
 
 // Install TinyUSB (its task on core 0) with our descriptors. `serial` is the
@@ -37,3 +40,8 @@ void usb_vendor_flush(void);
 
 // Bytes usb_vendor_write() can take now without waiting (0 if not connected)
 size_t usb_vendor_write_space(void);
+
+// Send one HID keyboard report (HID_KB_REPORT_BYTES, hid_keyboard.h), waiting
+// a few ms if the last one is still in flight. False if not mounted, the
+// wait ran out, or the build has no HID interface.
+bool usb_hid_send(const uint8_t *report);

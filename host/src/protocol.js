@@ -35,6 +35,8 @@ export const Msg = Object.freeze({
     RESET:          0x02,
     SET_STATUS_TEXT: 0x03,
     SET_BACKLIGHT:  0x05,
+    TAKE_CONTROL:   0x06,
+    RELEASE_CONTROL: 0x07,
     PUT_IMAGE:      0x10,
     FREE_IMAGES:    0x11,
     QUERY_IMAGES:   0x12,
@@ -55,7 +57,7 @@ export const Msg = Object.freeze({
 });
 
 // GET_INFO flags
-export const InfoFlags = Object.freeze({ BACKLIGHT: 0x0001, WIFI_CREDENTIALS: 0x0002 });
+export const InfoFlags = Object.freeze({ BACKLIGHT: 0x0001, WIFI_CREDENTIALS: 0x0002, HOSTED: 0x0004 });
 
 export const Status = Object.freeze({
     OK:           0,
@@ -68,6 +70,7 @@ export const Status = Object.freeze({
     BAD_SEQUENCE: 8,
     BAD_CRC:      9,
     IO_ERROR:     10,
+    NOT_HOSTED:   11,
 });
 
 export const KeyAction = Object.freeze({ PRESS: 0, RELEASE: 1, CANCEL: 2 });
@@ -295,6 +298,7 @@ export function decodeInfo(data)
     const flags            = r.u16();
     info.backlight         = (flags & InfoFlags.BACKLIGHT) !== 0;
     info.wifiCredentials   = (flags & InfoFlags.WIFI_CREDENTIALS) !== 0;
+    info.hosted            = (flags & InfoFlags.HOSTED) !== 0;
     info.maxPayload        = r.u32();
     info.imageCapacity     = r.u32();
     info.imageUsed         = r.u32();

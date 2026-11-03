@@ -4,10 +4,10 @@
 
 import { MessageParser, encodeMessage, Writer, Reader, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION, crc32 } from "../src/protocol.js";
 
-export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true, wifiCredentials = false, config } = {})
+export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true, wifiCredentials = false, hosted = false, config } = {})
 {
     const w = new Writer(128);
-    w.u16(PROTOCOL_VERSION).u16((backlight ? InfoFlags.BACKLIGHT : 0) | (wifiCredentials ? InfoFlags.WIFI_CREDENTIALS : 0)).u32(maxPayload).u32(5000000).u32(1234).u32(3).u32(4000000);
+    w.u16(PROTOCOL_VERSION).u16((backlight ? InfoFlags.BACKLIGHT : 0) | (wifiCredentials ? InfoFlags.WIFI_CREDENTIALS : 0) | (hosted ? InfoFlags.HOSTED : 0)).u32(maxPayload).u32(5000000).u32(1234).u32(3).u32(4000000);
     w.u16(800).u16(480).u8(5).u8(3).u8(8).u8(pageCount);
     w.u16(128).u16(128).u16(80).u16(80).u8(0);
     for (const s of ["1.0", "SERIAL1"]) {
@@ -19,6 +19,9 @@ export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true
     return w.done();
 }
 
+// Requests that edit the layout, images or status bar: refused while standalone
+const LAYOUT_REQUESTS = [Msg.RESET, Msg.SET_STATUS_TEXT, Msg.PUT_IMAGE, Msg.FREE_IMAGES, Msg.SET_PAGE_COUNT, Msg.SET_KEYS, Msg.SET_PAGE];
+
 export class FakeDevice
 {
     // config: emulate the standalone config upload (docs/protocol.md): { capacity, latencyMs, failAt }
@@ -27,8 +30,15 @@ export class FakeDevice
     //   restartMs is set) it comes back after that long, with the config in GET_INFO.
     // wifi: emulate the Wi-Fi messages (docs/wifi.md): { ssid, pass } already stored (strings),
     //   and `status` ({ state, reason, rssi, ip, mac }) is what WIFI_STATUS reports (settable by tests)
-    constructor({ maxPayload = 8192, handler, backlight = true, config, wifi } = {})
+    // hosted: a host has taken control (the device itself boots standalone, `hosted: false`). While
+    //   standalone, requests that edit the layout get NOT_HOSTED; TAKE_CONTROL clears `model` ("home"
+    //   standalone, "empty" hosted) and RELEASE_CONTROL puts Home back and the backlight on.
+    //   controlStatus: if not OK, TAKE_CONTROL and RELEASE_CONTROL answer with it and change nothing.
+    constructor({ maxPayload = 8192, handler, backlight = true, config, wifi, hosted = false, controlStatus = Status.OK } = {})
     {
+        this.hosted = hosted;
+        this.model = hosted ? "empty" : "home";
+        this.controlStatus = controlStatus;
         this.wifi = wifi ? { ssid: "", pass: "", status: { state: 0, reason: 0, rssi: 0, ip: [0, 0, 0, 0], mac: [0, 0, 0, 0, 0, 0] }, ...wifi } : null;
         this.config = config ? {
             capacity: 1 << 20, latencyMs: 0, commitMs: 0, restartMs: 0, failAt: -1,
@@ -76,8 +86,12 @@ export class FakeDevice
                 this._config(msg);
                 continue;
             }
-            const r = msg.type === Msg.GET_INFO
-                ? { status: Status.OK, data: infoPayload({ maxPayload: this.maxPayload, backlight: this.backlight, wifiCredentials: !!this.wifi?.ssid, config: this.config && { capacity: this.config.capacity, size: this.config.stored?.size ?? 0, crc: this.config.stored?.crc ?? 0 } }) }
+            const r = msg.type === Msg.TAKE_CONTROL || msg.type === Msg.RELEASE_CONTROL
+                ? this._control(msg)
+                : !this.hosted && LAYOUT_REQUESTS.includes(msg.type)
+                    ? { status: Status.NOT_HOSTED, data: new Uint8Array(0) }
+                : msg.type === Msg.GET_INFO
+                ? { status: Status.OK, data: infoPayload({ maxPayload: this.maxPayload, backlight: this.backlight, hosted: this.hosted, wifiCredentials: !!this.wifi?.ssid, config: this.config && { capacity: this.config.capacity, size: this.config.stored?.size ?? 0, crc: this.config.stored?.crc ?? 0 } }) }
                 : this.wifi && msg.type >= Msg.WIFI_SET && msg.type <= Msg.WIFI_STATUS
                     ? this._wifi(msg)
                 : msg.type === Msg.PING
@@ -87,6 +101,21 @@ export class FakeDevice
                 this.respond(msg, r.status, r.data);
         }
         return { status: "ok", bytesWritten: data.length };
+    }
+
+    // TAKE_CONTROL / RELEASE_CONTROL, as the firmware does them
+    _control(msg)
+    {
+        if (this.controlStatus !== Status.OK)
+            return { status: this.controlStatus, data: new Uint8Array(0) };
+        const take = msg.type === Msg.TAKE_CONTROL;
+        if (take || this.hosted) {
+            this.model = take ? "empty" : "home";
+            if (!take)
+                this.backlight = true;
+            this.hosted = take;
+        }
+        return { status: Status.OK, data: new Uint8Array(0) };
     }
 
     // The Wi-Fi messages, as the firmware does them (the rules are checked by the firmware's own tests)

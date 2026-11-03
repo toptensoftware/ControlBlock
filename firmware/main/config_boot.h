@@ -10,6 +10,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "config_blob.h"
 
 // Read the blob from flash into PSRAM, check its CRC, validate it and
 // relocate it. Call before model_init() (so the image store's capacity
@@ -26,3 +27,6 @@ void config_boot_apply(void);
 // Its pointers are relocated: valid until restart.
 const uint8_t *config_blob(void);
 size_t          config_blob_size(void);
+
+// What ConfigApplyHome needs to rebuild Home later (NULL if there is no config)
+const ConfigSummary *config_summary(void);

@@ -68,3 +68,5 @@ void config_boot_apply(void)
 
 const uint8_t *config_blob(void)      { return s_blob; }
 size_t          config_blob_size(void) { return s_size; }
+
+const ConfigSummary *config_summary(void) { return s_blob ? &s_summary : nullptr; }

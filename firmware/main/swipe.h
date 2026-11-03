@@ -41,3 +41,7 @@ void swipe_set_enabled(bool enabled);
 // Told on the swipe task of each touch-down while disabled, with the device
 // time in ms.
 void swipe_set_wake_cb(void (*cb)(uint32_t time_ms));
+
+// Called on the swipe task at the start of every frame, after the frame's
+// touches were handled (the standalone gestures' `long` timer).
+void swipe_set_tick_cb(void (*cb)(void));

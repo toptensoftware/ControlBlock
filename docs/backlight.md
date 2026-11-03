@@ -21,7 +21,10 @@ The backlight is a CH422G output (`CH422G_BACKLIGHT`): on or off, no dimming. `d
 | `SET_BACKLIGHT` | Sets the state. Any non-zero `on` means on. Setting the current state changes nothing, including no touch handling changes. |
 | `RESET` | Does not change the backlight. It clears the layout, so a dark device stays dark and shows an empty screen when woken. |
 | `RESET_STREAM` | Does not change the backlight. |
-| Host disconnect | Does not change the backlight. A host that quits while the screen is dark leaves it dark, but touches still send `WAKE`, so the next host to connect (or the same one, restarted) can wake it. The host should turn the backlight on before it exits if it wants the screen usable without it. |
+| `TAKE_CONTROL` | Does not change the backlight. |
+| `RELEASE_CONTROL`, USB unmount, USB suspend | **Turns the backlight on.** Standalone mode has no host to answer a `WAKE`, and Home needs the screen. A disconnect while already standalone turns it on too. |
+
+`SET_BACKLIGHT` is accepted in both modes (it is device state, not layout).
 
 The state is reported in `GET_INFO`: bit 0 of its `flags` field (the old reserved `u16` after `protocol_version`) is set while the backlight is on. A host that reconnects reads it to learn whether the screen is dark. There is no other way to read it, and no change event: the host is the only thing that changes it.
 

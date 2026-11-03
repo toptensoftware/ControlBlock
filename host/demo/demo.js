@@ -109,7 +109,7 @@ const muteOn  = icons[5];
 const muteOff = await iconImage(size, "volume-up", "Unmuted", "#40e040");
 const temp    = await iconImage(size, "star", "Freed!", "#ff8000");
 
-await cb.reset();
+await cb.takeControl();      // the device boots standalone; this also clears what it showed (like reset)
 const t0 = performance.now();
 const uploaded = await cb.syncImages([...Object.values(faces), ...icons, muteOff]);
 console.log(`uploaded ${uploaded} images in ${(performance.now() - t0).toFixed(0)} ms`);
@@ -171,7 +171,7 @@ const timer = setInterval(async () => {
 
 process.on("SIGINT", async () => {
     clearInterval(timer);
-    await cb.setBacklight(true).catch(() => { });    // don't leave the screen dark
+    await cb.releaseControl().catch(() => { });      // the device goes back to its own Home (and its light on)
     await cb.close();
     process.exit(0);
 });

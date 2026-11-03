@@ -8,6 +8,7 @@
 // ({ page, cause }), "wake" ({ lost, timeMs }: the screen was touched while
 // the backlight is off; docs/backlight.md), "wifiState" ({ state, stateName,
 // lost, ip }: the Wi-Fi connection changed; docs/wifi.md), "error" (the read loop failed), "close".
+// takeControl() / releaseControl() switch the device between standalone and hosted mode (docs/standalone.md).
 // uploadConfig() saves a standalone config in the device's flash (docs/protocol.md).
 
 import { Emitter } from "./Emitter.js";
@@ -173,7 +174,31 @@ export class ControlBlock extends Emitter
         return this.info;
     }
 
-    // Clear every key and image; one empty page
+    // Take control of the screen (docs/standalone.md "Runtime modes"). The
+    // device boots standalone, showing its own Home, and refuses every request
+    // that edits the layout (reset, setKeys, putImage...) with NOT_HOSTED until
+    // you do this. Taking control clears the layout and images like reset().
+    // Key and page events flow while you have control.
+    async takeControl()
+    {
+        await this.call(Msg.TAKE_CONTROL);
+        if (this.info)
+            this.info.hosted = true;
+    }
+
+    // Hand the screen back: the device rebuilds its Home, turns the backlight
+    // on and runs its own actions again. Also happens by itself when the USB
+    // connection drops or the bus suspends.
+    async releaseControl()
+    {
+        await this.call(Msg.RELEASE_CONTROL);
+        if (this.info) {
+            this.info.hosted = false;
+            this.info.backlight = true;
+        }
+    }
+
+    // Clear every key and image; one empty page. Needs control (takeControl).
     async reset()
     {
         await this.call(Msg.RESET);

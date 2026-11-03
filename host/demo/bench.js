@@ -1,12 +1,14 @@
 // Link benchmark: request latency, pipelined throughput and image upload
-// speed. Leaves the device's layout alone, but uploads and frees its own
-// images.
+// speed. Takes control of the device (which clears its layout: uploads need
+// it), uploads and frees its own images, and releases control at the end so
+// the device shows its own Home again.
 //
 //   node demo/bench.js
 
 import { ControlBlock, encodeImage } from "../index.js";
 
 const cb = await ControlBlock.open();
+await cb.takeControl();
 const size = cb.info.keyWidth;
 
 // Latency: one request at a time
@@ -42,4 +44,5 @@ await new Promise(r => setTimeout(r, 200));
 const after = await cb.getInfo();
 console.log(`image memory: ${(before.imageUsed / 1024).toFixed(0)} KB -> ${(after.imageUsed / 1024).toFixed(0)} KB after freeing`);
 
+await cb.releaseControl();
 await cb.close();

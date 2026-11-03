@@ -40,6 +40,12 @@ CONFIG_TINYUSB_VENDOR_COUNT=1
 CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=4096
 CONFIG_TINYUSB_VENDOR_TX_BUFSIZE=2048
 CONFIG_TINYUSB_VENDOR_EPSIZE=512
+# The host going away (unplug or suspend) hands the device back to standalone
+# mode (docs/standalone.md "Runtime modes"). Unplug needs no option.
+CONFIG_TINYUSB_SUSPEND_CALLBACK=y
+# One HID keyboard interface for the standalone hidKey op (usb.cpp). 0 backs it
+# out (also bump USB_BCD_DEVICE).
+CONFIG_TINYUSB_HID_COUNT=1
 
 # Wi-Fi (docs/wifi.md): station only, a few small HTTP/UDP requests, not streaming.
 # Smaller buffers than the defaults (static RX 10, dynamic RX/TX 32, AMPDU

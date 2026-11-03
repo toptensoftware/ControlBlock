@@ -20,6 +20,11 @@ export default async function ()
             "../main/wifi_credentials.cpp",
             "../main/wifi_state.cpp",            "../main/touch_router.cpp",
             "../main/touch_gate.cpp",
+            "../main/key_gesture.cpp",
+            "../main/hid_keyboard.cpp",
+            "../main/op_queue.cpp",
+            "../main/trigger_dispatch.cpp",
+            "../main/standalone.cpp",
             "../../rle565/src/rle565.c",
         ],
         includePath: [

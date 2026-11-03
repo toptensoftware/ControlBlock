@@ -9,6 +9,7 @@
 #include "flash_env.h"
 #include "wifi_env.h"
 #include "crc32.h"
+#include "config_env.h"
 
 using namespace SimpleLib;
 
@@ -69,8 +70,13 @@ namespace
         WifiStatus wifi_st = {};                // what the device layer reports
         int  wifi_changes = 0;                  // credential changes the device layer was told of
         List<int> changed_pages;
+        List<int> mode_changes;                 // 1 = hosted, 0 = standalone, per mode_changed call
+        List<uint8_t> home_blob;                // UseHome(): the sample config
+        ConfigSummary home = {};
 
-        explicit Fixture(uint32_t capacity = 1u << 20) : flash(16 * CONFIG_SECTOR)
+        // `hosted`: take control first (most tests are of a hosted session);
+        // the device boots standalone, and the takeover's effects are not counted
+        explicit Fixture(uint32_t capacity = 1u << 20, bool hosted = true) : flash(16 * CONFIG_SECTOR)
         {
             config.Init(flash.Host());
             wifi.Init(wifi_storage.Host());
@@ -104,12 +110,44 @@ namespace
                 strcpy(f->status_text[field], t);
                 f->status_sets++;
             };
+            h.mode_changed     = [](bool hosted, void *c) { ((Fixture *)c)->mode_changes.Add(hosted ? 1 : 0); };
             h.restart          = [](void *c) { ((Fixture *)c)->restarts++; };
             h.wifi_status      = [](WifiStatus *st, void *c) { *st = ((Fixture *)c)->wifi_st; };
             h.fw_version       = "1.2.3";
             h.serial           = "ABCDEF";
             h.ctx              = this;
             proto.Init(&store, &layout, &config, &wifi, h);
+
+            if (hosted) {
+                Request(MSG_TAKE_CONTROL);
+                comp_resets = 0;
+                page_count = -1;
+                status_sets = 0;
+                memset(status_text, 0, sizeof(status_text));
+                changed_pages.Clear();
+                mode_changes.Clear();
+            }
+        }
+
+        // The sample config is the device's: its Home is shown now (as at boot)
+        // and the protocol rebuilds it on release. Use with hosted = false.
+        void UseHome()
+        {
+            home_blob = config_env::LoadSample();
+            Assert(ConfigValidate(home_blob.GetBuffer(), (uint32_t)home_blob.GetCount(), &home) == ConfigError::Ok);
+            proto.SetHome(&home, home_blob.GetBuffer());
+            lock_depth++;                       // model changes are made under the lock
+            Assert(ConfigApplyHome(home, home_blob.GetBuffer(), &store, &layout));
+            lock_depth--;
+            changed_pages.Clear();
+        }
+
+        // Is page 0's key `k` showing Home's image for it?
+        bool ShowsHome(int k)
+        {
+            comp_key_t keys[COMP_KEYS];
+            layout.GetPage(0, keys);
+            return keys[k].bg == home_blob.GetBuffer() + home.home[k][KEY_SLOT_BG].offset;
         }
 
         static void Changed(int page, uint32_t, void *c)
@@ -251,7 +289,7 @@ Fact("Protocol Get Info")
     Assert(m.Status() == ST_OK);
     int i = 4;
     Assert(m.U16At(i) == PROTO_VERSION);                      i += 2;
-    Assert(m.U16At(i) == INFO_FLAG_BACKLIGHT);                i += 2;     // flags: backlight on
+    Assert(m.U16At(i) == (INFO_FLAG_BACKLIGHT | INFO_FLAG_HOSTED)); i += 2;     // flags: backlight on, hosted
     Assert(m.U32At(i) == PROTO_MAX_PAYLOAD);                  i += 4;
     Assert(m.U32At(i) == 1u << 20);                           i += 4;     // capacity
     Assert(m.U32At(i) == sizeof(ImageData) + f.env.Size(f.env.Icon(0))); i += 4;
@@ -427,9 +465,9 @@ Fact("Protocol Page Count Page And Backlight")
     Bytes go3;
     go3.U8(1).U8(0).U32(12345);
     Assert(f.Request(MSG_SET_PAGE, go3).Status() == ST_OK && f.page_set == 1);
-    Bytes far;
-    far.U8(4);
-    Assert(f.Request(MSG_SET_PAGE, far).Status() == ST_BAD_ARG);
+    Bytes beyond;
+    beyond.U8(4);
+    Assert(f.Request(MSG_SET_PAGE, beyond).Status() == ST_BAD_ARG);
 
     Bytes off;
     off.U8(0);
@@ -441,7 +479,8 @@ Fact("Protocol Page Count Page And Backlight")
 namespace
 {
     Bytes OnByte(uint32_t on) { Bytes p; p.U8(on); return p; }
-    uint32_t InfoFlags(Fixture &f) { return f.Request(MSG_GET_INFO).U16At(6); }
+    // The backlight tests don't care about the mode bit
+    uint32_t InfoFlags(Fixture &f) { return f.Request(MSG_GET_INFO).U16At(6) & ~INFO_FLAG_HOSTED; }
 }
 
 Fact("Protocol Backlight Any Non-Zero Means On")
@@ -1256,4 +1295,315 @@ Fact("Protocol Wifi State Event Queues In Order With The Others")
     Assert(e.GetCount() == 3);
     Assert(e[0].type == EVT_KEY && e[1].type == EVT_WIFI_STATE && e[2].type == EVT_PAGE_CHANGED);
     Assert(e[1].seq == (uint16_t)(e[0].seq + 1));
+}
+
+// --- Take control and release (docs/standalone.md, docs/protocol.md) ---
+
+namespace
+{
+    uint32_t InfoFlagsRaw(Fixture &f) { return f.Request(MSG_GET_INFO).U16At(6); }
+
+    // Every request that defines the layout, sent with a valid payload (i < DEFINING_COUNT)
+    const int DEFINING_COUNT = 7;
+    uint16_t SendDefining(Fixture &f, int i, int piece)
+    {
+        Bytes count, go, text;
+        count.U8(2);
+        go.U8(0);
+        text.U8(STATUS_TEXT_LEFT).U8(2).Raw("hi", 2);
+        uint32_t ids[] = { 1 };
+        KeyDef defs[] = { { 0, 0, 0, { 1, 0, 0, 0 } } };
+        switch (i) {
+        case 0:  return f.Request(MSG_RESET, Bytes(), piece).Status();
+        case 1:  return f.Request(MSG_SET_STATUS_TEXT, text, piece).Status();
+        case 2:  return f.Request(MSG_PUT_IMAGE, f.PutImage(1, f.env.Icon(0)), piece).Status();
+        case 3:  return f.Request(MSG_FREE_IMAGES, Ids(1, ids), piece).Status();
+        case 4:  return f.Request(MSG_SET_PAGE_COUNT, count, piece).Status();
+        case 5:  return f.Request(MSG_SET_KEYS, Keys(1, defs), piece).Status();
+        default: return f.Request(MSG_SET_PAGE, go, piece).Status();
+        }
+    }
+
+    // Home's distinct images in the sample config
+    uint32_t HomeImageCount(const ConfigSummary &home)
+    {
+        Set<uint32_t> s;
+        for (int k = 0; k < COMP_KEYS; k++)
+            for (int j = 0; j < KEY_SLOTS; j++)
+                if (home.home[k][j].offset)
+                    s.Add(home.home[k][j].offset);
+        return (uint32_t)s.GetCount();
+    }
+}
+
+Fact("Protocol Take Control Message Types And Status")
+{
+    Assert(MSG_TAKE_CONTROL == 0x06 && MSG_RELEASE_CONTROL == 0x07);
+    Assert(ST_NOT_HOSTED == 11);
+    Assert(INFO_FLAG_HOSTED == 0x0004);
+}
+
+Fact("Protocol Boots Standalone")
+{
+    Fixture f(1u << 20, false);
+    Assert(!f.proto.Hosted());
+    Assert(InfoFlagsRaw(f) == INFO_FLAG_BACKLIGHT);
+}
+
+Fact("Protocol Standalone Refuses Layout Requests And Changes Nothing")
+{
+    Fixture f(1u << 20, false);
+    f.UseHome();
+    for (int i = 0; i < DEFINING_COUNT; i++) {
+        // Whole, and in pieces (a refused PUT_IMAGE is skipped, keeping the stream in step)
+        Assert(SendDefining(f, i, 0) == ST_NOT_HOSTED);
+        Assert(SendDefining(f, i, 7) == ST_NOT_HOSTED);
+        Assert(f.Request(MSG_PING).Status() == ST_OK);
+    }
+    // PUT_IMAGE shorter than its prefix, and with no payload at all, too
+    Bytes shorter;
+    shorter.U32(3).U32(64);
+    Assert(f.Request(MSG_PUT_IMAGE, shorter).Status() == ST_NOT_HOSTED);
+    Assert(f.Request(MSG_PUT_IMAGE).Status() == ST_NOT_HOSTED);
+    Assert(f.Request(MSG_SET_KEYS).Status() == ST_NOT_HOSTED);
+
+    Assert(f.ShowsHome(0));
+    Assert(f.changed_pages.GetCount() == 0 && f.comp_resets == 0 && f.status_sets == 0);
+    Assert(f.page_count == -1 && f.page_set == -1);
+    Assert(!f.store.IsLive(1));
+    Assert(!f.proto.Corrupt());
+}
+
+Fact("Protocol Standalone Still Answers Ping Info Query Backlight Config And Wifi")
+{
+    Fixture f(1u << 20, false);
+    Assert(f.Request(MSG_PING).Status() == ST_OK);
+    Assert(f.Request(MSG_GET_INFO).Status() == ST_OK);
+    uint32_t ids[] = { 1, 2 };
+    Assert(f.Request(MSG_QUERY_IMAGES, Ids(2, ids)).Status() == ST_OK);
+    Assert(f.Request(MSG_SET_BACKLIGHT, OnByte(0)).Status() == ST_OK && !f.backlight);
+    Assert(f.Request(MSG_WIFI_GET).Status() == ST_OK);
+    Assert(f.Request(MSG_WIFI_STATUS).Status() == ST_OK);
+    Bytes cfg;
+    cfg.U32(64).U32(0);
+    Assert(f.Request(MSG_CONFIG_BEGIN, cfg).Status() == ST_OK);       // reaches ConfigStore
+    Assert(f.Request(MSG_CONFIG_DATA).Status() == ST_BAD_LENGTH);    // not NOT_HOSTED
+}
+
+Fact("Protocol Take Control Resets The Model Like Reset")
+{
+    Fixture f(1u << 20, false);
+    f.UseHome();
+    Assert(f.ShowsHome(0));
+
+    Msg m = f.Request(MSG_TAKE_CONTROL);
+    Assert(m.Status() == ST_OK && m.len == 4);
+    Assert(f.proto.Hosted());
+    Assert(InfoFlagsRaw(f) == (INFO_FLAG_BACKLIGHT | INFO_FLAG_HOSTED));
+    Assert(f.comp_resets == 1 && f.page_count == 1);
+    Assert(f.status_sets == 2 && f.status_text[0][0] == 0 && f.status_text[1][0] == 0);
+    Assert(f.store.Find(f.home.home[0][KEY_SLOT_BG].offset) == nullptr);   // Home's images are gone
+    for (int k = 0; k < COMP_KEYS; k++)
+        Assert(!f.layout.IsActive(0, k));
+    Assert(f.mode_changes.GetCount() == 1 && f.mode_changes[0] == 1);
+
+    // Now the layout requests work
+    Assert(f.Upload(1, f.env.Icon(0)) == ST_OK);
+    KeyDef defs[] = { { 0, 3, 0, { 1, 0, 0, 0 } } };
+    Assert(f.Request(MSG_SET_KEYS, Keys(1, defs)).Status() == ST_OK);
+    Assert(f.layout.IsActive(0, 3));
+}
+
+Fact("Protocol Take Control Abandons An Image Upload In Progress")
+{
+    Fixture f(1u << 20, false);
+    f.Request(MSG_TAKE_CONTROL);
+    Bytes part;
+    part.U32(9).U32(5000).U32(0).U32(0);
+    Assert(f.Request(MSG_PUT_IMAGE, part).Status() == ST_OK);
+    Assert(f.Request(MSG_TAKE_CONTROL).Status() == ST_OK);      // again: hosted already
+    Assert(f.env.LiveBlocks() == 0);
+}
+
+Fact("Protocol Take Control While Hosted Resets Again And Stays Hosted")
+{
+    Fixture f;
+    Assert(f.Upload(1, f.env.Icon(0)) == ST_OK);
+    Assert(f.Request(MSG_TAKE_CONTROL).Status() == ST_OK);
+    Assert(f.proto.Hosted() && !f.store.IsLive(1));
+    Assert(f.comp_resets == 1);
+}
+
+Fact("Protocol Release Rebuilds Home And Goes Standalone")
+{
+    Fixture f(1u << 20, false);
+    f.UseHome();
+    f.Request(MSG_TAKE_CONTROL);
+    f.Upload(1, f.env.Icon(0));
+    Bytes n;
+    n.U8(3);
+    f.Request(MSG_SET_PAGE_COUNT, n);
+    Bytes t;
+    t.U8(STATUS_TEXT_LEFT).U8(2).Raw("hi", 2);
+    f.Request(MSG_SET_STATUS_TEXT, t);
+    f.Request(MSG_SET_BACKLIGHT, OnByte(0));
+    f.comp_resets = 0;
+    f.mode_changes.Clear();
+
+    Msg m = f.Request(MSG_RELEASE_CONTROL);
+    Assert(m.Status() == ST_OK && m.len == 4);
+    Assert(!f.proto.Hosted());
+    Assert(InfoFlagsRaw(f) == INFO_FLAG_BACKLIGHT);                 // light back on
+    Assert(f.backlight);
+    Assert(f.comp_resets == 1);
+    Assert(f.page_count == 1 && f.layout.PageCount() == 1);
+    Assert(f.page_set == 0 && !f.animate);
+    Assert(f.status_text[0][0] == 0 && f.status_text[1][0] == 0);
+    Assert(!f.store.IsLive(1));
+    Assert(f.ShowsHome(0) && f.layout.IsActive(0, 0) && !f.layout.IsActive(0, 3));
+    Assert(f.store.Find(f.home.home[0][KEY_SLOT_BG].offset) != nullptr);
+    Assert(f.mode_changes.GetCount() == 1 && f.mode_changes[0] == 0);
+
+    // Standalone again: layout requests refused
+    Assert(f.Request(MSG_SET_PAGE_COUNT, n).Status() == ST_NOT_HOSTED);
+    Assert(f.layout.PageCount() == 1);
+}
+
+Fact("Protocol Release Without A Config Leaves An Empty Home")
+{
+    Fixture f;
+    f.Upload(1, f.env.Icon(0));
+    KeyDef defs[] = { { 0, 3, 0, { 1, 0, 0, 0 } } };
+    f.Request(MSG_SET_KEYS, Keys(1, defs));
+    Assert(f.Request(MSG_RELEASE_CONTROL).Status() == ST_OK);
+    Assert(!f.proto.Hosted() && f.layout.PageCount() == 1);
+    for (int k = 0; k < COMP_KEYS; k++)
+        Assert(!f.layout.IsActive(0, k));
+    Assert(f.env.LiveBlocks() == 0);
+}
+
+Fact("Protocol Release When Home Can't Be Shown Leaves It Empty But Standalone")
+{
+    Fixture f(1u << 20, false);
+    f.UseHome();
+    f.Request(MSG_TAKE_CONTROL);
+    f.home.home[7][KEY_SLOT_BG] = f.home.home[0][KEY_SLOT_BG];
+    f.home.home[7][KEY_SLOT_FG] = ConfigImage{ 700, 64 };           // refused by the store
+    Assert(f.Request(MSG_RELEASE_CONTROL).Status() == ST_OK);
+    Assert(!f.proto.Hosted());
+    for (int k = 0; k < COMP_KEYS; k++)
+        Assert(!f.layout.IsActive(0, k));
+    ImageStoreStats st;
+    f.store.GetStats(&st);
+    Assert(st.count == 0);
+}
+
+Fact("Protocol Release While Standalone Changes Nothing")
+{
+    Fixture f(1u << 20, false);
+    f.UseHome();
+    Assert(f.Request(MSG_RELEASE_CONTROL).Status() == ST_OK);
+    Assert(f.comp_resets == 0 && f.mode_changes.GetCount() == 0 && f.ShowsHome(0));
+}
+
+Fact("Protocol Release And Take Control Are Repeatable")
+{
+    Fixture f(1u << 20, false);
+    f.UseHome();
+    for (int i = 0; i < 3; i++) {
+        Assert(f.Request(MSG_TAKE_CONTROL).Status() == ST_OK && f.proto.Hosted());
+        Assert(f.Upload(1, f.env.Icon(0)) == ST_OK);
+        Assert(f.Request(MSG_RELEASE_CONTROL).Status() == ST_OK && !f.proto.Hosted());
+        Assert(f.ShowsHome(0) && !f.store.IsLive(1));
+    }
+    ImageStoreStats st;
+    f.store.GetStats(&st);
+    Assert(st.count == HomeImageCount(f.home));
+}
+
+Fact("Protocol Disconnect Releases Like The Message")
+{
+    Fixture f(1u << 20, false);
+    f.UseHome();
+    f.Request(MSG_TAKE_CONTROL);
+    f.Upload(1, f.env.Icon(0));
+    f.Request(MSG_SET_BACKLIGHT, OnByte(0));
+    f.mode_changes.Clear();
+
+    // Posting alone (any task) changes nothing; the protocol task services it
+    f.proto.PostDisconnect();
+    Assert(f.proto.Hosted());
+    f.proto.ServiceDisconnect();
+    Assert(!f.proto.Hosted() && f.backlight);
+    Assert(f.ShowsHome(0) && !f.store.IsLive(1));
+    Assert(f.mode_changes.GetCount() == 1 && f.mode_changes[0] == 0);
+
+    // Once per post
+    f.mode_changes.Clear();
+    f.proto.ServiceDisconnect();
+    Assert(f.mode_changes.GetCount() == 0);
+}
+
+Fact("Protocol Disconnect Drops A Partial Message And A Config Upload")
+{
+    Fixture f;
+    Bytes begin;
+    begin.U32(64).U32(0);
+    Assert(f.Request(MSG_CONFIG_BEGIN, begin).Status() == ST_OK);
+    Bytes ping;
+    ping.U32(1);
+    Bytes half = Message(MSG_PING, 1, ping);
+    f.proto.Receive(half.b.GetBuffer(), 14);                         // mid-message
+
+    f.proto.PostDisconnect();
+    f.proto.ServiceDisconnect();
+    Assert(f.Request(MSG_PING).Status() == ST_OK);                   // the parser is at a header again
+    Bytes data;
+    data.U32(0).U8(1);
+    Assert(f.Request(MSG_CONFIG_DATA, data).Status() == ST_BAD_SEQUENCE);
+}
+
+Fact("Protocol Disconnect While Standalone Only Restores The Backlight")
+{
+    Fixture f(1u << 20, false);
+    f.UseHome();
+    f.Request(MSG_SET_BACKLIGHT, OnByte(0));
+    f.proto.PostDisconnect();
+    f.proto.ServiceDisconnect();
+    Assert(f.backlight);
+    Assert(f.comp_resets == 0 && f.mode_changes.GetCount() == 0 && f.ShowsHome(0));
+}
+
+Fact("Protocol Key And Page Events Only Exist While Hosted")
+{
+    Fixture f(1u << 20, false);
+    f.proto.PostKey(0, 1, KEY_ACTION_DOWN, 5);
+    f.proto.PostPageChanged(1, PAGE_CAUSE_USER);
+    const uint8_t ip[4] = {};
+    f.proto.PostWake(7);
+    f.proto.PostWifiState(WifiState::Connecting, ip);
+    f.proto.SendEvents();
+    List<Msg> e = f.Read();
+    Assert(e.GetCount() == 2 && e[0].type == EVT_WAKE && e[1].type == EVT_WIFI_STATE);
+
+    f.Request(MSG_TAKE_CONTROL);
+    f.proto.PostKey(0, 1, KEY_ACTION_DOWN, 5);
+    f.proto.PostPageChanged(1, PAGE_CAUSE_USER);
+    f.proto.SendEvents();
+    e = f.Read();
+    Assert(e.GetCount() == 2 && e[0].type == EVT_KEY && e[1].type == EVT_PAGE_CHANGED);
+}
+
+Fact("Protocol Release Drops Queued Key And Page Events But Keeps The Others")
+{
+    Fixture f;
+    const uint8_t ip[4] = {};
+    f.proto.PostKey(0, 1, KEY_ACTION_DOWN, 5);
+    f.proto.PostWake(7);
+    f.proto.PostPageChanged(1, PAGE_CAUSE_USER);
+    f.proto.PostWifiState(WifiState::Connecting, ip);
+    Assert(f.Request(MSG_RELEASE_CONTROL).Status() == ST_OK);
+    f.proto.SendEvents();
+    List<Msg> e = f.Read();
+    Assert(e.GetCount() == 2 && e[0].type == EVT_WAKE && e[1].type == EVT_WIFI_STATE);
 }

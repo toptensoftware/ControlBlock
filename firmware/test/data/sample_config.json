@@ -15,7 +15,10 @@
       { "icon": "#next-track", "label": "Next", "tap": { "op": "hidKey", "keys": "ctrl+right" }, "long": { "op": "delay", "ms": 100 } },
       { "icon": "#volume-mute", "label": "Watch", "action": { "op": "switchActivity", "activity": "Watch" } },
       null,
-      { "color": "#aa2222" }
+      { "color": "#aa2222" },
+      null,
+      { "color": "#225522", "icon": "#play", "label": "Copy", "tap": { "op": "hidKey", "keys": "ctrl+c" } },
+      { "color": "#222255", "icon": "#play", "label": "Hold","press": { "op": "hidKey", "keys": "shift+a", "mode": "hold" }, "release": { "op": "hidKey", "keys": "shift+a", "mode": "hold" } }
     ]
   },
   "activities": {

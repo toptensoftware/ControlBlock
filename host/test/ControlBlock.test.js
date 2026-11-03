@@ -6,9 +6,10 @@ import { imageId, keyImage, encodeImage } from "../src/images.js";
 import { readRleHeader } from "rle565/unpack.js";
 import { FakeDevice } from "./FakeDevice.js";
 
+// Most tests are of a hosted session; FakeDevice itself boots standalone, like the device
 async function connected(options)
 {
-    const dev = new FakeDevice(options);
+    const dev = new FakeDevice({ hosted: true, ...options });
     const cb = new ControlBlock(dev, { timeoutMs: 300 });
     await cb.connect();
     return { dev, cb };
@@ -417,5 +418,69 @@ test("wifiState events are emitted", async () => {
     const ev = await got;
     assert.equal(ev.state, WifiState.CONNECTED);
     assert.equal(ev.ip, "192.168.1.5");
+    await cb.close();
+});
+
+// --- Take control and release (docs/protocol.md, docs/standalone.md) ---
+
+test("a device boots standalone and refuses layout requests until takeControl", async () => {
+    const { dev, cb } = await connected({ hosted: false });
+    assert.equal(cb.info.hosted, false);
+    await assert.rejects(cb.setPageCount(2), err => err instanceof ControlBlockError && err.status === Status.NOT_HOSTED);
+    await assert.rejects(cb.reset(), err => err.status === Status.NOT_HOSTED);
+    await cb.ping();                                        // the rest still works
+    await cb.setBacklight(false);
+    await cb.takeControl();
+    await cb.setPageCount(2);
+    assert.equal(dev.requests.filter(m => m.type === Msg.TAKE_CONTROL).length, 1);
+    await cb.close();
+});
+
+test("takeControl sends TAKE_CONTROL and info follows", async () => {
+    const { dev, cb } = await connected({ hosted: false });
+    await cb.takeControl();
+    assert.equal(cb.info.hosted, true);
+    assert.equal(dev.hosted, true);
+    assert.equal((await cb.getInfo()).hosted, true);
+    await cb.close();
+});
+
+test("takeControl clears what the device had, like reset", async () => {
+    const { dev, cb } = await connected({ hosted: false });
+    dev.model = "home";
+    await cb.takeControl();
+    assert.equal(dev.model, "empty");
+    await cb.close();
+});
+
+test("releaseControl sends RELEASE_CONTROL; the device is standalone with its light on", async () => {
+    const { dev, cb } = await connected({ hosted: true });
+    await cb.setBacklight(false);
+    await cb.releaseControl();
+    assert.equal(cb.info.hosted, false);
+    assert.equal(cb.info.backlight, true);
+    assert.equal(dev.hosted, false);
+    assert.equal(dev.model, "home");
+    await assert.rejects(cb.setPageCount(2), err => err.status === Status.NOT_HOSTED);
+    await cb.close();
+});
+
+test("a refused takeControl throws and leaves info alone", async () => {
+    const { cb } = await connected({ hosted: false, controlStatus: Status.IO_ERROR });
+    await assert.rejects(cb.takeControl(), err => err instanceof ControlBlockError);
+    assert.equal(cb.info.hosted, false);
+    await cb.close();
+});
+
+test("a refused releaseControl throws and leaves info alone", async () => {
+    const { cb } = await connected({ hosted: true, controlStatus: Status.IO_ERROR });
+    await assert.rejects(cb.releaseControl(), err => err instanceof ControlBlockError);
+    assert.equal(cb.info.hosted, true);
+    await cb.close();
+});
+
+test("a reconnecting host learns the device is still hosted", async () => {
+    const { cb } = await connected({ hosted: true });
+    assert.equal(cb.info.hosted, true);
     await cb.close();
 });

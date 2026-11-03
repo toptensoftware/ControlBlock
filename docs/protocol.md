@@ -1,6 +1,6 @@
 # ControlBlock USB Protocol (v1)
 
-This is the host ↔ device protocol for **mode 1 (host-controlled)**. The PC software uploads images and key layouts. The device draws them, runs paging, swiping and press feedback on its own, and reports key presses back to the PC.
+This is the host ↔ device protocol for **mode 1 (host-controlled)**. The device boots into standalone mode ([`standalone.md`](standalone.md)); a host sends [`TAKE_CONTROL`](#0x06-take_control) to enter mode 1 and [`RELEASE_CONTROL`](#0x07-release_control) to give the screen back. The PC software uploads images and key layouts. The device draws them, runs paging, swiping and press feedback on its own, and reports key presses back to the PC.
 
 How images are stored, replaced and freed on the device is in [`image-assets.md`](image-assets.md). Backlight on/off and the wake-on-touch event are in [`backlight.md`](backlight.md). Uploading the standalone config to flash is [below](#configuration-upload); how it's stored is in [`standalone.md`](standalone.md).
 
@@ -35,7 +35,7 @@ How images are stored, replaced and freed on the device is in [`image-assets.md`
 | VID/PID | `0x303A`/`0x4020` for development (Espressif's VID, TinyUSB's vendor-only PID); apply to Espressif for a PID before release |
 | Device class | `0xEF`/`0x02`/`0x01` (composite, IAD), so later interfaces need no change here |
 
-The device is designed as a composite device from the start. The vendor interface is the only one in v1. Later modes add HID keyboard and/or USB MIDI interfaces alongside it.
+The device is a composite device. The vendor interface (interface 0) carries this protocol; standalone mode adds a HID keyboard interface (interface 1, EP 0x82 IN) alongside it, which is not part of this protocol. USB MIDI may be added later.
 
 ### Control request: reset stream
 
@@ -89,6 +89,7 @@ Any data specific to that response follows these two fields.
 | 8 | BAD_SEQUENCE | Upload chunk out of order or not started, or a config commit before all the data arrived |
 | 9 | BAD_CRC | Config upload: the data doesn't match the CRC-32 given at `CONFIG_BEGIN` |
 | 10 | IO_ERROR | Config upload: a flash erase, write or read-back failed. `WIFI_SET`: the credentials couldn't be stored |
+| 11 | NOT_HOSTED | A request that edits the layout while the device is standalone: send [`TAKE_CONTROL`](#0x06-take_control) first |
 
 ## Host → device requests
 
@@ -100,6 +101,8 @@ Any data specific to that response follows these two fields.
 | `0x03` | SET_STATUS_TEXT | Set the status bar's left or right text |
 | `0x04` | — | Reserved, not yet defined |
 | `0x05` | SET_BACKLIGHT | Turn the backlight on or off |
+| `0x06` | TAKE_CONTROL | Enter host-controlled mode (clears the layout like `RESET`) |
+| `0x07` | RELEASE_CONTROL | Hand the screen back to the device's standalone Home |
 | `0x10` | PUT_IMAGE | Upload or replace an image, in chunks |
 | `0x11` | FREE_IMAGES | Free images (deferred while keys use them) |
 | `0x12` | QUERY_IMAGES | Check which image IDs the device already has |
@@ -126,7 +129,7 @@ Any data specific to that response follows these two fields.
 | Type | Field | Notes |
 |---|---|---|
 | u16 | protocol_version | `1` |
-| u16 | flags | Bit 0: backlight is on (see [`backlight.md`](backlight.md)). Bit 1: Wi-Fi credentials are stored (see [`wifi.md`](wifi.md)). Other bits 0 |
+| u16 | flags | Bit 0: backlight is on (see [`backlight.md`](backlight.md)). Bit 1: Wi-Fi credentials are stored (see [`wifi.md`](wifi.md)). Bit 2: hosted (a host has taken control; clear = standalone). Other bits 0 |
 | u32 | max_payload | Largest payload the device accepts, for every message type (8192 in v1) |
 | u32 | image_capacity | Bytes available for images |
 | u32 | image_used | Bytes in use, counting memory not yet released (retired or mid-replace images) |
@@ -153,7 +156,7 @@ Any data specific to that response follows these two fields.
 
 ### `0x02` RESET
 
-**Request:** No payload.
+**Request:** No payload. Needs control: `NOT_HOSTED` while standalone.
 
 Clears all pages (the page count goes to 1 and every key becomes empty), abandons any upload in progress, frees every image, and clears both status bar texts.
 
@@ -195,9 +198,39 @@ The hardware backlight can only be switched on or off (through the CH422G); it h
 - **Turning off mid-touch:** a key being held gets a `CANCEL`, and a swipe settles. The finger still down is swallowed and sends no `WAKE`.
 - **Turning on mid-touch:** a touch that went down while dark stays swallowed until it lifts, so the wake touch never presses what appears under it.
 - **Content keeps updating** while dark (`SET_KEYS`, `PUT_IMAGE`, `SET_STATUS_TEXT`, `SET_PAGE`).
-- **Lifetime:** boots on. Only `SET_BACKLIGHT` changes it; `RESET`, `RESET_STREAM` and a host disconnect leave it alone.
+- **Both modes:** unlike the layout requests, `SET_BACKLIGHT` works while standalone too. It is device state, not layout, and a config tool may want the screen dark.
+- **Lifetime:** boots on. `SET_BACKLIGHT` changes it; `RESET`, `RESET_STREAM` and taking control leave it alone. Releasing control (the message, a USB unmount or a suspend) **turns it on**, and so does a disconnect while standalone: nobody is left to answer a `WAKE`, and the standalone Home needs the screen.
 - **Reading the state:** `GET_INFO` `flags` bit 0.
 - Setting the current state does nothing. A missing `on` byte is `BAD_LENGTH`.
+
+### `0x06` TAKE_CONTROL
+
+**Request:** No payload.
+
+Switches the device from standalone to hosted mode ([`standalone.md`](standalone.md), "Runtime modes"). The device **boots standalone**, showing its own Home, and refuses every request that edits the layout until the host takes control:
+
+| Request or event | Standalone | Hosted |
+|---|---|---|
+| `RESET`, `SET_STATUS_TEXT`, `PUT_IMAGE`, `FREE_IMAGES`, `SET_PAGE_COUNT`, `SET_KEYS`, `SET_PAGE` | **`NOT_HOSTED`** (a refused `PUT_IMAGE`'s data is skipped, so the stream stays in step) | accepted |
+| `PING`, `GET_INFO`, `QUERY_IMAGES`, `SET_BACKLIGHT`, `CONFIG_*`, `WIFI_*`, `TAKE_CONTROL`, `RELEASE_CONTROL` | accepted | accepted |
+| `KEY` and `PAGE_CHANGED` events | none | sent |
+
+There is no implicit takeover: a host that forgets `TAKE_CONTROL` gets `NOT_HOSTED` rather than half-editing Home.
+
+- **Effect:** exactly `RESET`: the layout is cleared (one empty page, no keys), every image is freed (Home's included), an image upload in progress is abandoned, and both status bar texts are cleared. The backlight and the Wi-Fi credentials are left alone. The device's own config stays in its flash and memory.
+- **Already hosted:** the reset happens again and the device stays hosted.
+- Standalone actions don't run while hosted ([`standalone.md`](standalone.md)).
+- **Reading the mode:** `GET_INFO` `flags` bit 2.
+
+### `0x07` RELEASE_CONTROL
+
+**Request:** No payload.
+
+Hands the screen back. The device goes to standalone: the layout, images and status texts are cleared and **Home is rebuilt** from the stored config (an empty Home if there is none, or if it can't be shown), the screen goes to page 0, the backlight is turned **on**, and the `KEY` / `PAGE_CHANGED` stream stops (ones still queued are dropped; `WAKE`, `HEARTBEAT` and `WIFI_STATE` events are unaffected). The response is sent after that. Releasing while standalone does nothing and answers `OK`.
+
+The device also releases by itself when the host goes away: a **USB unmount** (unplug) or a **USB suspend**, with the same result. The stream state is reset too (a partial message and any config upload are dropped), exactly as for `RESET_STREAM`. A host that hangs without disconnecting is not detected yet (a heartbeat timeout may be added).
+
+After a disconnect the next host must `TAKE_CONTROL` again; it can read `GET_INFO` `flags` bit 2 to see the mode.
 
 ### `0x10` PUT_IMAGE
 
@@ -410,6 +443,8 @@ The host sets the Wi-Fi credentials; the device keeps them in NVS and connects i
 
 Events have the `EVENT` flag set, and `seq` is the device's event counter.
 
+`KEY` and `PAGE_CHANGED` exist **only while hosted** ([`TAKE_CONTROL`](#0x06-take_control)); standalone, the device handles keys itself and sends neither. `WAKE`, `HEARTBEAT` and `WIFI_STATE` are sent in both modes.
+
 **If the host isn't reading:**
 - The device queues up to 64 events. It sends an event only when there's room for it in the USB transmit buffer, so a host that isn't reading never holds up the device.
 - When the queue overflows, it drops the oldest events and sets bit 0 of `lost` on the next event it sends.
@@ -499,7 +534,7 @@ Uploading a standalone config instead: `RESET_STREAM`, `GET_INFO` (skip the rest
 And for a host-controlled session:
 
 1. Open the device and send RESET_STREAM (control request).
-2. Send `GET_INFO`: check `protocol_version` and read the geometry.
+2. Send `GET_INFO`: check `protocol_version` and read the geometry. Send `TAKE_CONTROL` (the device boots standalone and refuses the layout requests below until then). When finished, send `RELEASE_CONTROL`; closing or unplugging has the same effect.
 3. Render the faces and icons (with labels), encode them with the rle565 encoder and compute their IDs (CRC-32). Send `QUERY_IMAGES`, then `PUT_IMAGE` only for the missing ones, pipelined.
 4. Send `SET_PAGE_COUNT`, then one `SET_KEYS` with every key. Set the status bar texts with `SET_STATUS_TEXT`, and again whenever they change.
 5. Handle `KEY` events. To sleep the screen, send `SET_BACKLIGHT` off; on a `WAKE` event, send it on. Later changes are `SET_KEYS` with the affected keys (plus `PUT_IMAGE` for any new images), or a `PUT_IMAGE` that replaces an image in place. `FREE_IMAGES` images that are no longer wanted.
@@ -508,7 +543,7 @@ And for a host-controlled session:
 
 - Layout and images are kept in PSRAM while the device is powered. A host app that restarts can reconnect, query what the device has, and avoid uploading it again.
 - Layout and images are never saved to flash. Only the standalone config is ([configuration upload](#configuration-upload)); the standalone mode that runs it is in [`standalone.md`](standalone.md).
-- The device can't tell when the host app closes, because there's no signal for it. The host can explicitly `RESET` before it exits if it wants the screen cleared.
+- The device can't tell when the host app closes (it only sees USB unmount or suspend, which release control). A host that wants the device back on its Home before it exits sends `RELEASE_CONTROL`; `RESET` only clears the screen and keeps the host in control.
 
 ## Open questions
 

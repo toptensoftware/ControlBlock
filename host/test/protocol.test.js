@@ -254,3 +254,23 @@ test("wifi state event", () => {
     const lost = decodeEvent({ type: Msg.WIFI_STATE, seq: 7, payload: Uint8Array.of(3, 1, 0, 0, 0, 0, 0, 0) });
     assert.deepEqual(lost, { type: "wifiState", seq: 7, state: WifiState.RETRYING, stateName: "RETRYING", lost: true, ip: null });
 });
+
+// --- Take control and release (docs/protocol.md, docs/standalone.md) ---
+
+test("take control message types, status and the info flag", () => {
+    assert.equal(Msg.TAKE_CONTROL, 0x06);
+    assert.equal(Msg.RELEASE_CONTROL, 0x07);
+    assert.equal(Status.NOT_HOSTED, 11);
+    assert.equal(statusName(Status.NOT_HOSTED), "NOT_HOSTED");
+    assert.equal(InfoFlags.HOSTED, 0x0004);
+});
+
+test("get info reports the mode, independent of the other flags", () => {
+    assert.equal(decodeInfo(infoPayload()).hosted, false);
+    assert.equal(decodeInfo(infoPayload({ hosted: true })).hosted, true);
+    const all = decodeInfo(infoPayload({ hosted: true, wifiCredentials: true, backlight: false }));
+    assert.equal(all.hosted, true);
+    assert.equal(all.wifiCredentials, true);
+    assert.equal(all.backlight, false);
+    assert.equal(all.maxPayload, 8192);                     // fields after the flags still line up
+});

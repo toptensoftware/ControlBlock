@@ -11,10 +11,12 @@
 #include "esp_timer.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "compositor.h"
+#include "config_boot.h"
 #include "config_flash.h"
 #include "model.h"
 #include "protocol.h"
 #include "status.h"
+#include "standalone_task.h"
 #include "status_bar.h"
 #include "swipe.h"
 #include "usb.h"
@@ -119,10 +121,30 @@ static void on_wake(uint32_t time_ms)
     wake();
 }
 
+// The switch point for key events: hosted, they go to the host; standalone,
+// through the gestures and bindings to the op queue (standalone_task.h).
 static void on_key(int page, int key, int action, uint32_t time_ms)
 {
+    if (!s_proto.Hosted()) {
+        standalone_key(page, key, action, time_ms);
+        return;
+    }
     s_proto.PostKey(page, key, action, time_ms);
     wake();
+}
+
+// TinyUSB task: the host went away. The protocol task does the release.
+static void on_disconnected(void)
+{
+    s_proto.PostDisconnect();
+    wake();
+}
+
+// Protocol task, after the model was rebuilt
+static void ph_mode_changed(bool hosted, void *)
+{
+    standalone_set_hosted(hosted);      // drops held keys and queued ops; release re-arms
+    ESP_LOGI(TAG, "%s", hosted ? "host took control" : "standalone");
 }
 
 static void protocol_task(void *)
@@ -150,6 +172,7 @@ static void protocol_task(void *)
             s_proto.Receive(buf, n);
         }
 
+        s_proto.ServiceDisconnect();       // after the bytes that came before it
         s_proto.SendEvents();
         s_proto.SendHeartbeat((uint32_t)(esp_timer_get_time() / 1000));
         waiting = s_proto.Idle();
@@ -175,6 +198,7 @@ esp_err_t host_link_init(void)
     h.set_backlight    = ph_set_backlight;
     h.backlight_on     = ph_backlight_on;
     h.set_status_text  = ph_set_status_text;
+    h.mode_changed     = ph_mode_changed;
     h.restart          = ph_restart;
     h.wifi_status      = ph_wifi_status;
     h.fw_version       = esp_app_get_description()->version;
@@ -184,18 +208,23 @@ esp_err_t host_link_init(void)
     cf.busy = cf_busy;
     s_config.Init(cf);
     s_proto.Init(model_store(), model_layout(), &s_config, wifi_config(), h);
+    s_proto.SetHome(config_summary(), config_blob());
 
     if (xTaskCreatePinnedToCore(protocol_task, "protocol", PROTOCOL_TASK_STACK, nullptr,
                                 PROTOCOL_TASK_PRIO, &s_task, PROTOCOL_TASK_CORE) != pdPASS)
         return ESP_FAIL;
     swipe_set_page_changed_cb(on_page_changed);
+    if (standalone_init(config_blob()) != ESP_OK)
+        return ESP_FAIL;
     swipe_set_key_cb(on_key);
+    swipe_set_tick_cb(standalone_tick);
     swipe_set_wake_cb(on_wake);
     wifi_set_state_cb(on_wifi_state);
 
     usb_callbacks_t cb = {};
     cb.rx           = wake;
     cb.reset_stream = wake;
+    cb.disconnected = on_disconnected;
     esp_err_t err = usb_init(s_serial, &cb);
     if (err == ESP_OK)
         ESP_LOGI(TAG, "ready");

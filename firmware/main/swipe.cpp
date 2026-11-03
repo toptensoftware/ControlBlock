@@ -76,6 +76,7 @@ static int   s_cause = SWIPE_CAUSE_USER;
 static TouchGate s_router;
 static void      (*s_key_cb)(int page, int key, int action, uint32_t time_ms);
 static void      (*s_wake_cb)(uint32_t time_ms);
+static void      (*s_tick_cb)(void);
 
 // Drag
 static float s_anchor_x;             // finger x when the drag started
@@ -363,6 +364,8 @@ static void swipe_task(void *arg)
         while (xQueueReceive(s_queue, &ev, 0))
             handle_event(&ev);
         s_router.Tick(now, s_page);
+        if (s_tick_cb)
+            s_tick_cb();
 
         if (s_state == STATE_SETTLING && !glide_step(now)) {
             s_pos   = s_glide_to;
@@ -419,6 +422,11 @@ void swipe_set_enabled(bool enabled)
 void swipe_set_wake_cb(void (*cb)(uint32_t time_ms))
 {
     s_wake_cb = cb;
+}
+
+void swipe_set_tick_cb(void (*cb)(void))
+{
+    s_tick_cb = cb;
 }
 
 static void router_wake(uint32_t time_ms, void *)

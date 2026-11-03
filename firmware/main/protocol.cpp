@@ -141,6 +141,29 @@ void Protocol::Init(ImageStore *store, KeyLayout *layout, ConfigStore *config, W
     m_host   = host;
 }
 
+void Protocol::SetHome(const ConfigSummary *summary, const uint8_t *blob)
+{
+    m_home      = summary;
+    m_home_blob = blob;
+}
+
+// The requests that edit the layout, the images or the status bar: a host's
+// to make, so a host that hasn't taken control can't half-edit Home
+bool Protocol::NeedsHost(uint8_t type) const
+{
+    switch (type) {
+    case MSG_RESET:
+    case MSG_SET_STATUS_TEXT:
+    case MSG_PUT_IMAGE:
+    case MSG_FREE_IMAGES:
+    case MSG_SET_PAGE_COUNT:
+    case MSG_SET_KEYS:
+    case MSG_SET_PAGE:
+        return true;
+    }
+    return false;
+}
+
 // ===========================================================================
 // Parsing
 // ===========================================================================
@@ -236,7 +259,13 @@ void Protocol::OnHeader()
     m_host_seen = true;
 
     if (m_type == MSG_PUT_IMAGE && m_len >= sizeof(m_prefix)) {
-        m_state = State::ImagePrefix;
+        if (Hosted()) {
+            m_state = State::ImagePrefix;
+        } else {
+            m_state  = State::Skip;         // refused: skip the data, keeping the stream in step
+            m_status = ST_NOT_HOSTED;
+            m_left   = m_len;
+        }
     } else if (m_len == 0) {
         Dispatch();
         EndMessage();
@@ -295,11 +324,7 @@ void Protocol::ResetStream()
     m_left    = 0;
     m_status  = ST_OK;
     m_corrupt = false;
-
-    m_ev_lock.Enter();
-    m_ev_count = 0;
-    m_ev_lost  = false;
-    m_ev_lock.Exit();
+    DropEvents(true);
 }
 
 // ===========================================================================
@@ -337,13 +362,18 @@ void Protocol::Respond(uint16_t status, const void *data, size_t len)
 
 void Protocol::Dispatch()
 {
+    if (!Hosted() && NeedsHost(m_type))
+        return Respond(ST_NOT_HOSTED);
+
     switch (m_type) {
     case MSG_PING:           OnPing();         break;
     case MSG_GET_INFO:       OnGetInfo();      break;
     case MSG_RESET:          OnReset();        break;
     case MSG_SET_STATUS_TEXT: OnSetStatusText(); break;
     case MSG_SET_BACKLIGHT:  OnSetBacklight(); break;
-    case MSG_PUT_IMAGE:      Respond(ST_BAD_LENGTH); break;     // shorter than its prefix
+    case MSG_TAKE_CONTROL:   OnTakeControl();  break;
+    case MSG_RELEASE_CONTROL: OnReleaseControl(); break;
+    case MSG_PUT_IMAGE:     Respond(ST_BAD_LENGTH); break;     // shorter than its prefix
     case MSG_FREE_IMAGES:    OnFreeImages();   break;
     case MSG_QUERY_IMAGES:   OnQueryImages();  break;
     case MSG_SET_PAGE_COUNT: OnSetPageCount(); break;
@@ -376,7 +406,8 @@ void Protocol::OnGetInfo()
     Writer w = { out, sizeof(out), 0 };
     w.U16(PROTO_VERSION);
     w.U16((m_host.backlight_on(m_host.ctx) ? INFO_FLAG_BACKLIGHT : 0)
-          | (m_wifi->Stored() ? INFO_FLAG_WIFI_CREDENTIALS : 0));
+          | (m_wifi->Stored() ? INFO_FLAG_WIFI_CREDENTIALS : 0)
+          | (Hosted() ? INFO_FLAG_HOSTED : 0));
     w.U32(PROTO_MAX_PAYLOAD);
     w.U32(st.capacity);
     w.U32(st.used);
@@ -403,9 +434,11 @@ void Protocol::OnGetInfo()
     Respond(ST_OK, out, w.len);
 }
 
-// Every key and image goes. The compositor is reset between clearing the
-// layout and freeing the images, so it references none of them by then.
-void Protocol::OnReset()
+// Every key and image goes (and any upload in progress, with the store). The
+// compositor is reset between clearing the layout and freeing the images, so
+// it references none of them by then. `home`: then Home goes back on (all or
+// nothing: if an image is refused, the layout stays empty).
+void Protocol::ResetModel(bool home)
 {
     Lock();
     m_layout->Clear();
@@ -413,11 +446,64 @@ void Protocol::OnReset()
     m_host.reset_compositor(m_host.ctx);
     Lock();
     m_store->Reset();
+    if (home && m_home)
+        ConfigApplyHome(*m_home, m_home_blob, m_store, m_layout);
     Unlock();
     m_host.set_page_count(1, m_host.ctx);
     m_host.set_status_text(STATUS_TEXT_LEFT, "", m_host.ctx);
     m_host.set_status_text(STATUS_TEXT_RIGHT, "", m_host.ctx);
+}
+
+void Protocol::OnReset()
+{
+    ResetModel(false);
     Respond(ST_OK);
+}
+
+// Like RESET, and the KEY / PAGE_CHANGED stream starts. Already hosted: just
+// the reset.
+void Protocol::OnTakeControl()
+{
+    ResetModel(false);
+    if (!Hosted()) {
+        port::AtomicStore(&m_hosted, 1);
+        if (m_host.mode_changed)
+            m_host.mode_changed(true, m_host.ctx);
+    }
+    Respond(ST_OK);
+}
+
+// The one way back to standalone (RELEASE_CONTROL and a disconnect): the
+// stream stops, Home is rebuilt, and the light comes back on (a host may have
+// turned it off, and nobody is left to send the wake).
+void Protocol::Release()
+{
+    if (!Hosted())
+        return;
+    port::AtomicStore(&m_hosted, 0);
+    DropEvents(false);
+    ResetModel(true);
+    m_host.set_page(0, false, m_host.ctx);
+    m_host.set_backlight(true, m_host.ctx);
+    if (m_host.mode_changed)
+        m_host.mode_changed(false, m_host.ctx);
+}
+
+void Protocol::OnReleaseControl()
+{
+    Release();
+    Respond(ST_OK);
+}
+
+void Protocol::ServiceDisconnect()
+{
+    if (!port::AtomicExchange(&m_disconnect, 0))
+        return;
+    ResetStream();                  // a partial message or upload won't be finished
+    if (Hosted())
+        Release();
+    else
+        m_host.set_backlight(true, m_host.ctx);
 }
 
 // u8 field, u8 len, char text[len]
@@ -635,8 +721,28 @@ void Protocol::PostEvent(const Event &e)
     m_ev_lock.Exit();
 }
 
+void Protocol::DropEvents(bool all)
+{
+    m_ev_lock.Enter();
+    if (all) {
+        m_ev_count = 0;
+        m_ev_lost  = false;
+    } else {
+        int kept = 0;
+        for (int i = 0; i < m_ev_count; i++) {
+            const Event &e = m_events[(m_ev_head + i) % PROTO_EVENT_QUEUE];
+            if (e.type != EVT_KEY && e.type != EVT_PAGE_CHANGED)
+                m_events[(m_ev_head + kept++) % PROTO_EVENT_QUEUE] = e;
+        }
+        m_ev_count = kept;
+    }
+    m_ev_lock.Exit();
+}
+
 void Protocol::PostKey(int page, int key, int action, uint32_t time_ms)
 {
+    if (!Hosted())
+        return;
     Event e = { EVT_KEY, 8, { (uint8_t)page, (uint8_t)key, (uint8_t)action, 0 } };
     put32(e.data + 4, time_ms);
     PostEvent(e);
@@ -644,6 +750,8 @@ void Protocol::PostKey(int page, int key, int action, uint32_t time_ms)
 
 void Protocol::PostPageChanged(int page, int cause)
 {
+    if (!Hosted())
+        return;
     Event e = { EVT_PAGE_CHANGED, 2, { (uint8_t)page, (uint8_t)cause } };
     PostEvent(e);
 }

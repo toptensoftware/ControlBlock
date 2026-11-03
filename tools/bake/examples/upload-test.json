@@ -9,7 +9,11 @@
     "keys": [
       { "icon": "#play", "label": "Play", "action": { "op": "hidKey", "keys": "space" } },
       { "icon": "#next-track", "label": "Next", "action": { "op": "hidKey", "keys": "ctrl+right" } },
-      { "icon": "#volume-mute", "label": "Mute", "action": { "op": "hidKey", "keys": "f5" } }
+      { "icon": "#volume-mute", "label": "Mute", "action": { "op": "hidKey", "keys": "f5" } },
+      { "icon": "#play", "label": "Copy", "action": { "op": "hidKey", "keys": "ctrl+c" } },
+      { "icon": "#play", "label": "Hold",
+        "press": { "op": "hidKey", "keys": "shift+a", "mode": "hold" },
+        "release": { "op": "hidKey", "keys": "shift+a", "mode": "hold" } }
     ]
   }
 }

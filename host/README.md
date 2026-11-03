@@ -18,6 +18,7 @@ node demo/bench.js  # latency, throughput and upload speed
 import { ControlBlock, keyImage } from "./index.js";
 
 const cb = await ControlBlock.open();           // first device, or { serial }
+await cb.takeControl();                         // the device boots standalone: take the screen first
 const size = cb.info.keyWidth;                  // 128: every image is size x size
 
 const face = await keyImage(faceRgba, size, size, size);    // { id: CRC-32, data: rle565 }
@@ -31,6 +32,11 @@ cb.on("pageChanged", e => console.log("page", e.page));
 cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: KeyAction.PRESS / RELEASE / CANCEL
 ```
 
+- **Modes** ([`docs/standalone.md`](../docs/standalone.md)):
+  - The device boots **standalone**, showing its own Home. In that mode it refuses every request that edits the layout (`reset`, `putImage`, `freeImages`, `setPageCount`, `setKeys`, `setPage`, `setStatusText`) with a `NOT_HOSTED` error, so call `takeControl()` first.
+  - `takeControl()` clears the layout and images like `reset()`, and starts the `key` and `pageChanged` events. `info.hosted` says which mode the device is in.
+  - `releaseControl()` gives the screen back: the device rebuilds its Home and turns the backlight on. Unplugging, closing the host or a USB suspend does the same by itself.
+  - `ping`, `getInfo`, `queryImages`, `setBacklight`, `uploadConfig` and the Wi-Fi calls work in both modes.
 - **Requests are pipelined:** every method returns a promise for its own response. A status other than OK throws a `ControlBlockError`.
 - **`putImage(id, data)`:**
   - It splits the image into chunks the device can take.
