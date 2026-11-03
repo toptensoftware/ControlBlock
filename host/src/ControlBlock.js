@@ -14,16 +14,18 @@ import {
     USB_VID, USB_PID, INTERFACE, ENDPOINT, PROTOCOL_VERSION, REQ_RESET_STREAM,
     PUT_IMAGE_PREFIX, CONFIG_DATA_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
     encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeConfigBegin, encodeConfigData, crc32,
-    decodeInfo, decodeQuery, decodeEvent, statusName,
+    decodeInfo, decodeQuery, decodeEvent, statusName, HEARTBEAT_INTERVAL_MS,
 } from "./protocol.js";
 
 const READ_SIZE        = 4096;      // a multiple of the 64-byte packet size
-// node usb only: an idle read is cancelled after this and the loop reads
-// again. The device ends every burst with a short or zero-length packet, so
-// a read in progress completes when the data stops; only idle reads time out.
+// node usb only: a read that gets no data for this long is cancelled. That
+// must never happen while the device is alive: on Windows a cancelled bulk IN
+// read leaves the pipe deaf (nothing more arrives until the device is
+// reopened). The device sends a heartbeat every HEARTBEAT_INTERVAL_MS, so an
+// idle read always completes first; this is well past it, as a margin.
 // A pending read can't be cancelled (usb 3.x), and close() and the process
-// exit wait for it, so this is the worst-case delay on closing an idle device
-const READ_TIMEOUT_MS  = 250;
+// exit wait for it: at most one heartbeat interval on a live device.
+const READ_TIMEOUT_MS  = 5 * HEARTBEAT_INTERVAL_MS;
 const DEFAULT_TIMEOUT  = 5000;      // per request
 const CONFIG_COMMIT_TIMEOUT = 30000; // the device checks and reads back the whole config
 const CONFIG_WINDOW    = 4;         // config chunks in flight: each takes the device a while (flash erases)

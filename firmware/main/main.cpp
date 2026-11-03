@@ -15,6 +15,7 @@
 #include "waveshare_rgb_lcd_port.h"
 #include "waveshare_touch_port.h"
 #include "compositor.h"
+#include "config_boot.h"
 #include "model.h"
 #include "host_link.h"
 #include "screen.h"
@@ -340,8 +341,10 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(init_status_bar());
 
     ESP_ERROR_CHECK(comp_init(model_get_page, model_is_retired, NULL));
+    config_boot_load();                     // before the store sizes itself and before the display runs
     ESP_ERROR_CHECK(model_init());
     ESP_ERROR_CHECK(screen_init(1));        // the layout starts with one empty page
+    config_boot_apply();                    // the stored config's Home, if any
     ESP_ERROR_CHECK(display_enable_backlight(true));
 
 #if RUN_STRESS

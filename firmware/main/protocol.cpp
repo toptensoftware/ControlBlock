@@ -617,6 +617,22 @@ bool Protocol::SendEvents()
     return sent;
 }
 
+bool Protocol::SendHeartbeat(uint32_t now_ms)
+{
+    if (m_hb_sent && now_ms - m_hb_ms < PROTO_HEARTBEAT_MS)     // unsigned: survives the clock wrapping
+        return false;
+    if (m_host.write_space(m_host.ctx) < PROTO_HEARTBEAT_ROOM)
+        return false;                       // not due yet again: it is sent as soon as there's room
+
+    uint8_t t[4];
+    put32(t, now_ms);
+    WriteMessage(EVT_HEARTBEAT, PROTO_FLAG_EVENT, m_ev_seq++, t, sizeof(t));
+    m_host.flush(m_host.ctx);
+    m_hb_sent = true;
+    m_hb_ms   = now_ms;
+    return true;
+}
+
 bool Protocol::Idle()
 {
     Lock();

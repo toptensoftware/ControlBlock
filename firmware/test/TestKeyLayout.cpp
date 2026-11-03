@@ -1,8 +1,11 @@
 // Key layout: four image slots per key, ref counts, all-or-nothing SET_KEYS,
 // pressed pairs and replace (docs/image-assets.md)
 
+#include <stdlib.h>
+#include <string.h>
 #include "UnitTesting.h"
 #include "Core.h"
+#include "rle565.h"
 #include "key_layout.h"
 #include "store_env.h"
 
@@ -262,4 +265,39 @@ Fact("KeyLayout Clear Releases Everything")
     // Then the store can be reset with nothing referenced
     f.store.Reset();
     Assert(f.env.LiveBlocks() == 0);
+}
+
+Fact("KeyLayout Draws External Images")
+{
+    Fixture f;
+    const void *face = f.env.Face(1, true);                 // opaque
+    const void *icon = f.env.Icon(0);
+    uint32_t face_size = f.env.Size(face), icon_size = f.env.Size(icon);
+    uint8_t *face_copy = (uint8_t *)malloc(face_size);
+    uint8_t *icon_copy = (uint8_t *)malloc(icon_size);
+    memcpy(face_copy, face, face_size);
+    memcpy(icon_copy, icon, icon_size);
+    Assert(f.store.AddExternal(1000, face_copy, face_size) == ImageResult::Ok);
+    Assert(f.store.AddExternal(1004, icon_copy, icon_size) == ImageResult::Ok);
+
+    KeyDef def = Def(0, 2, 1000, 1004, 1000, 1004);
+    Assert(f.layout.SetKeys(&def, 1) == LayoutResult::Ok);
+    comp_key_t k = f.Key(0, 2);
+    Assert(k.bg == face_copy && k.fg == icon_copy && k.flags == COMP_KEY_BG_OPAQUE);
+    Assert(f.layout.IsActive(0, 2));
+    Assert(f.store.Find(1000)->key_refs == 2);
+
+    // Pressing swaps to the pressed pair, here the same external images
+    Assert(f.layout.SetPressed(0, 2, true));
+    Assert(f.Key(0, 2).bg == face_copy);
+
+    // Clearing the layout releases them; nothing is retired and nothing is freed
+    f.layout.Clear();
+    Assert(f.store.Find(1000)->key_refs == 0);
+    f.store.Free(1000);
+    f.store.Free(1004);
+    Assert(!f.store.HasRetired() && f.env.sweeps_requested == 0);
+    Assert(get_image_width(face_copy) == COMP_KEY_SIZE);
+    free(face_copy);
+    free(icon_copy);
 }

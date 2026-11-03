@@ -1,0 +1,189 @@
+# Wi-Fi
+
+Design stage: nothing here is built yet. The host sets the Wi-Fi credentials over USB; the device keeps them in NVS, reads them back on request, and connects in the background. Wi-Fi is needed by standalone mode's HTTP and UDP actions and, later, NTP for the status bar clock ([`standalone.md`](standalone.md)).
+
+## Goals and non-goals
+
+- Set, read back and clear one network's credentials over the vendor protocol ([`protocol.md`](protocol.md)), from the command line (`host/`) or any host app.
+- Survive reboots and firmware updates. Never lose or half-write the credentials.
+- Connect on boot without a host, reconnect after drops, and report the state to the host.
+- Wi-Fi must not disturb the display. The bounce fill is the constraint behind most of the choices below.
+- **Not in scope:** several saved networks, access-point mode or a captive-portal setup page, WPA2-Enterprise, a web UI (all later).
+
+## Behaviour
+
+- **Independent of the operating mode.** The Wi-Fi messages work in standalone and in hosted mode, and neither mode starts, stops or resets Wi-Fi. `RESET`, `RESET_STREAM`, taking control and releasing leave the credentials and the connection alone, like the stored config.
+- **One network.** One SSID and one password, or none.
+- **Boot:** if credentials are stored, start Wi-Fi and connect. If not, Wi-Fi is not started at all (no RAM spent, no radio).
+- **Setting credentials** stores them, then connects (or reconnects) in the background. The response does not wait for the connection: the host polls `WIFI_STATUS` or listens for the `WIFI_STATE` event.
+- **Setting the same credentials again** changes nothing: no flash write, no reconnect.
+- **Clearing** (empty SSID) erases the stored credentials, disconnects and stops Wi-Fi.
+- **Reading back** returns the SSID and the password in clear text (see Security).
+
+## Protocol
+
+New message types (`0x40`..`0x42`) and one event. The wire spec moves into `protocol.md` when this is built, so that stays the source of truth.
+
+| Type | Name | Purpose |
+|---|---|---|
+| `0x40` | WIFI_SET | Store credentials and connect; empty SSID clears |
+| `0x41` | WIFI_GET | Read the stored credentials |
+| `0x42` | WIFI_STATUS | Connection state, IP, signal |
+| `0x84` | WIFI_STATE (event) | The state changed (`0x83` is HEARTBEAT) |
+
+`GET_INFO` `flags` gains **bit 1: Wi-Fi credentials are stored**, so a host can tell without reading the password.
+
+No new response status codes: `BAD_LENGTH`, `BAD_ARG` and `IO_ERROR` (the NVS write failed) cover everything.
+
+### `0x40` WIFI_SET
+
+**Request:**
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | ssid_len | 0..32 |
+| u8 | pass_len | 0, or 8..63 |
+| u8[ssid_len] | ssid | Raw bytes (an SSID need not be UTF-8) |
+| u8[pass_len] | pass | Raw bytes. 0 = an open network |
+
+- `BAD_LENGTH` if the payload is shorter than the two lengths say. Trailing bytes are ignored (the usual rule).
+- `BAD_ARG` if `ssid_len` is over 32, `pass_len` is 1..7 or over 63, `ssid_len` is 0 with a non-zero `pass_len`, or either string contains a NUL byte (they are stored as C strings). Nothing changes.
+- `ssid_len = 0` (and `pass_len = 0`) clears the credentials.
+- A 64-character hex pre-shared key is not accepted in v1.
+- `IO_ERROR` if the NVS write fails. The previously stored credentials are still in place (see Storage).
+- On `OK` the credentials are stored. The connection attempt starts after the response.
+
+### `0x41` WIFI_GET
+
+**Request:** No payload.
+
+**Response** (after the status field):
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | ssid_len | 0 if none are stored |
+| u8 | pass_len | |
+| u8[ssid_len] | ssid | |
+| u8[pass_len] | pass | |
+
+### `0x42` WIFI_STATUS
+
+**Request:** No payload.
+
+**Response** (after the status field):
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | state | See below |
+| u8 | reason | The last disconnect reason (ESP-IDF `wifi_err_reason_t`), 0 if none. For diagnostics; the host shouldn't depend on the values |
+| i8 | rssi | dBm while connected, else 0 |
+| u8 | reserved | 0 |
+| u8[4] | ip | `a.b.c.d` in that order while `CONNECTED`, else 0 |
+| u8[6] | mac | The station MAC (handy for DHCP reservations). All zeros in `NO_CREDENTIALS` (the driver isn't running then) |
+
+States:
+
+| Value | Name | Meaning |
+|---|---|---|
+| 0 | `NO_CREDENTIALS` | Nothing stored; Wi-Fi is not running |
+| 1 | `CONNECTING` | Associating or waiting for an IP |
+| 2 | `CONNECTED` | Has an IP |
+| 3 | `RETRYING` | The attempt failed or the link dropped; waiting to retry (`reason` says why) |
+
+### `0x84` WIFI_STATE (event)
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | state | As above |
+| u8 | lost | Event-overflow flag (see [`protocol.md`](protocol.md#device--host-events)) |
+| u8[2] | reserved | 0 |
+| u8[4] | ip | As in `WIFI_STATUS` |
+
+Sent when the state changes (not on every retry), so a host can show "connected" without polling. A host that doesn't care ignores it.
+
+## Storage (NVS)
+
+The `nvs` partition (24 KB at `0x9000`) already exists in `partitions.csv`.
+
+- **Namespace** `cb_wifi`, **one key** `cred`: a single blob, written with one `nvs_set_blob`. NVS writes a new item and then invalidates the old one, so a power loss mid-write leaves the old credentials or the new ones, never a mix. Two separate keys (ssid, pass) could be left half updated, so don't split them.
+- **Blob format** (little-endian): `u8 version (1)`, `u8 ssid_len`, `u8 pass_len`, `u8 reserved (0)`, then the ssid and pass bytes. Decoding validates the version and lengths with the same rules as `WIFI_SET`; a blob that fails is treated as "no credentials" (and erased), never as a boot failure.
+- **Clearing** is `nvs_erase_key`.
+- **Equality check before writing:** read the stored blob and skip the write if identical, so repeated sets cost no wear.
+- **Boot:** `nvs_flash_init()` early in `main`. If it returns `ESP_ERR_NVS_NO_FREE_PAGES` or `ESP_ERR_NVS_NEW_VERSION_FOUND`, erase and init again (the credentials are lost; the host can set them again). The Wi-Fi driver uses NVS too (PHY calibration data), and so does the planned standalone state; they use their own namespaces.
+- **The driver must not store credentials itself.** Call `esp_wifi_set_storage(WIFI_STORAGE_RAM)` before setting the config, so there is exactly one copy of the credentials (ours), and the driver does not write to flash on every `esp_wifi_set_config`.
+- **Flash writes and the display:** an NVS write is a flash write, and flash writes stall the bounce ISR (`CONFIG_LCD_RGB_ISR_IRAM_SAFE` is off; this is the same issue as the config upload). A credentials write is small (one flash page, plus an occasional page erase when NVS garbage-collects) and rare. Accept a possible one-frame glitch at first and check on the hardware. If it shows, blank the screen around the write as the config upload does.
+- The Wi-Fi stack also writes to NVS on its own (PHY calibration data, when it changes) around `esp_wifi_start`. Check for a display glitch there on the hardware too.
+
+## Security
+
+- The credentials are plaintext in NVS. Flash encryption and NVS encryption are off in this project.
+- `WIFI_GET` returns the password to anyone who can open the USB device. That is by design (the host can show and edit the saved values), and the device is a desktop control surface where USB access already means full control of it. If that stops being acceptable, the options are: leave out the password and return only its length, or require a physical action (a touch confirmation) before returning it. Not planned.
+- Credentials are never logged (log only the SSID and the lengths).
+
+## Wi-Fi stack setup
+
+Station mode only. The sequence, once, at startup when credentials exist (`wifi.cpp`, the device layer):
+
+1. `nvs_flash_init()` (in `main`, see Storage).
+2. `esp_netif_init()` and `esp_event_loop_create_default()`. Nothing else in the firmware creates the default event loop yet; check before adding it.
+3. `esp_netif_create_default_wifi_sta()`, then set the hostname (`controlblock-<last 3 MAC bytes>`) with `esp_netif_set_hostname`.
+4. `esp_wifi_init()` with `WIFI_INIT_CONFIG_DEFAULT()` and the buffer settings below, `esp_wifi_set_storage(WIFI_STORAGE_RAM)`, `esp_wifi_set_mode(WIFI_MODE_STA)`.
+5. Register handlers for `WIFI_EVENT` (any id) and `IP_EVENT_STA_GOT_IP` / `IP_EVENT_STA_LOST_IP`.
+6. `esp_wifi_set_config(WIFI_IF_STA, …)` with the SSID and password. Set the auth threshold to `WIFI_AUTH_WPA2_PSK` for a password and `WIFI_AUTH_OPEN` for none (so a WPA2/WPA3 mixed AP works and a downgrade to WEP is refused), and `sae_pwe_h2e = WPA3_SAE_PWE_BOTH`.
+7. `esp_wifi_start()`, then `esp_wifi_connect()` (or from the `STA_START` event).
+
+To change or clear the credentials while running: `esp_wifi_disconnect()`, `esp_wifi_set_config()`, `esp_wifi_connect()`; to clear, `esp_wifi_stop()` (and `esp_wifi_deinit()` if the RAM is needed back). Keep init and teardown in one place so a clear followed by a set works.
+
+**Event handling** (the handlers only post to the Wi-Fi task; they do no work themselves):
+- `STA_DISCONNECTED` records `reason` and schedules a retry. Backoff: 1 s, doubling to a 30 s cap, reset on `GOT_IP`. For an authentication failure (wrong password) go straight to the cap: retrying quickly won't help and some routers lock out.
+- `STA_CONNECTED` moves to waiting for an IP; `GOT_IP` moves to `CONNECTED` and posts a `WIFI_STATE` event.
+- A new `WIFI_SET` resets the backoff and connects at once.
+
+The state machine is separate from the driver calls (pure: events and a clock in, "connect now" / "retry in N ms" / "state changed" out) so it is host tested.
+
+**Settings to review** (in `sdkconfig.defaults`; measure the heap before and after, see the RAM note):
+- `esp_wifi_set_ps(WIFI_PS_NONE)` after connecting. The default modem sleep adds tens of ms to each request, which hurts button-to-action latency; the board is USB powered.
+- Fewer buffers: lower static RX buffers (`CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM`), dynamic RX/TX buffers and the AMPDU windows from their defaults. The traffic is a few small HTTP/UDP requests, not streaming.
+- Leave `CONFIG_ESP_WIFI_IRAM_OPT` / `RX_IRAM_OPT` off unless the IRAM is plentiful (they trade RAM for speed we don't need).
+- Don't enable BLE or the Wi-Fi/BLE coexistence code.
+
+### Cores, RAM and the bounce fill
+
+- **Internal RAM** is the tight resource (~95 KB free before Wi-Fi, largest block 53 KB). The Wi-Fi driver and lwIP typically want tens of KB of it. Measure free heap and the largest block at boot with Wi-Fi up, before deciding what to shrink (status-bar buffers, the protocol buffer, task stacks: see CLAUDE.md Open Items and [`status-bar.md`](status-bar.md)).
+- **Wi-Fi/lwIP buffers in PSRAM** (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`) would save the internal RAM but means heavy PSRAM writes while receiving, and **nothing else may write PSRAM heavily while fills run** (CLAUDE.md). Only do this with a `RUN_STRESS` pass that adds Wi-Fi traffic, and look at the late-fill counts.
+- **Cores:** keep the Wi-Fi driver and the lwIP task on core 0 (the defaults; check `CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_0` and `CONFIG_LWIP_TCPIP_TASK_AFFINITY`). Core 1 belongs to the compositor and the fill. The Wi-Fi radio interrupt runs on whichever core started the driver, so start it from a task pinned to core 0.
+- **Code in PSRAM:** the Wi-Fi driver is largely IRAM/flash code and has IRAM-safe parts; with `SPIRAM_FETCH_INSTRUCTIONS` on, check that the build and the first connection work, since this combination is untested here.
+- **Boot order:** `i2c_init`, `ch422g_init`, display, touch, USB, then Wi-Fi last, so a Wi-Fi problem can never keep the screen from coming up.
+
+## Code layout
+
+| Part | Where | Tested |
+|---|---|---|
+| Validation and the blob format | `wifi_credentials.cpp/.h` (pure; owns the rules, so `Protocol` and the device layer share them) | host |
+| Set/get/clear logic over an injected storage (`Load`, `Save`, `Erase` of one blob), equality check, change notification | same module | host, over a fake storage |
+| Wire messages | `protocol.cpp` (new `ProtocolHost` callbacks `wifi_set`, `wifi_get`, `wifi_status`), `GET_INFO` flag bit 1, the `WIFI_STATE` event | host, raw bytes in and responses decoded, like the existing protocol tests |
+| Connection state machine and backoff | `wifi_state.cpp/.h` (pure) | host |
+| NVS storage, the driver calls, the event glue, the task | `wifi.cpp/.h` (device only) | hardware only |
+| `host/` | `setWifi()`, `getWifi()`, `wifiStatus()`, a `wifiState` event | `npm test` with `FakeDevice.js` |
+| Command-line tool | `host/demo/wifi.js` (`set <ssid> [password]`, `get`, `clear`, `status`) | by hand, on the device |
+
+## Implementation plan
+
+Each step: write or adjust the tests first, see them fail, then implement. Steps 1–5 and 7 run without hardware. The device layer (6) and everything after it can only be checked on the board: flag it every time.
+
+1. **`wifi_credentials`: rules and blob** (`firmware/test`). Tests: valid and invalid SSID and password lengths, NUL bytes, clearing, blob round trip, a corrupt blob (bad version, lengths past the end, truncated) decodes as "none". Then the module.
+2. **Set/get/clear over a fake storage.** Tests: set stores, get returns it, setting the same value again does no write, clear erases, a failing `Save` reports an error and leaves the old value, the change callback fires once per real change. Then implement.
+3. **Protocol messages.** Extend the protocol tests: `WIFI_SET` / `GET` / `STATUS` byte for byte, `BAD_LENGTH`, `BAD_ARG` and `IO_ERROR` mappings, `GET_INFO` flag bit 1 before and after, trailing bytes ignored, the messages are not affected by `RESET` / `RESET_STREAM`, the `WIFI_STATE` event queues like the others. Add the `ProtocolHost` callbacks (the test host fakes them) and implement.
+4. **`wifi_state`: the state machine.** Tests: first attempt, success, disconnect and backoff doubling to the cap, reset on success, authentication failure goes to the cap, a new `WIFI_SET` retries at once, clear goes to `NO_CREDENTIALS`, a stale event after a clear is ignored. Then implement.
+5. **Host library and CLI.** `host/` tests against `FakeDevice.js` for the three calls and the event (and `FakeDevice` gets the same messages); then `host/demo/wifi.js`. Update `docs/protocol.md` with the wire spec as part of this step (keep firmware, `host/` and the spec in sync).
+6. **Device layer** (`wifi.cpp`, hardware only). NVS init in `main`, the NVS storage for step 2, `esp_netif`/`esp_wifi` setup and the event glue as in "Wi-Fi stack setup", the task on core 0, `host_link.cpp` wiring the `ProtocolHost` callbacks, `WIFI_STATE` events. Add `esp_wifi`, `esp_netif`, `esp_event`, `nvs_flash` to the `main` component requirements. Build the firmware (debug and release) to check it compiles. Log the free heap and largest block with Wi-Fi up.
+7. **Doc sweep:** `protocol.md` (done in step 5), `standalone.md` (its Wi-Fi section now points here), `status-bar.md` (RAM note), `CLAUDE.md` (Wi-Fi in the firmware module list and Open Items once built).
+8. **Hardware checks** (the user flashes): set, read back, clear and reconnect from the CLI; credentials survive a reboot and a reflash; wrong password backs off; the router restarting recovers; flash write from `WIFI_SET` and the connect itself don't glitch the display; free heap and the largest block with Wi-Fi up; late-fill counts with Wi-Fi traffic running (extend `RUN_STRESS` with a UDP/HTTP loop); the `SPIRAM_FETCH_INSTRUCTIONS` combination; button-to-request latency with power save off.
+
+## Open questions
+
+- Whether the right-hand status text should show the Wi-Fi state or the IP until NTP exists (the right text is blank for now).
+- Several saved networks, and a way to set credentials without a host (touch entry, a setup access point): later.
+- Whether `WIFI_GET` should stay in clear text (see Security).
+- The exact RAM budget: unknown until step 6 measures it.
+- Whether the Wi-Fi task should wait for the host's first message or for a quiet moment at boot, if the connect shows up as a display glitch.

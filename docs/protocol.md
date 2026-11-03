@@ -360,6 +360,7 @@ Events have the `EVENT` flag set, and `seq` is the device's event counter.
 | `0x80` | KEY |
 | `0x81` | PAGE_CHANGED |
 | `0x82` | WAKE |
+| `0x83` | HEARTBEAT |
 
 ### `0x80` KEY
 
@@ -404,6 +405,20 @@ The screen was touched while the backlight is off (see [`SET_BACKLIGHT`](#0x05-s
 - No `KEY` or `PAGE_CHANGED` events come from that touch: it is swallowed until the finger lifts.
 - The device stays dark until the host sends `SET_BACKLIGHT`. A host that doesn't want to wake can ignore the event.
 - Queued events (such as the `CANCEL` for a key held when the light went off) arrive before it.
+
+### `0x83` HEARTBEAT
+
+| Type | Field | Notes |
+|---|---|---|
+| u32 | time_ms | Device milliseconds since boot |
+
+Sent about once a second (`PROTO_HEARTBEAT_MS`), whether or not anything else is happening. **It keeps the host's idle bulk IN read from ever timing out.**
+
+- **Why:** on Windows (WinUSB, `usb` 3.x) a bulk IN read that times out is cancelled, and a cancelled read leaves the pipe deaf: the device still receives requests, but nothing it sends reaches the host until the device is reopened. Neither `clearHalt` nor `RESET_STREAM` recovers it. A host whose reads time out every few hundred milliseconds hits this within seconds of idling.
+- **Host rule:** set the read timeout well past the interval (the `host/` library uses 5 s), so a read always completes first. The heartbeat is also why `close()` on an idle connection can take up to a second: a pending read can't be cancelled, so it waits for the next heartbeat. A host that doesn't need this (WebUSB, which can abort reads) may ignore the event.
+- **Not queued:** it is written straight out, not through the event queue, so it can never overflow it or set a `lost` flag. It shares the events' `seq` counter.
+- **Only into free room:** it is sent only while at least half of the transmit FIFO is free (`PROTO_HEARTBEAT_ROOM`, 1024 of 2048 bytes). With no app reading, the unread ones stop at half full, so responses and key events are never crowded out; they are drained and ignored when a host connects.
+- Older firmware doesn't send it. A host that sets a long read timeout needs this firmware.
 
 ## Typical session
 

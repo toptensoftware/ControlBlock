@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "compositor.h"
 #include "config_flash.h"
@@ -122,7 +123,9 @@ static void protocol_task(void *)
     bool     waiting = false;       // images waiting for a sweep
 
     while (1) {
-        ulTaskNotifyTake(pdTRUE, waiting ? pdMS_TO_TICKS(IDLE_POLL_MS) : portMAX_DELAY);
+        // Wakes at least once per heartbeat interval, so an idle link still
+        // carries a HEARTBEAT (the host's reads never sit idle until they time out)
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(waiting ? IDLE_POLL_MS : PROTO_HEARTBEAT_MS));
 
         // Everything that's arrived. Bytes from a new stream epoch come
         // after a RESET_STREAM: reset the parser before them.
@@ -139,6 +142,7 @@ static void protocol_task(void *)
         }
 
         s_proto.SendEvents();
+        s_proto.SendHeartbeat((uint32_t)(esp_timer_get_time() / 1000));
         waiting = s_proto.Idle();
     }
 }

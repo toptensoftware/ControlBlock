@@ -64,6 +64,11 @@ public:
     // buffer; bigger is faster.
     bool Verify(const ConfigInfo &info, void *scratch, uint32_t scratch_len);
 
+    // Read the stored blob (`info` from Stored) into `dst`, `info.size` bytes,
+    // and check its CRC. False if the read fails or the CRC doesn't match.
+    // One flash read, so `dst` can be any memory (PSRAM at boot).
+    bool Read(const ConfigInfo &info, void *dst);
+
     // --- Upload ---
     // Begin destroys the stored config (and abandons an upload in progress).
     // BadArg for a size of 0, NoSpace for one over MaxSize (nothing

@@ -38,10 +38,13 @@ static_assert(sizeof(ImageData) == 16, "ImageData keeps the pixels 16-byte align
 // What an ID names
 struct ImageEntry
 {
-    uint32_t   id;
-    ImageData *data;        // current pixels
-    uint32_t   key_refs;    // key slots using it
-    bool       live;        // in the ID map (false = dying: freed while keys use it)
+    uint32_t    id;
+    ImageData  *data;       // the allocation holding the pixels; null for an external image
+    const void *pixels;     // the rle565 data the compositor draws (data->Pixels(), or the external pointer)
+    bool        opaque;     // every pixel is opaque
+    bool        external;   // the pixels belong to someone else (AddExternal)
+    uint32_t    key_refs;   // key slots using it
+    bool        live;       // in the ID map (false = dying: freed while keys use it)
 };
 
 enum class ImageResult
@@ -105,6 +108,15 @@ public:
     // A whole image from memory in one chunk (the device's own images)
     ImageResult Put(uint32_t id, const void *data, uint32_t size);
 
+    // An image that lives elsewhere (the config blob): checked like an
+    // upload, then used in place. Never copied, retired or freed: the memory
+    // must stay put until Reset(). 4-byte aligned. Adding the same ID and
+    // pointer again is fine (the loader dedupes by ID); a different image
+    // under a live ID is BadArg. Uploading to an external ID replaces it.
+    // All external images must lie in one region that holds nothing else
+    // (see PixelsRetired).
+    ImageResult AddExternal(uint32_t id, const void *pixels, uint32_t size);
+
     // --- IDs ---
     ImageEntry *Find(uint32_t id) const;           // live images only
     bool        IsLive(uint32_t id) const { return Find(id) != nullptr; }
@@ -130,20 +142,28 @@ public:
     void GetStats(ImageStoreStats *stats) const;
 
     // comp_is_retired_t: are these pixels (ImageData::Pixels()) retired?
-    // Safe on the compositor task.
+    // Safe on the compositor task. Only for pixels this store allocated: an
+    // external image has no ImageData in front of it.
     static bool IsRetired(const void *pixels, void *ctx = nullptr);
+
+    // IsRetired() for any pixels the store handed out, external ones
+    // included (never retired). The model's comp_is_retired_t.
+    bool PixelsRetired(const void *pixels) const;
 
 private:
     ImageData *Allocate(uint32_t size);
     void       Deallocate(ImageData *data);
     void       Retire(ImageData *data);
     bool       Check(ImageData *data) const;
+    bool       CheckPixels(const void *pixels, uint32_t size, bool *opaque) const;
+    void       RetirePixels(ImageEntry *entry);
     void       Install(uint32_t id, ImageData *data);
 
     ImageStoreHost      m_host = {};
     ImageStoreListener *m_listener = nullptr;
     uint32_t            m_capacity = 0, m_used = 0;
     uint32_t            m_width = 0, m_height = 0;
+    uintptr_t           m_ext_lo = 0, m_ext_hi = 0;     // [lo, hi) spans the external images
 
     SimpleLib::Map<uint32_t, ImageEntry *> m_live;
     SimpleLib::List<ImageEntry *>          m_dying;

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ControlBlock, ControlBlockError } from "../src/ControlBlock.js";
-import { Msg, Status, Reader, encodeIds, crc32 } from "../src/protocol.js";
+import { Msg, Status, Reader, encodeIds, crc32, HEARTBEAT_INTERVAL_MS } from "../src/protocol.js";
 import { imageId, keyImage, encodeImage } from "../src/images.js";
 import { readRleHeader } from "rle565/unpack.js";
 import { FakeDevice } from "./FakeDevice.js";
@@ -22,13 +22,23 @@ test("connect resets the stream and reads the info", async () => {
     await cb.close();
 });
 
-test("reads wait briefly, so close() on an idle device returns promptly", async () => {
-    // A pending transferIn can't be cancelled (usb 3.x), and close() and the
-    // process exit wait for it: its timeout is the worst-case delay.
+test("a read's timeout is well past the heartbeat, so an idle read never times out", async () => {
+    // A cancelled (timed out) bulk IN read leaves the pipe deaf on Windows, so
+    // reads must never time out while the device is alive: the device sends a
+    // heartbeat every HEARTBEAT_INTERVAL_MS, and the timeout is a long way past it.
+    // (A pending read can't be cancelled with usb 3.x, so close() and the process
+    // exit wait for the next heartbeat: at most one interval.)
     const { dev, cb } = await connected();
     await new Promise(r => setTimeout(r, 120));         // let the idle read loop run
-    assert.ok(dev.maxReadTimeout > 0);
-    assert.ok(dev.maxReadTimeout <= 250, `read timeout ${dev.maxReadTimeout} ms`);
+    assert.ok(dev.maxReadTimeout >= 3 * HEARTBEAT_INTERVAL_MS, `read timeout ${dev.maxReadTimeout} ms`);
+    await cb.close();
+});
+
+test("heartbeat events are emitted", async () => {
+    const { dev, cb } = await connected();
+    const got = new Promise(resolve => cb.on("heartbeat", resolve));
+    dev.event(Msg.HEARTBEAT, 5, Uint8Array.of(0xE8, 0x03, 0, 0));
+    assert.deepEqual(await got, { type: "heartbeat", seq: 5, timeMs: 1000 });
     await cb.close();
 });
 

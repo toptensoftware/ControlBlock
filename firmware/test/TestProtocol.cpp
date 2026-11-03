@@ -703,6 +703,69 @@ Fact("Protocol Events Wait While The Host Isn't Reading")
 }
 
 // ---------------------------------------------------------------------------
+// Heartbeat (docs/protocol.md): keeps the host's idle reads from timing out
+// ---------------------------------------------------------------------------
+
+Fact("Protocol Heartbeat Event Layout")
+{
+    Fixture f;
+    Assert(f.proto.SendHeartbeat(5000));
+    List<Msg> e = f.Read();
+    Assert(e.GetCount() == 1);
+    Assert(e[0].type == EVT_HEARTBEAT && e[0].type == 0x83 && e[0].flags == PROTO_FLAG_EVENT);
+    Assert(e[0].len == 4 && e[0].U32At(0) == 5000);
+}
+
+Fact("Protocol Heartbeat Is Sent Once Per Interval")
+{
+    Fixture f;
+    Assert(f.proto.SendHeartbeat(5000));
+    Assert(!f.proto.SendHeartbeat(5000));
+    Assert(!f.proto.SendHeartbeat(5000 + PROTO_HEARTBEAT_MS - 1));
+    Assert(f.proto.SendHeartbeat(5000 + PROTO_HEARTBEAT_MS));
+    Assert(!f.proto.SendHeartbeat(5000 + PROTO_HEARTBEAT_MS + 1));
+    List<Msg> e = f.Read();
+    Assert(e.GetCount() == 2);
+    Assert(e[1].seq == (uint16_t)(e[0].seq + 1));           // it shares the event counter
+    Assert(e[1].U32At(0) == 5000 + PROTO_HEARTBEAT_MS);
+}
+
+Fact("Protocol Heartbeat Interval Survives The Millisecond Clock Wrapping")
+{
+    Fixture f;
+    Assert(f.proto.SendHeartbeat(0xFFFFFF00u));
+    Assert(!f.proto.SendHeartbeat(0xFFFFFF00u + 10));
+    Assert(f.proto.SendHeartbeat(0xFFFFFF00u + PROTO_HEARTBEAT_MS));       // wraps past zero
+    Assert(f.Read().GetCount() == 2);
+}
+
+Fact("Protocol Heartbeat Waits For Room And Is Sent As Soon As There Is Some")
+{
+    // A host that isn't reading (no app running) must not have its transmit
+    // FIFO filled with heartbeats: they stop while less than the room is free
+    Fixture f;
+    f.space = PROTO_HEARTBEAT_ROOM - 1;
+    Assert(!f.proto.SendHeartbeat(5000));
+    Assert(f.Read().GetCount() == 0);
+    f.space = PROTO_HEARTBEAT_ROOM;
+    Assert(f.proto.SendHeartbeat(5001));                    // the refused attempt didn't start the interval
+    Assert(f.Read().GetCount() == 1);
+}
+
+Fact("Protocol Heartbeat Does Not Use The Event Queue")
+{
+    Fixture f;
+    for (int i = 0; i < PROTO_EVENT_QUEUE; i++)
+        f.proto.PostKey(0, 0, KEY_ACTION_DOWN, i);
+    Assert(f.proto.SendHeartbeat(7000));
+    f.proto.SendEvents();
+    List<Msg> e = f.Read();
+    Assert(e.GetCount() == PROTO_EVENT_QUEUE + 1);
+    Assert(e[0].type == EVT_HEARTBEAT);
+    Assert(e[1].U8At(3) == 0);                              // nothing lost: the queue was untouched
+}
+
+// ---------------------------------------------------------------------------
 // Config upload (docs/protocol.md "Configuration upload")
 // ---------------------------------------------------------------------------
 

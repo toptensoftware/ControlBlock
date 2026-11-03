@@ -52,10 +52,10 @@ From `tools/bake/`: `npm install` once, then `npm test` (no device; includes a C
 ## Repository Layout
 
 ```
-docs/              Specs: protocol.md, image-assets.md, page-compositor.md, status-bar.md, interactions.md, backlight.md, standalone.md, config-format.md, config-upload-plan.md (screen-buffers.md is partly superseded)
+docs/              Specs: protocol.md, image-assets.md, page-compositor.md, status-bar.md, interactions.md, backlight.md, standalone.md, config-format.md, config-upload-plan.md, wifi.md (screen-buffers.md is partly superseded)
 firmware/          ESP-IDF project for the device (C++)
   assets/          Generated binaries embedded in the firmware (ui.bin; test_keys.bin only for the stress run)
-  test/            Host unit tests
+  test/            Host unit tests (test/data/sample_config.json and .bin: a sample config baked by the real tool)
 host/              Node.js client library (WebUSB API over the `usb` package or a browser; mode 1), demo and bench scripts
 web/               Optional web front end for configuring the device
 rle565/            Submodule: rle565 renderer (src/) and encoder (encoder/)
@@ -91,7 +91,8 @@ Modules in `firmware/main/` (all C++; `rle565.c` from the submodule stays C):
 - **`touch_router.cpp/.h`:** swipe or key press: the swipe window, edge-ambiguous zone, and PRESS/RELEASE/CANCEL. Pure and tested; tuning constants in the header. Spec: [`docs/interactions.md`](docs/interactions.md).
 - **Backlight wake gate** ([`docs/backlight.md`](docs/backlight.md); built and unit tested, **not yet run on the hardware**): while the host has the backlight off, touches skip the router and swipe and send a WAKE event (`0x82`) per touch-down instead; the rest of that touch is swallowed. The state is in GET_INFO `flags` bit 0. Pure and tested: `touch_gate.cpp/.h` wraps `touch_router`; `swipe.cpp` feeds it, `host_link.cpp` holds the state and drives the light and the gate.
 - **`config_store.cpp/.h`, `config_flash.cpp/.h`, `crc32.h`:** the standalone config upload to the `config` flash partition (`partitions.csv`: app 2 MB, config 4 MB; header sector written last). `config_store` is platform independent and tested over a fake NOR flash; `config_flash` is the device layer; `host_link.cpp` blanks the screen during an upload and restarts after the commit. Spec: [`docs/protocol.md`](docs/protocol.md#configuration-upload), [`docs/config-upload-plan.md`](docs/config-upload-plan.md). Run on the hardware with a small blob. A changed partition table needs a full `idf.py flash` (not app only). The boot-time loader isn't built.
-- **`image_store.cpp/.h`:** the host's rle565 images under 32-bit IDs in PSRAM: streamed uploads, replace in place, deferred free, reset. Platform independent and tested. Spec: [`docs/image-assets.md`](docs/image-assets.md).
+- **`config_blob.cpp/.h`, `config_apply.cpp/.h`, `config_boot.cpp/.h`:** the standalone config at boot. `config_blob` (pure, tested) validates a BPAK blob and relocates its pointers, walking it by offsets rather than casting to structs (host tests are 64-bit); the struct layouts are written out in the file, so keep them in step with the binpack schema and re-bake `test/data/sample_config.bin` after any schema change (`node cli.js ../../firmware/test/data/sample_config.json -o ../../firmware/test/data/sample_config.bin` from `tools/bake`). `config_apply` (pure, tested) registers Home's images and sets page 0's keys, all or nothing. `config_boot` (device) reads the partition into PSRAM before the display starts (`config_boot_load`, before `model_init`/`screen_init`) and applies it after `screen_init`, before the backlight. A missing, damaged or invalid config leaves the empty Home. The blob stays resident in PSRAM. `ConfigStore::Read` reads and CRC-checks the stored blob.
+- **`image_store.cpp/.h`:** the host's rle565 images under 32-bit IDs in PSRAM: streamed uploads, replace in place, deferred free, reset; `AddExternal(id, ptr, len)` registers an image inside the config blob (never copied or freed; all external images must lie in one region that holds nothing else). Read an entry through `ImageEntry.pixels`/`opaque`, and use `PixelsRetired` (not the `ImageData` header) for the compositor's retired check. Platform independent and tested. Spec: [`docs/image-assets.md`](docs/image-assets.md).
 - **`key_layout.cpp/.h`:** pages of keys, four image slots each (normal and pressed bg/fg), ref counted; all-or-nothing `SetKeys`. The compositor's client. Tested.
 - **`protocol.cpp/.h`:** the mode 1 protocol: stream parser, every request (including SET_STATUS_TEXT: the host sets the status bar's left and right text), event queue. Platform independent and tested. Spec: [`docs/protocol.md`](docs/protocol.md).
 - **`model.cpp/.h`:** the device's store + layout under one lock; the compositor's `get_page`/`is_retired`.
@@ -143,6 +144,7 @@ All custom. Do **not** use LVGL.
 - USB vendor-class interface (one bulk IN, one bulk OUT) on the native port via `esp_tinyusb`. Bulk rather than HID for speed.
 - No driver needed: MS OS 2.0 descriptors (WinUSB) and WebUSB BOS descriptors (see TinyUSB's `webusb_serial` example). Linux needs a udev rule. Fallback if troublesome: CDC-ACM.
 - Clients: Node.js (`usb` package 3.x, which follows the WebUSB API) and browsers (WebUSB), same code in `host/src/ControlBlock.js`. Quirks of `usb` 3.x: a read timeout throws "Cancelled"; `controlTransferOut` needs a data argument.
+- **A cancelled bulk IN read deafens the pipe (Windows/WinUSB):** once a `transferIn` times out and is cancelled, the device still receives requests but nothing it sends reaches the host until the device is reopened. `clearHalt` and `RESET_STREAM` don't recover it, and a pending read can't be cancelled on close. So reads must never time out on a live device: the firmware sends a `HEARTBEAT` event (`0x83`) about once a second, written straight out (not queued) and only while half the transmit FIFO is free, and the host's read timeout (`READ_TIMEOUT_MS`, 5 s) is well past it. `close()` on an idle connection therefore takes up to a second. Anything that changes the read loop, the timeout or the heartbeat must keep this. See [`docs/protocol.md`](docs/protocol.md) (HEARTBEAT).
 - Development IDs `303a:4020`. Windows caches the MS OS 2.0 descriptor per VID/PID/bcdDevice: bump `USB_BCD_DEVICE` in `usb.cpp` when it changes.
 - Composite device from the start, so standalone mode can add HID keyboard/MIDI interfaces.
 - Vendor bulk carries every mode-1 message (not split with HID: one interface keeps uploads and key definitions in order).
@@ -154,7 +156,7 @@ All custom. Do **not** use LVGL.
 
 - If dragging looks steppy: use the GT911 interrupt and/or predict the finger position per frame.
 - Untested: the `-Og` build under the stress run.
-- **Internal RAM:** ~95 KB free after init (largest block 53 KB), down from ~130 KB before USB (TinyUSB FIFOs, the protocol's 8 KB buffer, two task stacks). Wi-Fi may need more: see [`docs/status-bar.md`](docs/status-bar.md) for shrinking the status buffers, move the protocol buffer and stacks to PSRAM, or move Wi-Fi/lwIP buffers to PSRAM (with a stress run).
+- **Internal RAM:** ~95 KB free after init (largest block 53 KB), down from ~130 KB before USB (TinyUSB FIFOs, the protocol's 8 KB buffer, two task stacks). Wi-Fi may need more (design, credentials over USB, NVS and stack setup: [`docs/wifi.md`](docs/wifi.md); not built yet): see [`docs/status-bar.md`](docs/status-bar.md) for shrinking the status buffers, move the protocol buffer and stacks to PSRAM, or move Wi-Fi/lwIP buffers to PSRAM (with a stress run).
 - **Second render cell** (render the next key while one copies): ~20% faster page builds. Not needed yet.
 - **Key presses:** the touch router is built and unit tested, and wired to the model and `Protocol::PostKey`, but **not yet run on the hardware**. Tune `TOUCH_SWIPE_WINDOW_MS` and `TOUCH_EDGE_AMBIGUOUS_PX`, and judge the pressed look flashing on swipes (it shows at touch-down and reverts when a swipe starts). The swipe task takes the model lock on key actions: check it doesn't delay frames. Per-key "no swipe window" mode: add only if needed.
 - **Not yet run on the hardware:** `RUN_STRESS`'s image-replace cases (do uploads make fills late?) and `demo/bench.js`.
@@ -163,7 +165,8 @@ All custom. Do **not** use LVGL.
 - Host library: long and double press helpers (protocol.md says the host detects them).
 - Flash writes (icon cache, NVS) may stall the bounce ISR (`CONFIG_LCD_RGB_ISR_IRAM_SAFE` is off). Test for display glitches when they arrive.
 - **Config upload:** works on the hardware (16 KB sample: blank, write, restart, re-enumerate, verify, skip when unchanged, `--force`, survives a reboot). Not yet checked: a host that vanishes mid-upload leaving the screen dark until the next RESET_STREAM (an upload idle timeout would fix it), a large blob (64 KB block erases, over-capacity refusal) and display glitches during erase. `tools/bake --upload` / `host/` `uploadConfig()` are the clients.
-- Standalone mode: the boot loader for the stored config, the action dispatch (http/udp library) and stateful actions: see [`docs/standalone.md`](docs/standalone.md).
+- **Config boot load:** built, host tested (224 tests), compiles, **not run on the hardware**. Check: the partition read into PSRAM and its time, display glitches during it, how Home looks when keys are set before the backlight comes on, whether a real large config fits in PSRAM (the blob stays resident, so hosted mode loses that space), and `RUN_STRESS` with a stored config (Home's keys are present when it starts). The take-control/release rebuild of Home isn't built.
+- Standalone mode: the action dispatch (http/udp library) and stateful actions: see [`docs/standalone.md`](docs/standalone.md).
 
 ## Conventions
 

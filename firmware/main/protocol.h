@@ -51,7 +51,16 @@ enum : uint8_t
     EVT_KEY            = 0x80,
     EVT_PAGE_CHANGED   = 0x81,
     EVT_WAKE           = 0x82,
+    EVT_HEARTBEAT      = 0x83,
 };
+
+// Heartbeat: an event about once a second, so the host's bulk IN read always
+// completes before its timeout. A cancelled read leaves the IN pipe deaf on
+// Windows (docs/protocol.md). Sent only while this much of the transmit FIFO
+// (CONFIG_TINYUSB_VENDOR_TX_BUFSIZE, 2048) is free, so with no app reading,
+// the stale ones stop at half full and never crowd out a response.
+#define PROTO_HEARTBEAT_MS   1000
+#define PROTO_HEARTBEAT_ROOM 1024
 
 // GET_INFO flags (docs/backlight.md)
 #define INFO_FLAG_BACKLIGHT  0x0001         // the backlight is on
@@ -151,6 +160,12 @@ public:
     // true if any were sent.
     bool SendEvents();
 
+    // Protocol task, at least every PROTO_HEARTBEAT_MS: send a HEARTBEAT
+    // event if one is due (`now_ms`: the device's millisecond clock) and
+    // the transmit FIFO has PROTO_HEARTBEAT_ROOM free. Not queued: it goes
+    // straight out, so it never overflows the event queue. Returns true if sent.
+    bool SendHeartbeat(uint32_t now_ms);
+
     // Protocol task, now and then: free images whose sweep is done.
     // Returns true while any are still waiting.
     bool Idle();
@@ -223,4 +238,6 @@ private:
     int      m_ev_head = 0, m_ev_count = 0;
     bool     m_ev_lost = false;
     uint16_t m_ev_seq = 0;
+    bool     m_hb_sent = false;     // a heartbeat has gone out (m_hb_ms is when)
+    uint32_t m_hb_ms = 0;
 };

@@ -36,9 +36,9 @@ void KeyLayout::Rebuild(Key &key)
                    (key.slot[KEY_SLOT_PRESSED_BG] || key.slot[KEY_SLOT_PRESSED_FG]);
     ImageEntry *bg = key.slot[pressed ? KEY_SLOT_PRESSED_BG : KEY_SLOT_BG];
     ImageEntry *fg = key.slot[pressed ? KEY_SLOT_PRESSED_FG : KEY_SLOT_FG];
-    key.comp.bg    = bg ? bg->data->Pixels() : nullptr;
-    key.comp.fg    = fg ? fg->data->Pixels() : nullptr;
-    key.comp.flags = bg && bg->data->Opaque() ? COMP_KEY_BG_OPAQUE : 0;
+    key.comp.bg    = bg ? bg->pixels : nullptr;
+    key.comp.fg    = fg ? fg->pixels : nullptr;
+    key.comp.flags = bg && bg->opaque ? COMP_KEY_BG_OPAQUE : 0;
 }
 
 // New references first, then the old ones go, so an image the key keeps

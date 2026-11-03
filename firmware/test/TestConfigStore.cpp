@@ -464,3 +464,28 @@ Fact("Config Store Without A Partition Has No Room")
     Assert(g.store.MaxSize() == 0);
     Assert(g.store.Begin(1, 1) == ConfigResult::NoSpace);
 }
+
+Fact("Config Store Read Loads The Blob And Checks Its Crc")
+{
+    Fixture f;
+    uint8_t blob[5000], out[5000];
+    Fill(blob, sizeof(blob));
+    Assert(f.Upload(blob, sizeof(blob)) == ConfigResult::Ok);
+    ConfigInfo info;
+    Assert(f.store.Stored(&info));
+
+    Assert(f.store.Read(info, out));
+    Assert(memcmp(out, blob, sizeof(blob)) == 0);
+
+    // Damaged flash, a failing read, and a header from elsewhere all fail
+    f.flash.mem[CONFIG_DATA_OFFSET + 4321] ^= 0x80;
+    Assert(!f.store.Read(info, out));
+    f.flash.mem[CONFIG_DATA_OFFSET + 4321] ^= 0x80;
+    f.flash.fail_read_in = 1;
+    Assert(!f.store.Read(info, out));
+    ConfigInfo too_big = { f.store.MaxSize() + 1, info.crc };
+    Assert(!f.store.Read(too_big, out));
+    ConfigInfo none = { 0, 0 };
+    Assert(!f.store.Read(none, out));
+    Assert(f.store.Read(info, out));
+}

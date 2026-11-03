@@ -65,6 +65,23 @@ bool ImageStore::IsRetired(const void *pixels, void *)
     return (port::AtomicLoad(&d->flags) & IMAGE_RETIRED) != 0;
 }
 
+// The external range is written (AddExternal, Reset) only while no key or
+// compositor record refers to an external image, so no lock is needed
+bool ImageStore::PixelsRetired(const void *pixels) const
+{
+    uintptr_t p = (uintptr_t)pixels;
+    if (p >= m_ext_lo && p < m_ext_hi)
+        return false;
+    return IsRetired(pixels);
+}
+
+// An entry's pixels are no longer drawn: owned ones are freed after a sweep
+void ImageStore::RetirePixels(ImageEntry *e)
+{
+    if (e->data)
+        Retire(e->data);
+}
+
 void ImageStore::Collect()
 {
     if (!m_retired.GetCount())
@@ -155,17 +172,44 @@ ImageResult ImageStore::Put(uint32_t id, const void *data, uint32_t size)
 // The whole image, bounds checked: right size, every row's runs valid.
 // Bytes after the image (padding) are allowed. Reads the data only, so it
 // adds no PSRAM writes.
+bool ImageStore::CheckPixels(const void *px, uint32_t size, bool *opaque) const
+{
+    return check_image_header(px, size) &&
+           get_image_width(px) == m_width && get_image_height(px) == m_height &&
+           check_image(px, size, opaque);
+}
+
 bool ImageStore::Check(ImageData *d) const
 {
-    const void *px = d->Pixels();
     bool opaque = false;
-    if (!check_image_header(px, d->size) ||
-        get_image_width(px) != m_width || get_image_height(px) != m_height ||
-        !check_image(px, d->size, &opaque))
+    if (!CheckPixels(d->Pixels(), d->size, &opaque))
         return false;
     if (opaque)
         d->flags |= IMAGE_OPAQUE;
     return true;
+}
+
+ImageResult ImageStore::AddExternal(uint32_t id, const void *pixels, uint32_t size)
+{
+    if (id == IMAGE_ID_NONE || !pixels || size == 0 || ((uintptr_t)pixels & 3))
+        return ImageResult::BadArg;
+    if (ImageEntry *e = Find(id))
+        return e->external && e->pixels == pixels ? ImageResult::Ok : ImageResult::BadArg;
+
+    bool opaque = false;
+    if (!CheckPixels(pixels, size, &opaque))
+        return ImageResult::BadImage;
+
+    uintptr_t lo = (uintptr_t)pixels, hi = lo + size;
+    if (m_ext_hi == 0) {
+        m_ext_lo = lo;
+        m_ext_hi = hi;
+    } else {
+        if (lo < m_ext_lo) m_ext_lo = lo;
+        if (hi > m_ext_hi) m_ext_hi = hi;
+    }
+    m_live.Add(id, new ImageEntry{ id, nullptr, pixels, opaque, true, 0, true });
+    return ImageResult::Ok;
 }
 
 // A checked image becomes `id`'s pixels: a new entry, or a replace
@@ -173,17 +217,22 @@ void ImageStore::Install(uint32_t id, ImageData *data)
 {
     ImageEntry *e = Find(id);
     if (!e) {
-        e = new ImageEntry{ id, data, 0, true };
+        e = new ImageEntry{ id, data, data->Pixels(), data->Opaque(), false, 0, true };
         m_live.Add(id, e);
         return;
     }
 
     // Replace: keys switch to the new pixels before the old ones retire
+    // (an external image has none to retire)
     ImageData *old = e->data;
-    e->data = data;
+    e->data     = data;
+    e->pixels   = data->Pixels();
+    e->opaque   = data->Opaque();
+    e->external = false;
     if (m_listener)
         m_listener->OnImageReplaced(e);
-    Retire(old);
+    if (old)
+        Retire(old);
 }
 
 // ===========================================================================
@@ -207,7 +256,7 @@ void ImageStore::Free(uint32_t id)
     m_live.Remove(id);
     e->live = false;
     if (e->key_refs == 0) {
-        Retire(e->data);
+        RetirePixels(e);
         delete e;
     } else {
         m_dying.Add(e);
@@ -220,7 +269,7 @@ void ImageStore::Release(ImageEntry *e)
     if (--e->key_refs || e->live)
         return;
     m_dying.Remove(e);
-    Retire(e->data);
+    RetirePixels(e);
     delete e;
 }
 
@@ -228,18 +277,21 @@ void ImageStore::Reset()
 {
     AbortUpload();
     for (auto it = m_live.Iterate(); it.Next(); ) {
-        Deallocate(it.GetValue()->data);
+        if (it.GetValue()->data)
+            Deallocate(it.GetValue()->data);
         delete it.GetValue();
     }
     m_live.Clear();
     for (int i = 0; i < m_dying.GetCount(); i++) {
-        Deallocate(m_dying[i]->data);
+        if (m_dying[i]->data)
+            Deallocate(m_dying[i]->data);
         delete m_dying[i];
     }
     m_dying.Clear();
     for (int i = 0; i < m_retired.GetCount(); i++)
         Deallocate(m_retired[i]);
     m_retired.Clear();
+    m_ext_lo = m_ext_hi = 0;
 }
 
 void ImageStore::GetStats(ImageStoreStats *st) const

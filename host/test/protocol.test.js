@@ -4,7 +4,7 @@ import {
     encodeMessage, MessageParser, encodeKeys, encodeIds, encodePutImage, decodeInfo, decodeQuery, decodeEvent,
     Msg, Flags, KeyFlags, HEADER_SIZE, KEYDEF_SIZE, MAGIC, statusName, Status,
     encodeStatusText, StatusText, STATUS_TEXT_MAX_BYTES,
-    crc32, encodeConfigBegin, encodeConfigData, CONFIG_DATA_PREFIX,
+    crc32, encodeConfigBegin, encodeConfigData, CONFIG_DATA_PREFIX, HEARTBEAT_INTERVAL_MS,
 } from "../src/protocol.js";
 import { infoPayload } from "./FakeDevice.js";
 
@@ -114,6 +114,13 @@ test("wake event", () => {
     const plain = decodeEvent({ type: Msg.WAKE, seq: 1, payload: Uint8Array.of(0, 0, 0, 0, 1, 0, 0, 0) });
     assert.deepEqual(plain, { type: "wake", seq: 1, lost: false, timeMs: 1 });
     assert.equal(Msg.WAKE, 0x82);
+});
+
+test("heartbeat event", () => {
+    const hb = decodeEvent({ type: Msg.HEARTBEAT, seq: 4, payload: Uint8Array.of(0x10, 0x27, 0, 0) });
+    assert.deepEqual(hb, { type: "heartbeat", seq: 4, timeMs: 10000 });
+    assert.equal(Msg.HEARTBEAT, 0x83);
+    assert.equal(HEARTBEAT_INTERVAL_MS, 1000);      // the firmware's PROTO_HEARTBEAT_MS
 });
 
 test("get info reports the backlight flag", () => {

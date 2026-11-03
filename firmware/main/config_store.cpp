@@ -61,6 +61,15 @@ bool ConfigStore::Verify(const ConfigInfo &info, void *scratch, uint32_t scratch
     return crc == info.crc;
 }
 
+bool ConfigStore::Read(const ConfigInfo &info, void *dst)
+{
+    if (info.size == 0 || info.size > MaxSize())
+        return false;
+    if (!m_flash.read(CONFIG_DATA_OFFSET, dst, info.size, m_flash.ctx))
+        return false;
+    return crc32(0, dst, info.size) == info.crc;
+}
+
 // ---------------------------------------------------------------------------
 // Upload
 // ---------------------------------------------------------------------------

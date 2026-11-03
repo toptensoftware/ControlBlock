@@ -1,6 +1,7 @@
 // Image store: uploads, replace, deferred free and sweeps
 // (docs/image-assets.md)
 
+#include <stdlib.h>
 #include <string.h>
 #include "UnitTesting.h"
 #include "Core.h"
@@ -386,4 +387,174 @@ Fact("ImageStore Reset Frees Everything At Once")
     f.store.GetStats(&st);
     Assert(st.count == 0 && st.used == 0);
     Assert(f.env.Upload(f.store, 1, f.env.Icon(0)) == ImageResult::Ok);
+}
+
+// ---------------------------------------------------------------------------
+// External images: pointers into the config blob (docs/standalone.md)
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    // An image in memory the store does not own, with 0xFF bytes where an
+    // owned image would have its ImageData header (so a header read would see
+    // IMAGE_RETIRED set)
+    struct Blob
+    {
+        uint8_t *block;
+        const void *px;
+        uint32_t size;
+
+        explicit Blob(const void *img)
+        {
+            size  = get_image_packed_size(img);
+            block = (uint8_t *)malloc(16 + size + 16);
+            memset(block, 0xFF, 16 + size + 16);
+            memcpy(block + 16, img, size);
+            px = block + 16;
+        }
+        ~Blob() { free(block); }
+    };
+}
+
+Fact("ImageStore AddExternal Uses The Pointer Without Copying")
+{
+    Fixture f;
+    Blob blob(f.env.Icon(0));
+    Assert(f.store.AddExternal(1000, blob.px, blob.size) == ImageResult::Ok);
+
+    ImageEntry *e = f.store.Find(1000);
+    Assert(e && e->id == 1000 && e->live && e->external && e->key_refs == 0);
+    Assert(e->pixels == blob.px && e->data == nullptr && !e->opaque);
+    Assert(f.store.IsLive(1000));
+    Assert(f.env.LiveBlocks() == 0);
+
+    ImageStoreStats st;
+    f.store.GetStats(&st);
+    Assert(st.count == 1 && st.used == 0 && st.retired == 0);
+}
+
+Fact("ImageStore AddExternal Records Whether The Image Is Opaque")
+{
+    Fixture f;
+    Blob opaque(f.env.Face(1, true)), clear(f.env.Face(0));
+    Assert(f.store.AddExternal(1, opaque.px, opaque.size) == ImageResult::Ok);
+    Assert(f.store.AddExternal(2, clear.px, clear.size) == ImageResult::Ok);
+    Assert(f.store.Find(1)->opaque && !f.store.Find(2)->opaque);
+}
+
+Fact("ImageStore AddExternal Checks Its Arguments")
+{
+    Fixture f;
+    Blob blob(f.env.Icon(0));
+    Assert(f.store.AddExternal(IMAGE_ID_NONE, blob.px, blob.size) == ImageResult::BadArg);
+    Assert(f.store.AddExternal(1, nullptr, blob.size) == ImageResult::BadArg);
+    Assert(f.store.AddExternal(1, blob.px, 0) == ImageResult::BadArg);
+    Assert(f.store.AddExternal(1, (const uint8_t *)blob.px + 2, blob.size - 2) == ImageResult::BadArg);   // not 4-aligned
+    Assert(f.store.AddExternal(1, blob.px, blob.size - 8) == ImageResult::BadImage);
+    Assert(f.store.AddExternal(1, blob.px, 4) == ImageResult::BadImage);
+
+    // Garbage
+    Blob j(f.env.Icon(0));
+    for (int i = 0; i < 64; i++)
+        ((uint8_t *)j.px)[i] = (uint8_t)(i * 7 + 3);
+    Assert(f.store.AddExternal(1, j.px, j.size) == ImageResult::BadImage);
+
+    ImageStoreStats st;
+    f.store.GetStats(&st);
+    Assert(st.count == 0 && !f.store.IsLive(1));
+}
+
+Fact("ImageStore AddExternal Of The Same Image Again Is Fine")
+{
+    Fixture f;
+    Blob a(f.env.Icon(0)), b(f.env.Icon(0));
+    Assert(f.store.AddExternal(7, a.px, a.size) == ImageResult::Ok);
+    ImageEntry *e = f.store.Find(7);
+    f.store.AddRef(e);
+    Assert(f.store.AddExternal(7, a.px, a.size) == ImageResult::Ok);       // the loader dedupes by ID
+    Assert(f.store.Find(7) == e && e->key_refs == 1);
+    ImageStoreStats st;
+    f.store.GetStats(&st);
+    Assert(st.count == 1);
+
+    // A different image under the same ID is an error, and so is an uploaded ID
+    Assert(f.store.AddExternal(7, b.px, b.size) == ImageResult::BadArg);
+    Assert(f.env.Upload(f.store, 8, f.env.Icon(1)) == ImageResult::Ok);
+    Assert(f.store.AddExternal(8, b.px, b.size) == ImageResult::BadArg);
+    f.store.Release(e);
+}
+
+Fact("ImageStore External Images Are Never Retired")
+{
+    Fixture f;
+    Blob blob(f.env.Icon(2));
+    Assert(f.store.AddExternal(5, blob.px, blob.size) == ImageResult::Ok);
+    // The bytes before the pixels say "retired", but those are not a header
+    Assert(ImageStore::IsRetired(blob.px));
+    Assert(!f.store.PixelsRetired(blob.px));
+
+    // Owned images still are, once retired
+    Assert(f.env.Upload(f.store, 6, f.env.Icon(3)) == ImageResult::Ok);
+    const void *owned = f.store.Find(6)->pixels;
+    Assert(!f.store.PixelsRetired(owned));
+    f.store.Free(6);
+    Assert(f.store.PixelsRetired(owned));
+    Assert(!f.store.PixelsRetired(blob.px));
+}
+
+Fact("ImageStore Freeing An External Image Frees Nothing")
+{
+    Fixture f;
+    Blob blob(f.env.Icon(0));
+    Assert(f.store.AddExternal(5, blob.px, blob.size) == ImageResult::Ok);
+    f.store.Free(5);
+    Assert(!f.store.IsLive(5) && !f.store.HasRetired());
+    Assert(f.env.sweeps_requested == 0 && f.env.LiveBlocks() == 0);
+
+    // Used by a key when freed: dies on the last release
+    Assert(f.store.AddExternal(5, blob.px, blob.size) == ImageResult::Ok);
+    ImageEntry *e = f.store.Find(5);
+    f.store.AddRef(e);
+    f.store.Free(5);
+    f.store.Release(e);
+    Assert(!f.store.HasRetired() && f.env.sweeps_requested == 0);
+    Assert(get_image_width(blob.px) == COMP_KEY_SIZE);          // the memory is untouched
+}
+
+Fact("ImageStore Reset Drops External Images Without Touching Them")
+{
+    Fixture f;
+    Blob blob(f.env.Icon(0));
+    Assert(f.store.AddExternal(5, blob.px, blob.size) == ImageResult::Ok);
+    Assert(f.env.Upload(f.store, 6, f.env.Icon(1)) == ImageResult::Ok);
+    f.store.Reset();
+    Assert(!f.store.IsLive(5) && !f.store.IsLive(6));
+    Assert(f.env.LiveBlocks() == 0 && get_image_width(blob.px) == COMP_KEY_SIZE);
+    ImageStoreStats st;
+    f.store.GetStats(&st);
+    Assert(st.count == 0 && st.used == 0);
+
+    // The same ID can be used again
+    Assert(f.store.AddExternal(5, blob.px, blob.size) == ImageResult::Ok);
+}
+
+Fact("ImageStore Uploading Over An External ID Replaces It")
+{
+    Fixture f;
+    Blob blob(f.env.Icon(0));
+    Assert(f.store.AddExternal(5, blob.px, blob.size) == ImageResult::Ok);
+    ImageEntry *e = f.store.Find(5);
+    Listener l;
+    f.store.SetListener(&l);
+
+    Assert(f.env.Upload(f.store, 5, f.env.Icon(1)) == ImageResult::Ok);
+    Assert(f.store.Find(5) == e && l.replaced.GetCount() == 1);
+    Assert(!e->external && e->data && e->pixels == e->data->Pixels());
+    Assert(SamePixels(e, f.env.Icon(1)));
+    Assert(!f.store.HasRetired());              // the old pixels were not ours to retire
+    Assert(!f.store.PixelsRetired(e->pixels));
+
+    // And again: now the old pixels are ours
+    Assert(f.env.Upload(f.store, 5, f.env.Icon(2)) == ImageResult::Ok);
+    Assert(f.store.HasRetired());
 }

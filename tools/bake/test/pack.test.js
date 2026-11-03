@@ -114,3 +114,25 @@ test("fields are not silently dropped: an unknown property on the tree is reject
     tree.surprise = 1;
     assert.throws(() => packTree(tree), /surprise/);
 });
+
+test("an image shared by Home and an activity page has a pointer from both", async () => {
+    // The activity's pages are packed after Home's images; their pointers to the same
+    // Buffer used to stay null.
+    const tree = await baked({
+        version: 1,
+        home: { keys: [{ color: "red", icon: "#a" }] },
+        activities: { A: { pages: [{ keys: [{ color: "red", icon: "#a" }] }] } },
+    });
+    const { binary, relocations } = packTree(tree);
+    const u = unpack(ROOT_TYPE, binary);
+    const homeKey = u.home.keys[0], pageKey = u.activities[0].pages[0].keys[0];
+    for (const layer of ["normalBg", "normalFg", "pressedBg", "pressedFg"]) {
+        assert.ok(pageKey[layer], `${layer} present on the page key`);
+        assert.deepEqual(Buffer.from(pageKey[layer]), Buffer.from(homeKey[layer]));
+    }
+    // Every non-null pointer slot is in the relocation table, and every table entry holds a non-null pointer
+    const table = new Set(relocations);
+    for (const slot of relocations)
+        assert.notEqual(binary.readUInt32LE(slot), 0, `slot ${slot} is null but relocated`);
+    assert.ok(table.size === relocations.length, "no duplicate relocations");
+});

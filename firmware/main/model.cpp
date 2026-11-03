@@ -69,7 +69,7 @@ bool model_get_page(int page, comp_key_t keys[COMP_KEYS], void *)
 
 bool model_is_retired(const void *img, void *)
 {
-    return ImageStore::IsRetired(img);
+    return s_store.PixelsRetired(img);
 }
 
 bool model_key_active(int page, int key)

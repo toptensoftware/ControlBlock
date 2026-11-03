@@ -41,6 +41,7 @@ export const Msg = Object.freeze({
     KEY:            0x80,       // events
     PAGE_CHANGED:   0x81,
     WAKE:           0x82,
+    HEARTBEAT:      0x83,
 });
 
 // GET_INFO flags
@@ -295,9 +296,14 @@ export function decodeQuery(data)
     return present;
 }
 
+// How often the device sends a HEARTBEAT (the firmware's PROTO_HEARTBEAT_MS).
+// A bulk IN read that times out is cancelled, and a cancelled read leaves the
+// pipe deaf on Windows, so the host's read timeout must be well past this.
+export const HEARTBEAT_INTERVAL_MS = 1000;
+
 // An event message: { type: "key", page, key, action, lost, timeMs } or
-// { type: "pageChanged", page, cause } or { type: "wake", lost, timeMs }, or
-// null if unknown
+// { type: "pageChanged", page, cause } or { type: "wake", lost, timeMs } or
+// { type: "heartbeat", timeMs }, or null if unknown
 export function decodeEvent(msg)
 {
     const r = new Reader(msg.payload);
@@ -312,5 +318,7 @@ export function decodeEvent(msg)
         r.pos += 3;                     // reserved
         return { type: "wake", seq: msg.seq, lost, timeMs: r.u32() };
     }
+    if (msg.type === Msg.HEARTBEAT)
+        return { type: "heartbeat", seq: msg.seq, timeMs: r.u32() };
     return null;
 }

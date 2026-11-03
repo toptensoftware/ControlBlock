@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "settings": { "longPressMs": 650 },
+  "defaults": { "color": "#22262e", "iconColor": "white", "pressed": { "color": "#3a86ff" } },
+  "devices": {
+    "tv": {
+      "turnOn": { "op": "sendWol", "mac": "AA:BB:CC:DD:EE:FF", "broadcast": "10.0.0.255" },
+      "turnOff": { "op": "httpPost", "url": "http://tv.local/off", "body": "x=1" }
+    },
+    "avr": { "turnOn": { "op": "httpGet", "url": "http://avr.local/on", "headers": { "X-A": "1" } } }
+  },
+  "home": {
+    "keys": [
+      { "icon": "#play", "label": "Play", "action": { "op": "hidKey", "keys": "space" } },
+      { "icon": "#next-track", "label": "Next", "tap": { "op": "hidKey", "keys": "ctrl+right" }, "long": { "op": "delay", "ms": 100 } },
+      { "icon": "#volume-mute", "label": "Watch", "action": { "op": "switchActivity", "activity": "Watch" } },
+      null,
+      { "color": "#aa2222" }
+    ]
+  },
+  "activities": {
+    "Watch": {
+      "displayName": "Watch TV",
+      "devices": ["tv", "avr"],
+      "hooks": { "didActivate": { "op": "udpPacket", "host": "10.0.0.5", "port": 9, "data": "hi" } },
+      "pages": [
+        { "keys": [ { "icon": "#play", "label": "Go", "action": { "op": "script", "lua": "return param" } } ] },
+        { "keys": [ { "icon": "#next-track", "label": "N" } ] }
+      ],
+      "bindings": [ { "control": "macro1", "event": "tap", "do": { "op": "hidKey", "keys": "ctrl+c" } } ]
+    },
+    "Listen": { "pages": [ { "keys": [ { "icon": "#play" } ] } ] }
+  }
+}
