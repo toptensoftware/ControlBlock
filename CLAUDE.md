@@ -37,7 +37,7 @@ mk run                                   # build and run (~13 s); exit code 1 on
 FUZZ_SEEDS=200 mk config=release run     # long fuzz soak
 ```
 
-- **Known problem:** the debug exe (`mk run`) doesn't register the `TestProtocol` and `TestScreenView` facts (cause not found; probably `UnitTesting.h` registration under MSVC `/Od`). Use `mk config=release run` until it is fixed.
+- A test that overruns a buffer can silently corrupt the test registry's statics in the debug exe (the runner then skips tests and still reports "All passed"): if the debug and release test counts differ, suspect an out-of-bounds write in a test. This once hid 81 tests (`TestStatusBar` rendered 7-row bands into a 4-row scratch).
 
 - Needs `mk` (`npm install -g toptensoftware/mk.js`) and MSVC. Reads `firmware/assets/*.bin` (`LoadAsset()`). Sources are listed in `test.mk.js`.
 - `harness.h/.cpp`: a `World` runs a real `PageCompositor` against a fake client, bounce fill and clock, checking its invariants at every frame start. Preempt hooks run frame starts and client changes inside `Step()` to test races deterministically. `RetireUnused()` exercises sweeps: freed images are poisoned and their addresses reused straight away.
@@ -75,7 +75,7 @@ Clone with `--recursive` or run `git submodule update --init`.
 ## Operating Modes
 
 1. **Host-controlled:** Like a Stream Deck. PC software decides what each key shows; the device reports key events and the PC acts on them. Long press and double press are detected host side. Built.
-2. **Standalone (designing; the default):** the device boots into it. It holds a Home page plus "activities" (each a set of pages) in flash, and keys run actions on the device: USB HID keyboard first, then MIDI, HTTP and UDP. A host must send `TAKE_CONTROL` before any layout request (they are refused with `NOT_HOSTED` while standalone); `RELEASE_CONTROL`, USB unmount or USB suspend returns the device to Home and turns the backlight on. Built and host tested, **not yet run on the hardware**. Spec: [`docs/standalone.md`](docs/standalone.md).
+2. **Standalone (first milestone built and verified on the hardware; the default):** the device boots into it. It holds a Home page plus "activities" (each a set of pages) in flash, and keys run actions on the device: USB HID keyboard first, then MIDI, HTTP and UDP. A host must send `TAKE_CONTROL` before any layout request (they are refused with `NOT_HOSTED` while standalone); `RELEASE_CONTROL`, USB unmount or USB suspend returns the device to Home and turns the backlight on. The milestone (boot into Home, touch gestures and bindings, `hidKey` over a USB HID keyboard, take/release control) works on the hardware; activity switching, devices, scripts and HTTP/UDP/WoL are not built (see [`docs/standalone-ops-plan.md`](docs/standalone-ops-plan.md)). Spec: [`docs/standalone.md`](docs/standalone.md).
 
 ## Firmware
 
@@ -176,7 +176,7 @@ All custom. Do **not** use LVGL.
 - **Config upload:** works on the hardware (16 KB sample: blank, write, restart, re-enumerate, verify, skip when unchanged, `--force`, survives a reboot). Not yet checked: a host that vanishes mid-upload leaving the screen dark until the next RESET_STREAM (an upload idle timeout would fix it), a large blob (64 KB block erases, over-capacity refusal) and display glitches during erase. `tools/bake --upload` / `host/` `uploadConfig()` are the clients.
 - **Config boot load:** works on the hardware (a flashed config loads). Not yet checked: the load time, whether a real large config fits in PSRAM (the blob stays resident, so hosted mode loses that space), and `RUN_STRESS` with a stored config (Home's keys are present when it starts). The release rebuild of Home is built and host tested but not run on the hardware (next item).
 - **Take/release control and standalone key gestures (milestone steps 1 and 2):** work on the hardware (cold boot to Home, take/release, unplug and suspend return to Home with the light on, gestures and the frame lock fine). `SET_BACKLIGHT` stays allowed in both modes. Held keys are dropped silently on takeover: step 3 must send all-keys-up.
-- **Standalone HID (milestone step 3):** works on the hardware (tap, chord, hold, nothing sticks on takeover/unplug, vendor interface and upload still fine). Tune `HID_TAP_GAP_MS` / `HID_TAP_SETTLE_MS` (20 ms each) if keys are dropped or merged. `usb_hid_send` is called from the op and protocol tasks: watch for the "HID report dropped" warning under load. Held keys are tracked per modifier bit, not counted. Milestone step 4 (the full end-to-end check) is the remaining item.
+- **Standalone HID (milestone step 3):** works on the hardware (tap, chord, hold, nothing sticks on takeover/unplug, vendor interface and upload still fine). Tune `HID_TAP_GAP_MS` / `HID_TAP_SETTLE_MS` (20 ms each) if keys are dropped or merged. `usb_hid_send` is called from the op and protocol tasks: watch for the "HID report dropped" warning under load. Held keys are tracked per modifier bit, not counted. The first milestone is complete (step 4 passed).
 - Standalone mode: the action dispatch (http/udp library) and stateful actions: see [`docs/standalone.md`](docs/standalone.md).
 
 ## Conventions

@@ -188,6 +188,9 @@ namespace
         static BLOBPACK *ui = LoadAsset("ui.bin");
         status_bar_style_t style = status_bar_style(ui);
         static uint16_t scratch[W * STATUS_BAR_BAND_ROWS_MAX];
+        // A band bigger than the scratch would overrun it (and, in the debug
+        // build, silently stomp the test registry's statics)
+        Assert(rows <= STATUS_BAR_BAND_ROWS_MAX);
         memset(banded, 0xAB, sizeof(banded));       // anything not drawn shows
         for (int y = 0; y < H; y += rows) {
             int n = rows < H - y ? rows : H - y;
@@ -208,7 +211,7 @@ Fact("StatusBar Bands Match The Whole Bar")
     content.selected_pill = 2;
 
     status_bar_render(px, &style, &content);
-    int sizes[] = { 1, 2, 3, 4, 7, STATUS_BAR_BAND_ROWS_MAX };
+    int sizes[] = { 1, 2, 3, STATUS_BAR_BAND_ROWS_MAX };      // 3 doesn't divide the bar's height
     for (int rows : sizes) {
         RenderBanded(rows, &content);
         Assert(memcmp(px, banded, sizeof(px)) == 0);

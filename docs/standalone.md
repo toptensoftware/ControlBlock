@@ -44,7 +44,7 @@ Order, each step test first (host tests where the code is pure; hardware-only pa
    - `tap` mode sends down, a short fixed gap, then up, through the op queue, so ordering with other ops is kept.
    - The test config has a few keys: a plain tap key (`space`), a chord (`ctrl+c`), a `long` + `tap` pair, and a `hold` key. Hardware checks: the PC receives each, a held key doesn't stick when the device is unplugged or taken over, the keyboard survives a config upload restart.
 
-4. **Milestone check on the hardware (you run it):** cold boot straight into Home; keys send HID; the demo host takes control and shows its layout; releasing and unplugging the host both return to Home; keys work again afterwards. Then update CLAUDE.md's Operating Modes and Open Items.
+4. **Milestone check on the hardware. Done; passed.** Cold boot straight into Home; keys send HID (tap, chord, hold); the demo host takes control and shows its layout; releasing and unplugging the host both return to Home; keys work again afterwards; a key held through a takeover (`scratch/takeover-delay.js`) is released and stays quiet. **The first standalone milestone is complete.** CLAUDE.md's Operating Modes and Open Items are updated.
 
 Notes for the order: step 1 doesn't depend on HID, so hosted mode keeps working throughout. Step 2 is testable without HID by recording ops through the injected `run`. Step 3 is the only step with new USB descriptor risk, so it comes last and can be backed out without touching the others.
 
