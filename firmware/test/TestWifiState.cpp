@@ -124,29 +124,69 @@ Fact("Wifi State Success Resets The Backoff")
     Assert(f.m.Reason() == 200);
 }
 
-Fact("Wifi State Authentication Failure Goes Straight To The Cap")
+Fact("Wifi State Authentication Failure Stops Retrying")
 {
-    static const uint8_t auth[] = { 14, 15, 23, 202, 204 };
+    static const uint8_t auth[] = { 14, 23, 202 };
     for (uint8_t reason : auth) {
         Fixture f;
         f.Connect();
         WifiAction a = f.m.OnDisconnected(reason);
-        Assert(a.retry_ms == WIFI_RETRY_MAX_MS);
+        Assert(a.retry_ms < 0 && a.cancel_retry && a.changed && !a.connect);
+        Assert(f.m.GetState() == WifiState::Retrying);      // reported as failed; the reason says why
         Assert(f.m.Reason() == reason);
     }
-    // Other failures don't
+    // Timeouts (4-way handshake, handshake) can be a weak signal: they keep retrying
+    static const uint8_t timeouts[] = { 15, 204 };
+    for (uint8_t reason : timeouts) {
+        Fixture f;
+        f.Connect();
+        Assert(f.m.OnDisconnected(reason).retry_ms == WIFI_RETRY_MIN_MS);
+    }
+    // Other failures still retry
     Fixture f;
     f.Connect();
     Assert(f.m.OnDisconnected(201).retry_ms == WIFI_RETRY_MIN_MS);
 }
 
-Fact("Wifi State Authentication Failure On A Later Retry Also Goes To The Cap")
+Fact("Wifi State Authentication Failure On A Later Retry Also Stops")
 {
     Fixture f;
     f.Connect();
     f.m.OnDisconnected(201);
     f.m.OnRetryTimer();
-    Assert(f.m.OnDisconnected(202).retry_ms == WIFI_RETRY_MAX_MS);
+    WifiAction a = f.m.OnDisconnected(202);
+    Assert(a.retry_ms < 0 && a.cancel_retry && !a.changed);
+}
+
+Fact("Wifi State Authentication Failure After Connecting Stops")
+{
+    Fixture f;
+    f.Connect();
+    f.m.OnGotIp(IP);
+    WifiAction a = f.m.OnDisconnected(202);                 // the router's password changed
+    Assert(a.retry_ms < 0 && a.cancel_retry && a.changed);
+    Assert(f.m.GetState() == WifiState::Retrying && f.m.Ip()[0] == 0);
+}
+
+Fact("Wifi State Stopped Machine Ignores Timers And Stray Events")
+{
+    Fixture f;
+    f.Connect();
+    f.m.OnDisconnected(202);
+    Assert(Quiet(f.m.OnRetryTimer()));                      // a timer that was already queued
+    Assert(Quiet(f.m.OnDisconnected(201)));
+    Assert(f.m.GetState() == WifiState::Retrying);
+}
+
+Fact("Wifi State New Credentials Restart After An Authentication Failure")
+{
+    Fixture f;
+    f.Connect();
+    f.m.OnDisconnected(202);
+    WifiAction a = f.m.OnCredentials(true);
+    Assert(a.connect && a.changed && !a.start);
+    Assert(f.m.GetState() == WifiState::Connecting);
+    Assert(f.m.OnDisconnected(201).retry_ms == WIFI_RETRY_MIN_MS);   // retrying works again
 }
 
 Fact("Wifi State New Credentials Retry At Once")

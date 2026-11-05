@@ -29,3 +29,6 @@ void wifi_set_state_cb(wifi_state_cb_t cb);
 
 // WIFI_STATUS: the state now, with the signal and MAC from the driver
 void wifi_get_status(WifiStatus *out);
+
+// Has an IP (cheap, any task): what the network ops check before sending
+bool wifi_is_connected(void);

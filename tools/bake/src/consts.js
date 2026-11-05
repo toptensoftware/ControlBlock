@@ -21,6 +21,10 @@ export const OP = {
     script: 8,
 };
 
+// switchActivity's index for "no activity" (config file: `"activity": null`). Firmware:
+// CONFIG_ACTIVITY_NONE in config_types.h.
+export const ACTIVITY_NONE = 0xFFFFFFFF;
+
 // hidKey modes
 export const HID_MODE = { tap: 0, hold: 1, down: 2, up: 3 };
 
@@ -30,3 +34,6 @@ export const GESTURES = ["press", "release", "tap", "long"];
 // Sanity range for long-press times (ms); config-format.md only says "int"
 export const LONG_PRESS_MIN = 100;
 export const LONG_PRESS_MAX = 10000;
+
+// The longest script source, in bytes. Keep in step with CONFIG_MAX_SCRIPT in firmware/main/config_blob.h.
+export const MAX_SCRIPT_BYTES = 16384;

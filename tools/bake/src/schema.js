@@ -84,7 +84,7 @@ registerType({
     fields: [
         { name: "version", type: "uint" },
         { name: "longPressMs", type: "uint", default: 0 },
-        { name: "home", type: "home" },
+        { name: "home", type: "home", cname: "homePage" },     // C++ rejects a member named like its type
         ...list("devices", "device*"),
         ...list("activities", "activity*"),
     ],

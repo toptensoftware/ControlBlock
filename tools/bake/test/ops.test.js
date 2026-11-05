@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { opsOf, errorText, errorPaths } from "./helpers.js";
-import { OP, HID_MODE } from "../src/consts.js";
+import { opsOf, run, errorText, errorPaths } from "./helpers.js";
+import { OP, HID_MODE, ACTIVITY_NONE, MAX_SCRIPT_BYTES } from "../src/consts.js";
 
 const one = (op, extra) => {
     const { r, ops } = opsOf(op, extra);
@@ -30,6 +30,35 @@ test("switchActivity resolves the name to an index", () => {
     assert.deepEqual(one({ op: "switchActivity", activity: "B" }, { activities }), { op: OP.switch_activity, index: 1 });
     const r = opsOf({ op: "switchActivity", activity: "Nope" }, { activities }).r;
     assert.match(errorText(r), /Nope/);
+});
+
+test("switchActivity with a null activity is the none target (the sentinel index)", () => {
+    assert.deepEqual(one({ op: "switchActivity", activity: null }), { op: OP.switch_activity, index: ACTIVITY_NONE });
+    assert.equal(ACTIVITY_NONE, 0xFFFFFFFF);
+    // the activity is still required, and must be a string or null
+    assert.match(errorText(opsOf({ op: "switchActivity" }).r), /activity.*required/);
+    assert.match(errorText(opsOf({ op: "switchActivity", activity: 3 }).r), /activity/);
+});
+
+test("switchActivity is rejected inside hooks and device lists, naming the path", () => {
+    const sw = { op: "switchActivity", activity: "B" };
+    const activities = hooks => ({ A: { pages: [{ keys: [] }], hooks }, B: { pages: [{ keys: [] }] } });
+    for (const hook of ["willDeactivate", "willActivate", "didActivate", "didDeactivate"])
+    {
+        const r = run({ version: 1, activities: activities({ [hook]: [{ op: "delay", ms: 5 }, sw] }) });
+        assert.match(errorText(r), new RegExp(`activities.*A.*hooks.*${hook}.*switchActivity`), hook);
+    }
+    for (const list of ["turnOn", "turnOff"])
+    {
+        const r = run({ version: 1, devices: { tv: { [list]: sw } }, activities: activities({}) });
+        assert.match(errorText(r), new RegExp(`devices.*tv.*${list}.*switchActivity`), list);
+    }
+    // the none form is rejected too, and so is one reached through a named action
+    assert.match(errorText(run({ version: 1, devices: { tv: { turnOff: { op: "switchActivity", activity: null } } } })), /switchActivity/);
+    const viaUse = run({ version: 1, actions: { go: sw }, devices: { tv: { turnOn: { use: "go" } } }, activities: activities({}) });
+    assert.match(errorText(viaUse), /switchActivity is not allowed/);
+    // a key can still switch
+    assert.equal(opsOf(sw, { activities: activities({}) }).r.errors.length, 0);
 });
 
 test("hidKey: chord, default tap mode, hold under press/release", () => {
@@ -99,6 +128,12 @@ test("script: inline lua or file, exactly one", () => {
     assert.match(errorText(opsOf({ op: "script" }).r), /lua.*file|file.*lua/);
     assert.match(errorText(opsOf({ op: "script", lua: "a", file: "b" }).r), /lua.*file|file.*lua/);
     assert.match(errorText(opsOf({ op: "script", file: "missing.lua" }).r), /missing\.lua/);
+});
+
+test("script: the source is capped (the device refuses a longer one too)", () => {
+    const ok = "-- " + "x".repeat(MAX_SCRIPT_BYTES - 3);
+    assert.equal(one({ op: "script", lua: ok }).source.length, MAX_SCRIPT_BYTES);
+    assert.match(errorText(opsOf({ op: "script", lua: ok + "x" }).r), /longer than 16384/);
 });
 
 test("script syntax errors are reported with the path", () => {

@@ -1,11 +1,16 @@
 // Host unit tests for the firmware's platform-independent code.
 // Run from this folder: `mk run` (needs `npm install -g toptensoftware/mk.js`).
 
+import { readFileSync } from "node:fs";
+
 export default async function ()
 {
     await this.use("c-cpp");
 
     this.set({
+        // 32-bit: the config blob holds 32-bit pointers, so the structs generated from the
+        // binpack schema (main/config_types.gen.h) have the device's layout only in a 32-bit build.
+        platform: "x86",
         sourceFiles: (base) => [...base, ...this.otherSourceFiles],
         otherSourceFiles: [
             "../main/page_compositor.cpp",
@@ -23,14 +28,27 @@ export default async function ()
             "../main/key_gesture.cpp",
             "../main/hid_keyboard.cpp",
             "../main/op_queue.cpp",
+            "../main/op_registry.cpp",
+            "../main/exec_net.cpp",
+            "../main/lua_heap.cpp",
+            "../main/script_host.cpp",
+            "../main/script_api.cpp",
+            "../main/hid_chord.cpp",
+            "../main/net_queue.cpp",
             "../main/trigger_dispatch.cpp",
+            "../main/activity_switch.cpp",
+            "../main/activity_host.cpp",
             "../main/standalone.cpp",
             "../../rle565/src/rle565.c",
+            // Lua: the same list as the device build (firmware/lua_sources.txt)
+            ...readFileSync(new URL("../lua_sources.txt", import.meta.url), "utf8")
+                .split(/\r?\n/).filter(Boolean).map(f => "../../lua/" + f),
         ],
         includePath: [
             "../../SimpleLib",
             "../main",
             "../../rle565/src",
+            "../../lua",
         ],
         define: [
             "_CRT_SECURE_NO_WARNINGS",

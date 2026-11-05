@@ -37,6 +37,9 @@ public:
     // The default long-press time (the config's longPressMs); 0 = the firmware default
     void SetLongPressMs(uint32_t ms);
 
+    // Forget every held control, firing nothing (a later release of one is ignored)
+    void Reset();
+
     // `long_ms`: this control's own long-press time, 0 = the default. Ignored
     // if the control is already held or all slots are in use.
     void Press(const char *control, uint32_t now_ms, uint32_t long_ms);

@@ -1,8 +1,6 @@
 #include "standalone.h"
 #include "touch_router.h"       // TOUCH_KEY_*
 
-using namespace config_layout;
-
 bool Standalone::GestureHasBinding(const char *control, const char *event, void *ctx)
 {
     return ((Standalone *)ctx)->m_dispatch.HasBinding(control, event);
@@ -13,52 +11,52 @@ void Standalone::GestureTrigger(const char *control, const char *event, void *ct
     ((Standalone *)ctx)->m_dispatch.Trigger(control, event, "");
 }
 
-void Standalone::Init(const StandaloneHost &host, const uint8_t *blob, uintptr_t adjust)
+void Standalone::Init(const StandaloneHost &host, const cfgdata::configRoot *root)
 {
     m_host   = host;
-    m_blob   = blob;
-    m_adjust = adjust;
+    m_root   = root;
     m_hosted = false;
+    m_devices_on = 0;
     m_hid.Init(host.hid);
     Arm();
 }
 
-// The executors that live here run first; every op is then passed on to the
-// host's `run` (the device layer's, for the ones not built yet)
-void Standalone::RunOp(const ConfigView &cfg, const uint8_t *op, uint32_t code, void *ctx)
-{
-    Standalone *s = (Standalone *)ctx;
-    if (code == OP_HID_KEY) {
-        uint32_t hold = s->m_hid.Run(s->m_host.now_ms(s->m_host.ctx), cfg.U8(op + HIDOP_MODE),
-                                     cfg.U8(op + HIDOP_MODS), cfg.U8(op + HIDOP_KEY), s->m_queue.Releasing());
-        if (hold)
-            s->m_queue.Hold(hold);
-    }
-    if (s->m_host.run)
-        s->m_host.run(cfg, op, code, s->m_host.ctx);
-}
-
-// Everything held or queued is dropped (and every key let go); the config's
-// long-press time is read again
+// Everything held or queued is dropped (the active op is told to stop and every
+// key let go); the config's long-press time is read again
 void Standalone::Arm()
 {
+    m_queue.Cancel();                   // a waiting script is cancelled here
     m_hid.ReleaseAll();
-    m_cfg = m_blob ? ConfigView(m_blob, m_adjust) : ConfigView();
-    if (!m_cfg.Valid())
+    m_script.Close();                   // its compiled scripts point into the old blob
+    m_activity = -1;
+    if (!m_root)
         return;
 
-    OpHost oh = {};
-    oh.ctx    = this;
-    oh.now_ms = [](void *c) { Standalone *s = (Standalone *)c; return s->m_host.now_ms(s->m_host.ctx); };
-    oh.run    = RunOp;
-    m_queue.Init(&m_cfg, oh);
-    m_dispatch.Init(&m_cfg, &m_queue);
+    // The registry's executors (op_registry.cpp); every op that starts is then
+    // passed on to the host's `run`
+    m_exec         = {};
+    m_exec.ctx     = this;
+    m_exec.now_ms  = [](void *c) { Standalone *s = (Standalone *)c; return s->m_host.now_ms(s->m_host.ctx); };
+    m_exec.started = [](const cfgdata::op *op, void *c) {
+        Standalone *s = (Standalone *)c;
+        if (s->m_host.run)
+            s->m_host.run(op, op->op, s->m_host.ctx);
+    };
+    m_exec.hid     = &m_hid;
+    m_exec.net     = m_host.net;
+    m_exec.queue   = &m_queue;
+    m_exec.root    = m_root;
+    m_script.Init(m_host.script, m_root);
+    m_exec.script  = m_host.script.realloc ? &m_script : nullptr;
+    m_exec.switch_activity = [](int index, void *c) { return ((Standalone *)c)->SwitchActivity(index); };
+    m_queue.Init(OpRegistryHost(&m_exec));
+    m_dispatch.Init(m_root, &m_queue);
 
     GestureHost gh = {};
     gh.ctx         = this;
     gh.has_binding = GestureHasBinding;
     gh.trigger     = GestureTrigger;
-    m_gestures.Init(gh, m_cfg.U32(m_cfg.Root() + ROOT_LONGPRESS));
+    m_gestures.Init(gh, m_root->longPressMs);
 }
 
 void Standalone::SetHosted(bool hosted)
@@ -73,16 +71,43 @@ void Standalone::SetHosted(bool hosted)
 
 bool Standalone::SelectActivity(int index)
 {
-    return Active() && m_dispatch.SetActivity(index);
+    if (!Active() || !m_dispatch.SetActivity(index))
+        return false;
+    m_activity = index;
+    return true;
+}
+
+const char *Standalone::SwitchActivity(int to)
+{
+    if (!Active())
+        return "not standalone";
+    if (to == m_activity) {                     // chosen again: no ops, just show its first page
+        if (to >= 0 && m_host.activity && m_host.activity->glide)
+            m_host.activity->glide(m_host.activity->ctx);
+        return nullptr;
+    }
+    ActivitySwitch plan;
+    if (!ActivitySwitchPlan(m_root, m_activity, to, m_devices_on, plan))
+        return "activity switch: bad index";
+    if (!m_queue.PushLists(plan.lists, plan.count))
+        return "activity switch refused: op queue full";     // nothing changed (the queue counts the drop)
+
+    m_devices_on = plan.devices_on;
+    SelectActivity(to);                         // the new bindings (the index was checked by the plan)
+    m_gestures.Reset();                         // a key held under the old bindings would never find its release
+    m_hid.ReleaseAll();
+    if (m_host.activity && m_host.activity->apply)
+        m_host.activity->apply(to, m_host.activity->ctx);
+    return nullptr;
 }
 
 // Home's keys carry their own long-press time; an activity's pages aren't
 // selectable yet (0 = the config's default)
 uint32_t Standalone::KeyLongPressMs(int page, int key) const
 {
-    if (page != 0)
+    if (page != 0 || key < 0 || key >= COMP_KEYS)
         return 0;
-    return m_cfg.U32(m_cfg.Root() + ROOT_HOME_KEYS + key * KEY_SIZE + KEY_LONGPRESS);
+    return m_root->homePage.keys[key].longPressMs;
 }
 
 void Standalone::Key(int page, int key, int action, uint32_t time_ms)
@@ -108,6 +133,5 @@ bool Standalone::Poll()
 {
     if (!Active())
         return false;
-    m_hid.Poll(m_host.now_ms(m_host.ctx));      // before the queue: a tap's up is due before the next op
-    return m_queue.Poll();
+    return m_queue.Poll();      // a tap's up is sent by its hidKey executor while it is the active op
 }

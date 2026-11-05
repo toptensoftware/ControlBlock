@@ -100,7 +100,8 @@ More settings (HTTP timeout, Lua limits) are firmware constants today and become
 - An activity needs at least one page. The number of pages is bounded by the firmware's limit (checked, see [Validation](#validation-and-limits)).
 - **Home** has only keys. It has no hooks, devices, pages or bindings: Home's touch keys are the only thing it binds, and the macro pad and encoder always use the **current activity's** bindings, even while Home is in view ([`standalone.md`](standalone.md#triggers-and-bindings)).
 - A Home key that selects an activity is an ordinary button whose action is `{ "op": "switchActivity", "activity": "Watch TV" }`; there is no special key type.
-- `devices` entries must exist in the root `devices`; the order is irrelevant (the packed form stores indices).
+- `devices` entries must exist in the root `devices`. The packed form stores indices, and the **order matters at run time**: on a switch, `turnOn` lists run in the new activity's `devices` order and `turnOff` lists in the old activity's `devices` order.
+- Hooks (and device `turnOn`/`turnOff`) may not contain `switchActivity`. Delays between ops are the author's job: put a `delay` op in the list (a `delay` holds the whole queue, so touches queue behind a TV warm-up).
 
 ## Devices
 
@@ -203,7 +204,7 @@ Every op has an `op` code. Properties beyond those listed are errors.
 | `op` | Properties | Behaviour |
 |---|---|---|
 | `delay` | `ms` (int, 1..60000) | Pauses the queue |
-| `switchActivity` | `activity` (name) | Selects the activity (switching ops, page swap and glide). Name resolved to an index |
+| `switchActivity` | `activity` (name, or `null`) | Selects the activity (switching ops, page swap and glide). Name resolved to an index. `null` (the property is still required) selects **no activity**: turns off every device that is on, collapses the strip to Home and clears the status text (packed as index `0xFFFFFFFF`; the string `"none"` is an ordinary name lookup). Not allowed in an activity hook or a device's `turnOn`/`turnOff` list (error) |
 | `hidKey` | `keys` (string), `mode` (`"tap"` \| `"hold"` \| `"down"` \| `"up"`, default `"tap"`) | USB HID keyboard. `keys` is a chord: `"a"`, `"ctrl+c"`, `"ctrl+shift+esc"`, `"f5"`, `"enter"`. Names are checked and turned into usage codes in stage 1. `hold` is key down on `press`, key up on `release` (it only makes sense under `press`/`release`; elsewhere it's an error). *(Consumer/media keys: name the set when HID is built.)* |
 | `httpGet` | `url`, `headers`? | Fire and forget at the op level (the response is discarded). A script is needed to use the reply |
 | `httpPost` | `url`, `body`? (string), `contentType`? (default `application/x-www-form-urlencoded`), `headers`? | |
@@ -297,6 +298,7 @@ Errors:
 - Unknown property, wrong type, out-of-range number; unsupported `version`.
 - Duplicate or empty names; `devices` entry, `switchActivity` target or `use` that doesn't exist; a `use` cycle.
 - More than 15 keys on a page; an activity with no pages; more pages than the firmware allows.
+- `switchActivity` in an activity hook or a device `turnOn`/`turnOff` list (also through `use`).
 - `hold` outside `press`/`release`; both `action` and `tap`; `hidKey` with an unknown key name; bad MAC, port or URL scheme.
 - A `script` with both or neither of `lua` and `file`; a missing file; a Lua syntax error.
 - A missing icon/SVG file, or a render that fails.

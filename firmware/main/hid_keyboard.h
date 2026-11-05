@@ -10,7 +10,7 @@
 // `hold` is down for a `press` trigger and up for a `release` one.
 
 #include <stdint.h>
-#include "config_layout.h"          // HID_MODE_*
+#include "config_types.h"           // HID_MODE_*
 
 #define HID_KB_REPORT_BYTES     8
 #define HID_KB_MAX_KEYS        6

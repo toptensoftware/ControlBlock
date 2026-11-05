@@ -25,3 +25,13 @@ test("calling the checker many times is fine", async () => {
     for (let i = 0; i < 200; i++)
         assert.equal(check(`return ${i}`), null);
 });
+
+// The device runs Lua 5.4 (the lua/ submodule, v5.4.7) with its default 64-bit integers and doubles,
+// like wasmoon: a script that parses here means the same on the device. Only the major.minor can be
+// read from wasmoon (_VERSION); the patch level is not visible.
+test("the checker's Lua matches the device's: 5.4, 64-bit integers", async () => {
+    const { LuaFactory } = await import("wasmoon");
+    const lua = await new LuaFactory().createEngine();
+    assert.equal(await lua.doString("return _VERSION"), "Lua 5.4");
+    assert.equal(await lua.doString("return tostring(math.maxinteger)"), "9223372036854775807");
+});

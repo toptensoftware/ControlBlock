@@ -1,0 +1,8 @@
+# Wi-Fi / lwIP hot paths in IRAM, so they don't run through the PSRAM cache while the
+# display fill reads PSRAM. Costs internal RAM (read the boot log's heap lines).
+# Not part of the default build: use the debug-iram / release-iram presets
+# (CMakePresets.json), which layer this file over sdkconfig.defaults.
+CONFIG_ESP_WIFI_IRAM_OPT=y
+CONFIG_ESP_WIFI_RX_IRAM_OPT=y
+CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=y
+CONFIG_LWIP_IRAM_OPTIMIZATION=y

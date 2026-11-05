@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "defaults": { "color": "#22262e", "pressed": { "color": "#3a86ff" } },
+  "home": {
+    "keys": [
+      { "label": "GET\nheaders", "tap": { "op": "httpGet", "url": "http://10.1.1.126:8000/get?x=1", "headers": { "X-Test": "one", "X-Other": "two" } } },
+      { "label": "POST\nform", "tap": { "op": "httpPost", "url": "http://10.1.1.126:8000/post", "body": "a=1&b=2", "headers": { "X-Test": "post" } } },
+      { "label": "POST\njson", "tap": { "op": "httpPost", "url": "http://10.1.1.126:8000/post", "body": "{\"k\":1}", "contentType": "application/json" } },
+      { "label": "GET\nredirect", "tap": { "op": "httpGet", "url": "http://10.1.1.126:8000/redirect" } },
+      { "label": "GET\n404", "tap": { "op": "httpGet", "url": "http://10.1.1.126:8000/nope" } },
+
+      { "label": "GET\nhang", "tap": { "op": "httpGet", "url": "http://10.1.1.126:8000/hang" } },
+      { "label": "GET\ndropped", "tap": { "op": "httpGet", "url": "http://10.255.255.1/" } },
+      { "label": "GET\n5 MB", "tap": { "op": "httpGet", "url": "http://10.1.1.126:8000/big" } },
+      { "label": "GET\n2nd host", "tap": { "op": "httpGet", "url": "http://192.168.1.1/" } },
+      { "label": "GET\nslow", "tap": { "op": "httpGet", "url": "http://10.1.1.126:8000/slow" } },
+
+      { "label": "UDP\nIP", "tap": { "op": "udpPacket", "host": "10.1.1.126", "port": 9999, "data": "hello by ip" } },
+      { "label": "UDP\nname", "tap": { "op": "udpPacket", "host": "braddev", "port": 9999, "data": "hello by name" } },
+      { "label": "UDP\nhex", "tap": { "op": "udpPacket", "host": "10.1.1.126", "port": 9999, "data": { "hex": "DEADBEEF00FF" } } },
+      { "label": "WoL\nsubnet", "tap": { "op": "sendWol", "mac": "AA:BB:CC:DD:EE:FF" } },
+      { "label": "Flood\n12 slow", "tap": [
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=1" },
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=2" },
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=3" },
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=4" },
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=5" },
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=6" },
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=7" },
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=8" },
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=9" },
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=10" },
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=11" },
+        { "op": "httpGet", "url": "http://10.1.1.126:8000/slow?n=12" }
+      ] }
+    ]
+  }
+}

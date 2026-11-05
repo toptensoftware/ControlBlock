@@ -1,6 +1,19 @@
 # Plan: remaining standalone ops and the Lua runtime
 
-Written by a planning sub-agent (read-only; it did not read the binpack source or irtx's `activities.cpp`). Assumes the first milestone (take/release control, `hidKey` with a HID sink, `delay`, `switchActivity`) lands first. Nothing here is implemented or approved yet; the decisions in section 5 are open.
+Written by a planning sub-agent (read-only; it did not read the binpack source or irtx's `activities.cpp`), then revised with the user's decisions. The first milestone (take/release control, `hidKey` with a HID sink, `delay`) has landed. **Status (updated):** phase A (the net ops, executors, net worker, `param` through the queue, the op registry) and activity/device management have since been built and host tested; the net ops and activity switching are not yet verified on the hardware, and phase B (Lua) is not started. The step text below is the original plan: where it disagrees with the code, the code and [`standalone.md`](standalone.md) win. In particular:
+
+- **Superseded, steps 1 and 2 (offset codegen):** the plan to generate `op_spec.gen.h` field offsets, write offsets by hand with a sentinel test, and make `config_blob.cpp` walk the blob by offsets through `config_layout.h` / `ConfigView` was not followed. binpack now generates the C structs (`config_types.gen.h`, via `node gen-types.js` in `tools/bake`), `config_types.h` adds the limits and `CONFIG_ACTIVITY_NONE`, and the validator reads the blob through those structs. `config_layout.h` and `config_view.h` are gone; the host tests are built 32-bit (`platform: "x86"`) so the structs match the device. `op_registry.cpp` holds the executor table and `op_exec.h` the executor protocol.
+- **Superseded, section G and step 3 (queue entries):** the queue holds list references (`{ops, count, param slot, release}`, ring of 40, `PushLists` all or nothing), not expanded `{op, param slot}` entries; see "Actions" in [`standalone.md`](standalone.md). The param pool is `param_pool.h`.
+- **Activities are no longer out of scope:** `switchActivity` has an executor, with a "none" target (`null`), and the switch is planned, queued and applied as described under "Devices and activity switching" in [`standalone.md`](standalone.md). `switchActivity` from a script (section F) still enqueues at the tail, as the executor does. A refused switch (ring full) returns an error string and changes nothing; the script call would return `nil, err`.
+- **Dropped:** per-key `longPressMs` for activity pages (the one global setting is enough).
+
+## Phasing and scope decisions (latest, these win over the text below)
+
+- **Phase A, simple ops (steps 1 to 5):** `httpGet`, `httpPost`, `udpPacket`, `sendWol`, their executors, the net worker, `param` through the queue and the op spec/codegen. No Lua.
+- **Phase B, Lua (steps 6 to 10):** the `script` op and runtime. Started only after phase A works on the hardware, and tackled one piece at a time.
+- **Out of scope for now:** (activities were out of scope here and have since been built, see the status above) HTTPS (http:// only; bake rejects https:// URLs), media/consumer keys, MIDI.
+- **Wi-Fi:** starts at boot. An op that needs the network while disconnected is dropped and logs an error (no queueing for later).
+- **Best-guess answers to the open questions:** WoL and UDP as in D7; `param` is an empty string when absent; HTTP timeout 10 s; a script's wall timeout is 30 s (longer than one HTTP timeout, so one slow `http.get` doesn't kill it); responses over 16 KB are truncated (status still returned); the `httpGet` op is always fire and forget with no schema field, and the script-only `reply` form (`http.get{url=..., reply=false}`) is exempt from the blob/Lua parity test; `LUA_32BITS` in both the device component and `test.mk.js`; compile lazily on first run.
 
 ## 0. What the docs define
 
@@ -92,7 +105,7 @@ void     cancel(ExecCtx&, OpTask&)
 
 ### G. Param through the queue
 
-- `OpQueue` entries become `{op pointer, param slot}`.
+- `OpQueue` entries become `{op pointer, param slot}`. (As built: `{ops pointer, count, param slot, release}` per list; see the status above.)
 - A small pure `ParamPool` has 8 slots of 48 bytes, refcounted by the number of ops pushed for one trigger (all-or-nothing push, as now); a slot is freed when the last op of that list has started.
 - Pool full: the trigger is dropped and counted (same policy as a full queue, per standalone.md).
 - A param longer than the slot is truncated and counted, not rejected.
@@ -123,8 +136,8 @@ Vendor the official Lua 5.4.x source as a git submodule (`lua/`), matching bake'
 - `print` is replaced by `log`.
 - Load chunks with `luaL_loadbufferx` in text mode only, so bytecode is rejected.
 - **Instruction-count hook** (about every 10k instructions) checks the injected clock against a no-yield budget (first guess 100 ms) and raises an error when exceeded. Pathological `string` patterns can't be interrupted; the allocator cap bounds memory but not CPU. Accepted limit.
-- **Per-run wall timeout** (first guess 10 s) cancels a script that waits too long. A late reply is dropped using a generation number.
-- **HTTP timeout** (first guess 3 s) is a firmware constant.
+- **Per-run wall timeout** (30 s) cancels a script that waits too long. A late reply is dropped using a generation number.
+- **HTTP timeout** (10 s) is a firmware constant; the response cap is 16 KB (truncate, keep the status).
 - Allocation over the cap returns NULL, so the script errors and is logged; the queue carries on.
 
 ### Per-script state and lifetime
@@ -141,12 +154,12 @@ Each op's `lua` entry produces one function. One generic binder (a C function wi
 | Lua | Op | Args | Returns |
 |---|---|---|---|
 | `delay(ms)` | delay | ms 1..60000 | yields; `true` |
-| `switchActivity(name)` | switchActivity | activity name | `true`, or `nil, "unknown activity"` |
-| `hid(keys [, mode])` | hidKey | chord, mode `tap` (default), `down`, `up` | yields for the tap gap; `true`. `hold` is an error here |
-| `http.get(url [, headers])` | httpGet | url, headers table | yields; `body, status`, or `nil, err` |
+| `switchActivity(name)` | switchActivity | activity name (later: activities are out of scope for now) | `true`, or `nil, "unknown activity"` |
+| `hid.key(keys [, mode])` | hidKey | chord, mode `tap` (default), `down`, `up` | yields for the tap gap; `true`. `hold` is an error here |
+| `http.get(url [, headers])` | httpGet | url, headers table | yields; `body, status`, or `nil, err` (body truncated at 16 KB) |
 | `http.post(url, body [, contentType [, headers]])` | httpPost | | queued, no yield; `true`, or `nil, err` |
-| `udp(host, port, data)` | udpPacket | data is a string or `{hex=...}` | `true`, or `nil, err` |
-| `wol(mac [, broadcast])` | sendWol | | `true`, or `nil, err` |
+| `udp.send(host, port, data)` | udpPacket | data is a string or `{hex=...}` | `true`, or `nil, err` |
+| `wol.send(mac [, broadcast])` | sendWol | | `true`, or `nil, err` |
 
 Named-table forms are also accepted, e.g. `http.post{url=..., body=...}`. `http.get{url=..., reply=false}` is the fire-and-forget form of the op, so "anything an op can do" holds literally.
 
@@ -160,6 +173,8 @@ Named-table forms are also accepted, e.g. `http.post{url=..., body=...}`. `http.
 - A `get` waits behind queued posts.
 
 ## 4. Steps (test first; **HW** = hardware only, listed for you to run)
+
+**Phase A is steps 1 to 5, phase B is steps 6 to 11.** Step 3 targets the code as the milestone left it (`Standalone` runs `hidKey` itself and forwards other ops to `run`; `standalone_task` owns the lock and op task). Step 1 must reject `https://` URLs. Net ops dropped while Wi-Fi is down log an error. The parity test (step 7) skips script-only forms such as `http.get{reply=false}`. Step 9 notes `LUA_32BITS` vs wasmoon's 64-bit numbers (syntax checks unaffected; runtime edge cases differ).
 
 **Step 1. Op spec and codegen (bake side; refactor only)**
 - Tests first: the spec round-trips to the current OP codes, field offsets (sentinel test) and packed bytes; `op-vectors.json` passes the JS validators; the generated-header drift test.

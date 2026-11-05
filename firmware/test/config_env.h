@@ -16,15 +16,19 @@
 #include <windows.h>
 #endif
 
-// Offsets in the sample (the packed structs; docs/standalone.md "Schema")
+// File offsets in the sample, from the generated structs (config_types.h)
+#define CB_OFF(type, field) ((uint32_t)offsetof(cfgdata::type, field))      // within a struct
 #define CB_ROOT             BPAK_HEADER_SIZE
-#define CB_ROOT_LONGPRESS   (CB_ROOT + 4)
-#define CB_HOME_KEY(i)      (CB_ROOT + 8 + (i) * 36)       // normalBg count, ptr, normalFg, pressedBg, pressedFg
-#define CB_KEY_COUNT(k, s)  ((k) + (s) * 8)
-#define CB_KEY_PTR(k, s)    ((k) + (s) * 8 + 4)
-#define CB_HOME_BINDINGS    (CB_ROOT + 548)                 // count, ptr
-#define CB_ROOT_DEVICES     (CB_ROOT + 556)
-#define CB_ROOT_ACTIVITIES  (CB_ROOT + 564)
+#define CB_ROOT_LONGPRESS   (CB_ROOT + CB_OFF(configRoot, longPressMs))
+#define CB_HOME_KEY(i)      (CB_ROOT + CB_OFF(configRoot, homePage) + CB_OFF(home, keys) + (i) * (uint32_t)sizeof(cfgdata::key))
+#define CB_KEY_COUNT(k, s)  ((k) + ConfigKeyImageOffset(s))             // the image's (count, ptr) pair
+#define CB_KEY_PTR(k, s)    ((k) + ConfigKeyImagePtrOffset(s))
+#define CB_HOME_BINDINGS    (CB_ROOT + CB_OFF(configRoot, homePage) + CB_OFF(home, bindings_count))     // count
+#define CB_HOME_BINDINGS_PTR (CB_ROOT + CB_OFF(configRoot, homePage) + CB_OFF(home, bindings))
+#define CB_ROOT_DEVICES     (CB_ROOT + CB_OFF(configRoot, devices_count))
+#define CB_ROOT_DEVICES_PTR (CB_ROOT + CB_OFF(configRoot, devices))
+#define CB_ROOT_ACTIVITIES  (CB_ROOT + CB_OFF(configRoot, activities_count))
+#define CB_ROOT_ACTIVITIES_PTR (CB_ROOT + CB_OFF(configRoot, activities))
 
 namespace config_env
 {
@@ -63,6 +67,14 @@ namespace config_env
             exit(2);
         fclose(f);
         return bytes;
+    }
+
+    // Relocate `b` in place to its own address, as the device does after validating:
+    // the pointers in it are real (32-bit) addresses. Once per blob.
+    inline const cfgdata::configRoot *Relocate(SimpleLib::List<uint8_t> &b)
+    {
+        ConfigRelocate(b.GetBuffer(), (uint32_t)b.GetCount(), (uint32_t)(uintptr_t)b.GetBuffer());
+        return ConfigRoot(b.GetBuffer());
     }
 
     inline uint32_t TableOffset(const SimpleLib::List<uint8_t> &b) { return U32(b, 12); }

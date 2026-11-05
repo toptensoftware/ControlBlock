@@ -20,6 +20,7 @@
 #include "model.h"
 #include "heap_log.h"
 #include "host_link.h"
+#include "net_worker.h"
 #include "wifi.h"
 #include "screen.h"
 #include "swipe.h"
@@ -51,6 +52,15 @@ static const char *TAG = "controlblock";
 #define BACKLIGHT_CYCLE_S  0
 #endif
 
+// The once-a-second stats line (fps, fill, compositor, images, net). Off by
+// default so it doesn't bury other log messages; build with
+//     idf.py --preset debug -DCB_STATS_LOG=ON build
+// (-DCB_STATS_LOG=OFF turns it off again). With it off, the net counters are
+// still logged, but only when one changes.
+#ifndef STATS_LOG
+#define STATS_LOG  0
+#endif
+
 extern const uint8_t ui_start[] asm("_binary_ui_bin_start");
 extern const uint8_t ui_end[]   asm("_binary_ui_bin_end");
 
@@ -67,6 +77,7 @@ static BLOBPACK *load_pack(const uint8_t *start, const uint8_t *end)
 }
 
 // Where late fills were (see screen_stats_t), or "" if none
+#if STATS_LOG || RUN_STRESS
 static const char *late_fills(const screen_stats_t *st)
 {
     static char text[96];
@@ -75,6 +86,21 @@ static const char *late_fills(const screen_stats_t *st)
     snprintf(text, sizeof(text), " [late: status %lu, 1 page %lu, 2 pages %lu; status drawing %lu]",
              (unsigned long)st->late_status, (unsigned long)st->late_one_page,
              (unsigned long)st->late_two_pages, (unsigned long)st->late_status_drawing);
+    return text;
+}
+#endif
+
+// The network ops' counters, or "" until one has run
+static const char *net_counts(void)
+{
+    static char text[80];
+    NetWorkerStats ns;
+    net_worker_get_stats(&ns);
+    if (!(ns.ok | ns.failed | ns.timeouts | ns.dropped | ns.refused | ns.late))
+        return "";
+    snprintf(text, sizeof(text), " | net %lu ok, %lu failed, %lu timed out, %lu dropped, %lu late",
+             (unsigned long)ns.ok, (unsigned long)ns.failed, (unsigned long)ns.timeouts,
+             (unsigned long)(ns.dropped + ns.refused), (unsigned long)ns.late);
     return text;
 }
 
@@ -379,9 +405,13 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(wifi_start());          // last: a Wi-Fi problem can never keep the screen from coming up
     log_heap(TAG, "after init");
 
+#if STATS_LOG
     uint32_t last_frames = 0;
     screen_stats_t st;
     comp_stats_t cs;
+#else
+    char last_net[80] = "";
+#endif
 #if BACKLIGHT_CYCLE_S
     uint32_t seconds = 0;
     bool backlight = true;
@@ -395,6 +425,13 @@ extern "C" void app_main(void)
             display_enable_backlight(backlight);
         }
 #endif
+#if !STATS_LOG
+        const char *net = net_counts();
+        if (strcmp(net, last_net) != 0) {
+            ESP_LOGI(TAG, "stats%s", net);
+            snprintf(last_net, sizeof(last_net), "%s", net);
+        }
+#else
         ImageStoreStats is;
         model_lock();
         model_store()->GetStats(&is);
@@ -403,13 +440,14 @@ extern "C" void app_main(void)
         screen_get_stats(&st);
         comp_get_stats(&cs);
         ESP_LOGI(TAG, "%lu fps, fill max %3lu us, %lu over %d us, page %d | "
-                      "comp: %lu keys (max %lu us, busy %lu us), %lu swaps, %lu held | img %lu (%lu KB)%s",
+                      "comp: %lu keys (max %lu us, busy %lu us), %lu swaps, %lu held | img %lu (%lu KB)%s%s",
                  (unsigned long)(st.frames - last_frames),
                  (unsigned long)st.max_fill_us, (unsigned long)st.overruns, DISPLAY_BOUNCE_BUDGET_US,
                  swipe_current_page(),
                  (unsigned long)cs.keys, (unsigned long)cs.max_key_us, (unsigned long)cs.busy_us,
                  (unsigned long)cs.swaps, (unsigned long)cs.holds,
-                 (unsigned long)is.count, (unsigned long)(is.used / 1024), late_fills(&st));
+                 (unsigned long)is.count, (unsigned long)(is.used / 1024), net_counts(), late_fills(&st));
         last_frames = st.frames;
+#endif
     }
 }

@@ -1,22 +1,27 @@
 // Config blob validation and relocation. Spec: docs/standalone.md.
 //
-// The struct layouts are in config_layout.h (the packed schema, read by
-// offset instead of cast so the loader also runs in the 64-bit host tests).
-// test/data/sample_config.bin is baked by the real packer, so a schema change
-// that isn't mirrored there fails TestConfigBlob.
+// The struct layouts are the generated ones (config_types.h, from the packed
+// schema). The blob isn't trusted yet and isn't relocated, so the walk is by
+// bounds-checked offsets taken from those structs (offsetof / sizeof), never by
+// casting. test/data/sample_config.bin is baked by the real packer, so a schema
+// change that isn't mirrored there fails TestConfigBlob.
 
 #include <string.h>
 #include "Core.h"
 #include "rle565.h"
 #include "config_blob.h"
-#include "config_layout.h"
 
 using namespace SimpleLib;
-using namespace config_layout;
 
 namespace
 {
     #define TRY(expr) do { ConfigError e_ = (expr); if (e_ != ConfigError::Ok) return e_; } while (0)
+
+    // Offset of `field` in the generated struct `type`
+    #define OFF(type, field)    ((uint32_t)offsetof(cfgdata::type, field))
+    // The (count, pointer) offsets, in the file, of the array `field` of the struct at `base`
+    #define PAIR(base, type, field)     ((base) + OFF(type, field##_count)), ((base) + OFF(type, field))
+    #define SIZE(type)          ((uint32_t)sizeof(cfgdata::type))
 
     class Validator
     {
@@ -34,12 +39,13 @@ namespace
         ConfigError Ptr(uint32_t slot, uint32_t *value);
         ConfigError Array(uint32_t count_off, uint32_t ptr_off, uint32_t elem, uint32_t max, uint32_t *ptr, uint32_t *count);
         ConfigError Str(uint32_t slot, bool nullable);
-        ConfigError Image(uint32_t count_off, ConfigImage *out);
+        ConfigError HttpUrl(uint32_t slot);
+        ConfigError Image(uint32_t count_off, uint32_t ptr_off, ConfigImage *out);
         ConfigError Key(uint32_t key, ConfigImage out[KEY_SLOTS]);
         ConfigError Page(uint32_t page);
         ConfigError Op(uint32_t op);
-        ConfigError OpList(uint32_t count_off);
-        ConfigError Bindings(uint32_t count_off);
+        ConfigError OpList(uint32_t count_off, uint32_t ptr_off);
+        ConfigError Bindings(uint32_t count_off, uint32_t ptr_off);
         ConfigError Device(uint32_t device);
         ConfigError Activity(uint32_t activity);
 
@@ -66,7 +72,7 @@ namespace
         // The table is the end of the file, exactly
         if (m_table % 4 != 0 || m_table > m_size || (uint64_t)m_table + (uint64_t)m_relocs * 4 != m_size)
             return ConfigError::BadHeader;
-        if (m_table < BPAK_HEADER_SIZE + ROOT_SIZE)
+        if (m_table < BPAK_HEADER_SIZE + SIZE(configRoot))
             return ConfigError::Truncated;
         return ConfigError::Ok;
     }
@@ -156,12 +162,24 @@ namespace
         return ConfigError::Ok;
     }
 
+    // A string that starts "http://": the net worker speaks plain HTTP only (the bake
+    // checks this too; a blob can come from anywhere)
+    ConfigError Validator::HttpUrl(uint32_t slot)
+    {
+        TRY(Str(slot, false));
+        uint32_t p;
+        TRY(Ptr(slot, &p));
+        if (strncmp((const char *)m_b + p, "http://", 7) != 0)      // the string is NUL-terminated inside the data
+            return ConfigError::BadOp;
+        return ConfigError::Ok;
+    }
+
     // An rle565 image given as (count, ptr): absent, or a whole valid image
     // of the key size, 4-byte aligned in memory
-    ConfigError Validator::Image(uint32_t count_off, ConfigImage *out)
+    ConfigError Validator::Image(uint32_t count_off, uint32_t ptr_off, ConfigImage *out)
     {
         uint32_t p, n;
-        TRY(Array(count_off, count_off + 4, 1, 0xFFFFFFFFu, &p, &n));
+        TRY(Array(count_off, ptr_off, 1, 0xFFFFFFFFu, &p, &n));
         if (n == 0) {
             if (p != 0)
                 return ConfigError::BadPointer;
@@ -187,7 +205,7 @@ namespace
     ConfigError Validator::Key(uint32_t key, ConfigImage out[KEY_SLOTS])
     {
         for (int s = 0; s < KEY_SLOTS; s++)
-            TRY(Image(key + s * 8, &out[s]));
+            TRY(Image(key + ConfigKeyImageOffset(s), key + ConfigKeyImagePtrOffset(s), &out[s]));
         return ConfigError::Ok;
     }
 
@@ -195,7 +213,7 @@ namespace
     {
         for (int k = 0; k < COMP_KEYS; k++) {
             ConfigImage ignored[KEY_SLOTS];
-            TRY(Key(page + k * KEY_SIZE, ignored));
+            TRY(Key(page + OFF(page, keys) + k * SIZE(key), ignored));
         }
         return ConfigError::Ok;
     }
@@ -203,10 +221,14 @@ namespace
     ConfigError Validator::Op(uint32_t op)
     {
         // The code, then the whole struct for it
-        static const uint8_t sizes[] = { 0, 8, 8, 16, 12, 24, 20, 16, 12 };
-        if ((uint64_t)op + 4 > m_table)
+        static const uint8_t sizes[] = {
+            0, SIZE(delayOp), SIZE(switchActivityOp), SIZE(hidKeyOp), SIZE(httpGetOp),
+            SIZE(httpPostOp), SIZE(udpPacketOp), SIZE(sendWolOp), SIZE(scriptOp),
+        };
+        static_assert(sizeof(sizes) == OP_SCRIPT + 1, "a size for every op code");
+        if ((uint64_t)op + SIZE(op) > m_table)
             return ConfigError::BadPointer;
-        uint32_t code = U32(op);
+        uint32_t code = U32(op + OFF(op, op));
         if (code < OP_DELAY || code > OP_SCRIPT)
             return ConfigError::BadOp;
         if ((uint64_t)op + sizes[code] > m_table)
@@ -215,33 +237,34 @@ namespace
         uint32_t p, n;
         switch (code) {
         case OP_SWITCH_ACTIVITY:
-            if (U32(op + 4) >= m_activity_count)
+            p = U32(op + OFF(switchActivityOp, index));
+            if (p >= m_activity_count && p != CONFIG_ACTIVITY_NONE)
                 return ConfigError::BadIndex;
             break;
         case OP_HID_KEY:
-            if (m_b[op + 4] > HID_MODE_MAX)
+            if (m_b[op + OFF(hidKeyOp, mode)] > HID_MODE_MAX)
                 return ConfigError::BadOp;
             break;
         case OP_HTTP_GET:
-            TRY(Str(op + 4, false));
-            TRY(Str(op + 8, true));
+            TRY(HttpUrl(op + OFF(httpGetOp, url)));
+            TRY(Str(op + OFF(httpGetOp, headers), true));
             break;
         case OP_HTTP_POST:
-            TRY(Str(op + 4, false));
-            TRY(Array(op + 8, op + 12, 1, CONFIG_MAX_OP_DATA, &p, &n));
-            TRY(Str(op + 16, false));
-            TRY(Str(op + 20, true));
+            TRY(HttpUrl(op + OFF(httpPostOp, url)));
+            TRY(Array(PAIR(op, httpPostOp, data), 1, CONFIG_MAX_OP_DATA, &p, &n));
+            TRY(Str(op + OFF(httpPostOp, contentType), false));
+            TRY(Str(op + OFF(httpPostOp, headers), true));
             break;
         case OP_UDP_PACKET:
-            TRY(Str(op + 4, false));
-            TRY(Array(op + 12, op + 16, 1, CONFIG_MAX_OP_DATA, &p, &n));
+            TRY(Str(op + OFF(udpPacketOp, host), false));
+            TRY(Array(PAIR(op, udpPacketOp, data), 1, CONFIG_MAX_OP_DATA, &p, &n));
             break;
         case OP_SEND_WOL:
-            TRY(Str(op + 12, true));
+            TRY(Str(op + OFF(sendWolOp, broadcast), true));
             break;
         case OP_SCRIPT:
             // Source with an explicit length, and the terminator after it
-            TRY(Array(op + 4, op + 8, 1, 0xFFFFFFFFu, &p, &n));
+            TRY(Array(PAIR(op, scriptOp, source), 1, CONFIG_MAX_SCRIPT, &p, &n));
             if (p == 0 || (uint64_t)p + n >= m_table || m_b[p + n] != 0)
                 return ConfigError::BadPointer;
             break;
@@ -252,13 +275,13 @@ namespace
     }
 
     // (count, ptr) of op pointers
-    ConfigError Validator::OpList(uint32_t count_off)
+    ConfigError Validator::OpList(uint32_t count_off, uint32_t ptr_off)
     {
         uint32_t list, n;
-        TRY(Array(count_off, count_off + 4, 4, CONFIG_MAX_OPS, &list, &n));
+        TRY(Array(count_off, ptr_off, sizeof(cfgdata::op *), CONFIG_MAX_OPS, &list, &n));
         for (uint32_t i = 0; i < n; i++) {
             uint32_t op;
-            TRY(Ptr(list + i * 4, &op));
+            TRY(Ptr(list + i * sizeof(cfgdata::op *), &op));
             if (op == 0)
                 return ConfigError::BadPointer;
             TRY(Op(op));
@@ -266,46 +289,48 @@ namespace
         return ConfigError::Ok;
     }
 
-    ConfigError Validator::Bindings(uint32_t count_off)
+    ConfigError Validator::Bindings(uint32_t count_off, uint32_t ptr_off)
     {
         uint32_t list, n;
-        TRY(Array(count_off, count_off + 4, BINDING_SIZE, CONFIG_MAX_BINDINGS, &list, &n));
+        TRY(Array(count_off, ptr_off, SIZE(binding), CONFIG_MAX_BINDINGS, &list, &n));
         for (uint32_t i = 0; i < n; i++) {
-            uint32_t b = list + i * BINDING_SIZE;
-            TRY(Str(b, false));
-            TRY(Str(b + 4, false));
-            TRY(OpList(b + 8));
+            uint32_t b = list + i * SIZE(binding);
+            TRY(Str(b + OFF(binding, control), false));
+            TRY(Str(b + OFF(binding, event), false));
+            TRY(OpList(PAIR(b, binding, ops)));
         }
         return ConfigError::Ok;
     }
 
     ConfigError Validator::Device(uint32_t d)
     {
-        TRY(Str(d, false));
-        TRY(OpList(d + 4));
-        return OpList(d + 12);
+        TRY(Str(d + OFF(device, name), false));
+        TRY(OpList(PAIR(d, device, turnOn)));
+        return OpList(PAIR(d, device, turnOff));
     }
 
     ConfigError Validator::Activity(uint32_t a)
     {
-        TRY(Str(a + ACT_NAME, false));
-        TRY(Str(a + ACT_DISPLAY, true));
+        TRY(Str(a + OFF(activity, name), false));
+        TRY(Str(a + OFF(activity, displayName), true));
 
         uint32_t list, n;
-        TRY(Array(a + ACT_DEVICES, a + ACT_DEVICES + 4, 4, CONFIG_MAX_DEVICES, &list, &n));
+        TRY(Array(PAIR(a, activity, devices), sizeof(int32_t), CONFIG_MAX_DEVICES, &list, &n));
         for (uint32_t i = 0; i < n; i++)
-            if (U32(list + i * 4) >= m_device_count)       // int32: a negative index is huge
+            if (U32(list + i * sizeof(int32_t)) >= m_device_count)       // int32: a negative index is huge
                 return ConfigError::BadIndex;
 
-        TRY(Array(a + ACT_PAGES, a + ACT_PAGES + 4, PAGE_SIZE, CONFIG_MAX_ACTIVITY_PAGES, &list, &n));
+        TRY(Array(PAIR(a, activity, pages), SIZE(page), CONFIG_MAX_ACTIVITY_PAGES, &list, &n));
         if (n == 0)
             return ConfigError::BadLimit;                   // an activity needs a page
         for (uint32_t i = 0; i < n; i++)
-            TRY(Page(list + i * PAGE_SIZE));
+            TRY(Page(list + i * SIZE(page)));
 
-        TRY(Bindings(a + ACT_BINDINGS));
-        for (int h = 0; h < 4; h++)
-            TRY(OpList(a + ACT_HOOKS + h * 8));
+        TRY(Bindings(PAIR(a, activity, bindings)));
+        TRY(OpList(PAIR(a, activity, willDeactivate)));
+        TRY(OpList(PAIR(a, activity, willActivate)));
+        TRY(OpList(PAIR(a, activity, didActivate)));
+        TRY(OpList(PAIR(a, activity, didDeactivate)));
         return ConfigError::Ok;
     }
 
@@ -315,30 +340,31 @@ namespace
         TRY(Relocations());
 
         const uint32_t root = BPAK_HEADER_SIZE;
-        if (U32(root + ROOT_VERSION) != CONFIG_BLOB_VERSION)
+        const uint32_t home = root + OFF(configRoot, homePage);
+        if (U32(root + OFF(configRoot, version)) != CONFIG_BLOB_VERSION)
             return ConfigError::BadVersion;
-        m_device_count   = U32(root + ROOT_DEVICES);
-        m_activity_count = U32(root + ROOT_ACTIVITIES);
+        m_device_count   = U32(root + OFF(configRoot, devices_count));
+        m_activity_count = U32(root + OFF(configRoot, activities_count));
         if (m_device_count > CONFIG_MAX_DEVICES || m_activity_count > CONFIG_MAX_ACTIVITIES)
             return ConfigError::BadLimit;
 
         ConfigSummary s = {};
-        s.version       = U32(root + ROOT_VERSION);
-        s.long_press_ms = U32(root + ROOT_LONGPRESS);
+        s.version       = U32(root + OFF(configRoot, version));
+        s.long_press_ms = U32(root + OFF(configRoot, longPressMs));
         s.device_count  = m_device_count;
         s.activity_count = m_activity_count;
 
         for (int k = 0; k < COMP_KEYS; k++)
-            TRY(Key(root + ROOT_HOME_KEYS + k * KEY_SIZE, s.home[k]));
-        TRY(Bindings(root + ROOT_HOME_BINDINGS));
+            TRY(Key(home + OFF(home, keys) + k * SIZE(key), s.home[k]));
+        TRY(Bindings(PAIR(home, home, bindings)));
 
         uint32_t list, n;
-        TRY(Array(root + ROOT_DEVICES, root + ROOT_DEVICES + 4, DEVICE_SIZE, CONFIG_MAX_DEVICES, &list, &n));
+        TRY(Array(PAIR(root, configRoot, devices), SIZE(device), CONFIG_MAX_DEVICES, &list, &n));
         for (uint32_t i = 0; i < n; i++)
-            TRY(Device(list + i * DEVICE_SIZE));
-        TRY(Array(root + ROOT_ACTIVITIES, root + ROOT_ACTIVITIES + 4, ACTIVITY_SIZE, CONFIG_MAX_ACTIVITIES, &list, &n));
+            TRY(Device(list + i * SIZE(device)));
+        TRY(Array(PAIR(root, configRoot, activities), SIZE(activity), CONFIG_MAX_ACTIVITIES, &list, &n));
         for (uint32_t i = 0; i < n; i++)
-            TRY(Activity(list + i * ACTIVITY_SIZE));
+            TRY(Activity(list + i * SIZE(activity)));
 
         // Every table entry was a pointer slot we walked, so relocating can't
         // touch anything else

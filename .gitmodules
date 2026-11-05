@@ -10,3 +10,6 @@
 [submodule "binpack"]
 	path = binpack
 	url = https://github.com/toptensoftware/binpack
+[submodule "lua"]
+	path = lua
+	url = https://github.com/lua/lua.git

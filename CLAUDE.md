@@ -39,6 +39,7 @@ FUZZ_SEEDS=200 mk config=release run     # long fuzz soak
 
 - A test that overruns a buffer can silently corrupt the test registry's statics in the debug exe (the runner then skips tests and still reports "All passed"): if the debug and release test counts differ, suspect an out-of-bounds write in a test. This once hid 81 tests (`TestStatusBar` rendered 7-row bands into a 4-row scratch).
 
+- Built 32-bit (`platform: "x86"` in `test.mk.js`) so the blob structs match the device layout.
 - Needs `mk` (`npm install -g toptensoftware/mk.js`) and MSVC. Reads `firmware/assets/*.bin` (`LoadAsset()`). Sources are listed in `test.mk.js`.
 - `harness.h/.cpp`: a `World` runs a real `PageCompositor` against a fake client, bounce fill and clock, checking its invariants at every frame start. Preempt hooks run frame starts and client changes inside `Step()` to test races deterministically. `RetireUnused()` exercises sweeps: freed images are poisoned and their addresses reused straight away.
 - `store_env.h/.cpp`: the image store's test platform (an allocator that poisons and reuses freed blocks, a fake sweep), shared by the store, key layout and protocol tests. Protocol tests feed raw bytes in and decode the responses. `TestGapShare.cpp` covers the fill-gap round-robin, and `TestStatusBar.cpp` checks that the banded status bar render matches the whole-bar render byte for byte.
@@ -75,7 +76,7 @@ Clone with `--recursive` or run `git submodule update --init`.
 ## Operating Modes
 
 1. **Host-controlled:** Like a Stream Deck. PC software decides what each key shows; the device reports key events and the PC acts on them. Long press and double press are detected host side. Built.
-2. **Standalone (first milestone built and verified on the hardware; the default):** the device boots into it. It holds a Home page plus "activities" (each a set of pages) in flash, and keys run actions on the device: USB HID keyboard first, then MIDI, HTTP and UDP. A host must send `TAKE_CONTROL` before any layout request (they are refused with `NOT_HOSTED` while standalone); `RELEASE_CONTROL`, USB unmount or USB suspend returns the device to Home and turns the backlight on. The milestone (boot into Home, touch gestures and bindings, `hidKey` over a USB HID keyboard, take/release control) works on the hardware; activity switching, devices, scripts and HTTP/UDP/WoL are not built (see [`docs/standalone-ops-plan.md`](docs/standalone-ops-plan.md)). Spec: [`docs/standalone.md`](docs/standalone.md).
+2. **Standalone (first milestone built and verified on the hardware; the default):** the device boots into it. It holds a Home page plus "activities" (each a set of pages) in flash, and keys run actions on the device: USB HID keyboard first, then MIDI, HTTP and UDP. A host must send `TAKE_CONTROL` before any layout request (they are refused with `NOT_HOSTED` while standalone); `RELEASE_CONTROL`, USB unmount or USB suspend returns the device to Home and turns the backlight on. The milestone (boot into Home, touch gestures and bindings, `hidKey` over a USB HID keyboard, take/release control) works on the hardware; activity switching, devices and HTTP/UDP/WoL are built and host tested but not yet run on the hardware, and scripts are not built (see [`docs/standalone-ops-plan.md`](docs/standalone-ops-plan.md)). Spec: [`docs/standalone.md`](docs/standalone.md).
 
 ## Firmware
 
@@ -95,9 +96,9 @@ Modules in `firmware/main/` (all C++; `rle565.c` from the submodule stays C):
 - **`touch_router.cpp/.h`:** swipe or key press: the swipe window, edge-ambiguous zone, and PRESS/RELEASE/CANCEL. Pure and tested; tuning constants in the header. Spec: [`docs/interactions.md`](docs/interactions.md).
 - **Backlight wake gate** ([`docs/backlight.md`](docs/backlight.md); built and unit tested, **not yet run on the hardware**): while the host has the backlight off, touches skip the router and swipe and send a WAKE event (`0x82`) per touch-down instead; the rest of that touch is swallowed. The state is in GET_INFO `flags` bit 0. Pure and tested: `touch_gate.cpp/.h` wraps `touch_router`; `swipe.cpp` feeds it, `host_link.cpp` holds the state and drives the light and the gate.
 - **`config_store.cpp/.h`, `config_flash.cpp/.h`, `crc32.h`:** the standalone config upload to the `config` flash partition (`partitions.csv`: app 2 MB, config 4 MB; header sector written last). `config_store` is platform independent and tested over a fake NOR flash; `config_flash` is the device layer; `host_link.cpp` blanks the screen during an upload and restarts after the commit. Spec: [`docs/protocol.md`](docs/protocol.md#configuration-upload), [`docs/config-upload-plan.md`](docs/config-upload-plan.md). Run on the hardware with a small blob. A changed partition table needs a full `idf.py flash` (not app only). The boot-time loader isn't built.
-- **`config_blob.cpp/.h`, `config_apply.cpp/.h`, `config_boot.cpp/.h`:** the standalone config at boot. `config_blob` (pure, tested) validates a BPAK blob and relocates its pointers, walking it by offsets rather than casting to structs (host tests are 64-bit); the struct layouts are written out in the file, so keep them in step with the binpack schema and re-bake `test/data/sample_config.bin` after any schema change (`node cli.js ../../firmware/test/data/sample_config.json -o ../../firmware/test/data/sample_config.bin` from `tools/bake`). `config_apply` (pure, tested) registers Home's images and sets page 0's keys, all or nothing. `config_boot` (device) reads the partition into PSRAM before the display starts (`config_boot_load`, before `model_init`/`screen_init`) and applies it after `screen_init`, before the backlight. A missing, damaged or invalid config leaves the empty Home. The blob stays resident in PSRAM. `ConfigStore::Read` reads and CRC-checks the stored blob.
-- **`config_layout.h`, `config_view.h`, `op_queue.cpp/.h`, `trigger_dispatch.cpp/.h`, `key_gesture.cpp/.h`:** the standalone trigger side (all platform independent and tested; wired to the device by `standalone.cpp` and `standalone_task.cpp` below, works on the hardware). `config_layout.h` holds the packed struct offsets and op codes shared with `config_blob.cpp`; `ConfigView` reads the blob by offset (adjust 0 on the device, the blob address in the host tests). `TriggerDispatcher` matches (control, event) against Home's and the selected activity's bindings and pushes their op lists on the `OpQueue` (32 entries; `delay` holds it; every op goes to an injected `run` callback). `GestureBank` turns press/release/cancel into press, release, tap and long per control. None of them lock: the device layer serialises. Spec: [`docs/standalone.md`](docs/standalone.md).
-- **`standalone.cpp/.h`, `standalone_task.cpp/.h`:** the owner of the trigger side. `Standalone` (pure, tested with the sample blob; injected clock and `run`, no lock) holds the `ConfigView`, `OpQueue`, `TriggerDispatcher` and `GestureBank`: `Key(page, key, action, time_ms)`, `Tick()`, `Poll()`, `SetHosted(bool)` (both directions re-arm from the blob: held keys and queued ops dropped silently, no activity selected). `standalone_task` is the device layer: one mutex plus an op task on core 0 (priority 3, polls every 5 ms while a `delay` holds the queue); `host_link.cpp`'s `on_key` routes standalone keys to it and `swipe_set_tick_cb` (in `swipe.cpp`) runs its tick each frame. `Standalone` runs `hidKey` itself through `HidKeyboard` and forwards every op to `run`.
+- **`config_blob.cpp/.h`, `config_apply.cpp/.h`, `config_boot.cpp/.h`:** the standalone config at boot. `config_blob` (pure, tested) validates a BPAK blob and relocates its pointers, then reads it through the binpack-generated structs (`config_types.gen.h`, wrapped by `config_types.h`: namespace `cfgdata`, limits, `CONFIG_ACTIVITY_NONE`). After a schema change run `node gen-types.js` in `tools/bake` (regenerates `config_types.gen.h`) and re-bake `test/data/sample_config.bin` (`node cli.js ../../firmware/test/data/sample_config.json -o ../../firmware/test/data/sample_config.bin` from `tools/bake`). `config_apply` (pure, tested) registers Home's images and sets page 0's keys, all or nothing (`ConfigApplyHome`); `ConfigApplyActivity(root, blob, from, to, store, layout)` swaps the activity pages 1..n the same way (registers the new images with the checked `AddExternal`, frees the old activity's unshared ones; -1 = none). `config_boot` (device) reads the partition into PSRAM before the display starts (`config_boot_load`, before `model_init`/`screen_init`) and applies it after `screen_init`, before the backlight. A missing, damaged or invalid config leaves the empty Home. The blob stays resident in PSRAM. `ConfigStore::Read` reads and CRC-checks the stored blob.
+- **`op_exec.h`, `op_registry.cpp/.h`, `param_pool.h`, `op_queue.cpp/.h`, `trigger_dispatch.cpp/.h`, `key_gesture.cpp/.h`:** the standalone trigger side (all platform independent and tested; wired to the device by `standalone.cpp` and `standalone_task.cpp` below). `op_exec.h` is the executor protocol (start/poll/cancel, `OpStatus`, `OpTask`, `ExecCtx`); `op_registry` is the op table; `param_pool.h` holds trigger `param` strings (8 slots, refcounted). `TriggerDispatcher` matches (control, event) against Home's and the selected activity's bindings and pushes their op lists on the `OpQueue`. The queue holds list references (ops pointer, count, release flag, param slot) in a ring of `OP_QUEUE_SIZE` = 40, walks the current list op by op, and `PushLists` adds several lists all or nothing; `delay` holds it. `GestureBank` turns press/release/cancel into press, release, tap and long per control. None of them lock: the device layer serialises. Spec: [`docs/standalone.md`](docs/standalone.md).
+- **`standalone.cpp/.h`, `standalone_task.cpp/.h`:** the owner of the trigger side. `Standalone` (pure, tested with the sample blob; injected clock and `run`, no lock) holds the blob root, `OpQueue`, `TriggerDispatcher` and `GestureBank`, plus the selected activity and the device on/off mask: `Key(page, key, action, time_ms)`, `Tick()`, `Poll()`, `SetHosted(bool)` (both directions re-arm from the blob: held keys and queued ops dropped silently, no activity selected, device mask kept). The `switchActivity` executor plans the switch (`activity_switch.cpp/.h`: pure, list references in spec order plus the new mask), pushes it at the queue tail all or nothing, and only then commits the selection and mask, resets gestures, calls `HidKeyboard::ReleaseAll` and the injected `ActivityHost`; a refused push ends the op in an error and changes nothing. `activity_host.cpp/.h` (`ActivityApplier`, pure, tested) is the `ActivityHost`: `ConfigApplyActivity` under the model lock, then page count, glide to page 1 and the status text. Lock order: standalone mutex, then model lock. `standalone_task` is the device layer: one mutex plus an op task on core 0 (priority 3, polls every 5 ms while a `delay` holds the queue); `host_link.cpp`'s `on_key` routes standalone keys to it and `swipe_set_tick_cb` (in `swipe.cpp`) runs its tick each frame. `Standalone` runs `hidKey` itself through `HidKeyboard` and forwards every op to `run`.
 - **`hid_keyboard.cpp/.h`:** pure, tested HID boot-keyboard report building behind an injected `HidSink` (`usb_hid_send` on the device): tap (down, `HID_TAP_GAP_MS`, up, then `HID_TAP_SETTLE_MS`), down, up and hold (the op queue's `Releasing()` tag says which event queued it); `ReleaseAll()` on takeover, release and disconnect so nothing sticks. Spec: [`docs/standalone.md`](docs/standalone.md).
 - **`image_store.cpp/.h`:** the host's rle565 images under 32-bit IDs in PSRAM: streamed uploads, replace in place, deferred free, reset; `AddExternal(id, ptr, len)` registers an image inside the config blob (never copied or freed; all external images must lie in one region that holds nothing else). Read an entry through `ImageEntry.pixels`/`opaque`, and use `PixelsRetired` (not the `ImageData` header) for the compositor's retired check. Platform independent and tested. Spec: [`docs/image-assets.md`](docs/image-assets.md).
 - **`key_layout.cpp/.h`:** pages of keys, four image slots each (normal and pressed bg/fg), ref counted; all-or-nothing `SetKeys`. The compositor's client. Tested.
@@ -164,7 +165,7 @@ All custom. Do **not** use LVGL.
 - If dragging looks steppy: use the GT911 interrupt and/or predict the finger position per frame.
 - Untested: the `-Og` build under the stress run.
 - **Internal RAM:** measured: ~143 KB free after init (largest block 102 KB), ~121 KB with the Wi-Fi driver up and ~119 KB connected (largest block 76 KB); Wi-Fi connects to WPA2 and WPA3 networks ([`docs/wifi.md`](docs/wifi.md)). Further savings if needed: the protocol buffer and stacks to PSRAM, or Wi-Fi/lwIP buffers to PSRAM (with a stress run).
-- **Wi-Fi:** connects on the hardware, and credentials survive a reboot and reflash. NVS write glitches aren't a concern (rarely written). Not yet checked: wrong-password backoff and recovery after a router restart. Later: power save for short battery runs (it is off now, for latency; see [`docs/wifi.md`](docs/wifi.md)).
+- **Wi-Fi:** connects on the hardware, and credentials survive a reboot and reflash. NVS write glitches aren't a concern (rarely written). Not yet checked: wrong password stopping retries (until new credentials or a reboot; not shown on the status bar yet) and recovery after a router restart. Later: power save for short battery runs (it is off now, for latency; see [`docs/wifi.md`](docs/wifi.md)).
 - **Status bar in PSRAM:** works on the hardware, 0 late fills in the release `RUN_STRESS` (slowest fills 121 µs at rest, 286-353 µs mid-swipe, 412 µs for image replaces mid-swipe, the least margin), and the pager pill lag looks fine. Mid-swipe the fill is above the 250 µs aim. Fallback if fills ever go late: small internal buffers for the text and pills, the rest of the bar filled black in the fill ([`docs/status-bar.md`](docs/status-bar.md)).
 - **Second render cell** (render the next key while one copies): ~20% faster page builds. Not needed yet.
 - **Key presses:** the touch router is built and unit tested, and wired to the model and `Protocol::PostKey`, but **not yet run on the hardware**. Tune `TOUCH_SWIPE_WINDOW_MS` and `TOUCH_EDGE_AMBIGUOUS_PX`, and judge the pressed look flashing on swipes (it shows at touch-down and reverts when a swipe starts). The swipe task takes the model lock on key actions: check it doesn't delay frames. Per-key "no swipe window" mode: add only if needed.
@@ -175,9 +176,11 @@ All custom. Do **not** use LVGL.
 - Flash writes (icon cache, NVS) may stall the bounce ISR (`CONFIG_LCD_RGB_ISR_IRAM_SAFE` is off). Test for display glitches when they arrive.
 - **Config upload:** works on the hardware (16 KB sample: blank, write, restart, re-enumerate, verify, skip when unchanged, `--force`, survives a reboot). Not yet checked: a host that vanishes mid-upload leaving the screen dark until the next RESET_STREAM (an upload idle timeout would fix it), a large blob (64 KB block erases, over-capacity refusal) and display glitches during erase. `tools/bake --upload` / `host/` `uploadConfig()` are the clients.
 - **Config boot load:** works on the hardware (a flashed config loads). Not yet checked: the load time, whether a real large config fits in PSRAM (the blob stays resident, so hosted mode loses that space), and `RUN_STRESS` with a stored config (Home's keys are present when it starts). The release rebuild of Home is built and host tested but not run on the hardware (next item).
-- **Take/release control and standalone key gestures (milestone steps 1 and 2):** work on the hardware (cold boot to Home, take/release, unplug and suspend return to Home with the light on, gestures and the frame lock fine). `SET_BACKLIGHT` stays allowed in both modes. Held keys are dropped silently on takeover: step 3 must send all-keys-up.
+- **Take/release control and standalone key gestures (milestone steps 1 and 2):** work on the hardware (cold boot to Home, take/release, unplug and suspend return to Home with the light on, gestures and the frame lock fine). `SET_BACKLIGHT` stays allowed in both modes. Held keys are dropped silently on takeover, and the HID keys are released (`ReleaseAll`) by the takeover and by an activity switch.
 - **Standalone HID (milestone step 3):** works on the hardware (tap, chord, hold, nothing sticks on takeover/unplug, vendor interface and upload still fine). Tune `HID_TAP_GAP_MS` / `HID_TAP_SETTLE_MS` (20 ms each) if keys are dropped or merged. `usb_hid_send` is called from the op and protocol tasks: watch for the "HID report dropped" warning under load. Held keys are tracked per modifier bit, not counted. The first milestone is complete (step 4 passed).
-- Standalone mode: the action dispatch (http/udp library) and stateful actions: see [`docs/standalone.md`](docs/standalone.md).
+- **Net ops** (`httpGet`, `httpPost`, `udpPacket`, `sendWol`): `net_host.h` (injected `NetHost`), `net_queue.cpp/.h`, `exec_net.cpp/.h` and `wol_packet.h` are pure and tested; `net_worker.cpp/.h` is the device layer (worker task on core 0, esp_http_client over http only, lwIP sockets). Built and host tested, **not verified on the hardware** (Wi-Fi latency on the test AP is still being investigated). Build switches: `-DCB_STATS_LOG=ON` (once-a-second stats line with net counters) and `-DCB_WIFI_DIAG=ON` (Wi-Fi link diagnostics); presets `debug-iram`/`release-iram` (`sdkconfig.wifi_iram`, Wi-Fi in IRAM, an experiment, not the default).
+- **Activity switching and devices:** built and host tested, **not yet run on the hardware** (checklist in `wip/wip-activity-device-management.md`, step 9). Hardware checks: the glide with the compositor (stale or blank keys, late fills), the `check_image` cost per switch (checked `AddExternal` under the model lock), rapid A->B->C switching, device turnOn/turnOff (depends on the net ops), a takeover in the middle of a switch (a switch on the op task could write the layout the host is about to own), lock-order soak. Activity pages use the global long-press time (per-key `longPressMs` there is not needed). Scripts (Lua) are not built.
+- Standalone mode: scripts and stateful actions: see [`docs/standalone.md`](docs/standalone.md) and [`docs/standalone-ops-plan.md`](docs/standalone-ops-plan.md).
 
 ## Conventions
 
@@ -202,6 +205,69 @@ All custom. Do **not** use LVGL.
 4. Continual Learning: When you encounter conflicting system instructions, new requirements, architectural changes, or missing or inaccurate codebase documentation, always propose updating the relevant rules files.  Do not update anything until the user confirms.
 
 5. Planning: For complex, multi-step tasks, first create a plan and a to do list for yourself before you start writing any code.
+
+
+## Investigate-Plan-Implement (IPI) process
+
+Used for any non-trivial piece of work. ("iPad job" = IPI job — autocorrect.) Each job is tracked in a document in
+`wip/` (at the repo root, checked into git). The document is the **only**
+handover between agents, so anything the next agent needs to know goes in it.
+
+**Phases.** The user starts each phase (e.g. "investigate X", "plan it", "implement it"):
+
+1. **Start** — create `wip/wip-<jobname>.md` (kebab-case jobname) from the
+   template below, with a brief description of the work.
+2. **Investigate** — look into what needs doing; record findings in *Notes*.
+3. **Plan** — write *Plan* as a numbered checklist, every step unchecked
+   (`- [ ]`). Each step should be small enough for one agent to do on its own
+   and should leave the app building.
+4. **Implement** — work through the steps in order. For each step: do the
+   work, build (see *Building and testing*; must be 0 errors), tick the box
+   (`- [x]`), and add anything learned to *Notes*.
+5. **Complete** — once every step is done, rename the file to
+   `wip/complete-<jobname>.md`.
+
+**Subagents.** Phases and Implement steps are handed to fresh subagents to keep
+context small. As a guideline, Investigate, Plan and each Implement step get
+their own subagent. But this is a judgement call, not a rule: when it makes sense
+or is more efficient, one subagent can do several steps, or all of them
+(e.g. a run of small, similar rewires). Keep a fresh agent for steps that are
+large, risky, or need a clear head. The coordinating agent passes the subagent the
+document path and the phase/step(s) to do. The subagent reads CLAUDE.md and the
+document, does only those phase/step(s), updates the document as it goes (ticking
+each step when done), and returns a short summary. Implement agents run one at a
+time, never in parallel. The coordinating agent relays results to the user.
+
+**Rules.**
+- `wip-*.md` documents can be edited freely without asking.
+  Never touch a `complete-*.md` document unless the user says so.
+- **Blocking or critical issue** → stop, record it in the document, and ask the
+  user (using the 1-3-1 format, Rule 1). Don't carry on to later steps.
+- **Less critical question** → make an educated guess, carry on, and record it
+  under *Flagged assumptions* so the user can review it.
+- Don't commit unless the user asks.
+
+**Template:**
+
+```markdown
+# <Job title>
+
+Status: Investigate | Plan | Implement | Complete
+
+## Description
+Brief description of the work and its goal.
+
+## Notes
+Important information needed during the work, plus anything discovered along
+the way (relevant files, APIs, gotchas, decisions made).
+
+## Flagged assumptions
+- Educated guesses made instead of asking, for the user to review.
+
+## Plan
+- [ ] 1. ...
+- [ ] 2. ...
+```
 
 
 ## Preventing Permission Prompts

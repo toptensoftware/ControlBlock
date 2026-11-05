@@ -1,15 +1,12 @@
 #include <string.h>
 #include "trigger_dispatch.h"
 
-using namespace config_layout;
-
-void TriggerDispatcher::Init(const ConfigView *cfg, OpQueue *queue)
+void TriggerDispatcher::Init(const cfgdata::configRoot *root, OpQueue *queue)
 {
-    m_cfg        = cfg;
-    m_queue      = queue;
-    m_home       = cfg->GetArray(cfg->Root() + ROOT_HOME_BINDINGS);
-    m_activities = cfg->GetArray(cfg->Root() + ROOT_ACTIVITIES);
-    m_activity   = {};
+    m_root     = root;
+    m_queue    = queue;
+    m_home     = root ? Bindings{ root->homePage.bindings_count, root->homePage.bindings } : Bindings{};
+    m_activity = {};
 }
 
 bool TriggerDispatcher::SetActivity(int index)
@@ -20,19 +17,20 @@ bool TriggerDispatcher::SetActivity(int index)
         m_activity = {};
         return true;
     }
-    if ((uint32_t)index >= m_activities.count)
+    if (!m_root || (uint32_t)index >= m_root->activities_count)
         return false;
-    m_activity = m_cfg->GetArray(m_activities.items + (uint32_t)index * ACTIVITY_SIZE + ACT_BINDINGS);
+    const cfgdata::activity &a = m_root->activities[index];
+    m_activity = Bindings{ a.bindings_count, a.bindings };
     return true;
 }
 
 // Exact string match on both fields; no wildcards on the device
 template <class F>
-void TriggerDispatcher::ForMatches(const ConfigView::Array &list, const char *control, const char *event, F fn) const
+void TriggerDispatcher::ForMatches(const Bindings &list, const char *control, const char *event, F fn) const
 {
     for (uint32_t i = 0; i < list.count; i++) {
-        const uint8_t *b = list.items + i * BINDING_SIZE;
-        if (strcmp(m_cfg->Str(b + BIND_CONTROL), control) == 0 && strcmp(m_cfg->Str(b + BIND_EVENT), event) == 0)
+        const cfgdata::binding &b = list.items[i];
+        if (strcmp(b.control, control) == 0 && strcmp(b.event, event) == 0)
             if (!fn(b))
                 return;
     }
@@ -50,18 +48,17 @@ void TriggerDispatcher::ForAllMatches(const char *control, const char *event, F 
 bool TriggerDispatcher::HasBinding(const char *control, const char *event) const
 {
     bool found = false;
-    ForAllMatches(control, event, [&](const uint8_t *) { return !(found = true); });
+    ForAllMatches(control, event, [&](const cfgdata::binding &) { return !(found = true); });
     return found;
 }
 
 int TriggerDispatcher::Trigger(const char *control, const char *event, const char *param)
 {
-    (void)param;
     int matched = 0;
     bool release = event && strcmp(event, "release") == 0;
-    ForAllMatches(control, event, [&](const uint8_t *b) {
+    ForAllMatches(control, event, [&](const cfgdata::binding &b) {
         matched++;
-        m_queue->PushList(m_cfg->GetArray(b + BIND_OPS), release);
+        m_queue->PushList(b.ops_count, b.ops, release, param);
         return true;
     });
     return matched;

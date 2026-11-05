@@ -2,7 +2,7 @@
 // object, an array of them, or null; `{ use: "name" }` expands a named action inline.
 // See docs/config-format.md "Op lists" and docs/standalone.md "Actions".
 
-import { OP, HID_MODE } from "./consts.js";
+import { OP, HID_MODE, ACTIVITY_NONE, MAX_SCRIPT_BYTES } from "./consts.js";
 import { childPath } from "./diag.js";
 import { t, required, checkObject } from "./check.js";
 import { parseChord } from "./hid.js";
@@ -43,9 +43,14 @@ const OP_TABLE = {
     },
 
     switchActivity: {
-        props: { activity: required(t.string({ nonEmpty: true })) },
-        build(o, p, rc)
+        props: { activity: required(t.nullable(t.string({ nonEmpty: true }))) },
+        build(o, p, rc, gesture)
         {
+            // Hooks and device lists run as part of a switch: switching from there would nest
+            if (gesture === "hook")
+                return void rc.diag.error(p, "switchActivity is not allowed in an activity hook or a device's turnOn/turnOff");
+            if (o.activity === null)
+                return { op: OP.switch_activity, index: ACTIVITY_NONE };
             if (!rc.activityIndex.has(o.activity))
                 return void rc.diag.error(childPath(p, "activity"), `unknown activity "${o.activity}"`);
             return { op: OP.switch_activity, index: rc.activityIndex.get(o.activity) };
@@ -106,6 +111,8 @@ const OP_TABLE = {
                     return void diag.error(where, `file not found: ${o.file}`);
                 source = host.readText(file);
             }
+            if (Buffer.byteLength(source) > MAX_SCRIPT_BYTES)
+                return void diag.error(where, `script is longer than ${MAX_SCRIPT_BYTES} bytes`);
             const problem = host.luaCheck(source);
             if (problem)
                 return void diag.error(where, problem);

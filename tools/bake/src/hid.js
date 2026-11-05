@@ -3,7 +3,7 @@
 
 export const MOD = { lctrl: 0x01, lshift: 0x02, lalt: 0x04, lgui: 0x08, rctrl: 0x10, rshift: 0x20, ralt: 0x40, rgui: 0x80 };
 
-const MODIFIERS = {
+export const MODIFIERS = {
     ctrl: MOD.lctrl, control: MOD.lctrl, lctrl: MOD.lctrl,
     shift: MOD.lshift, lshift: MOD.lshift,
     alt: MOD.lalt, lalt: MOD.lalt, option: MOD.lalt,
@@ -11,7 +11,7 @@ const MODIFIERS = {
     rctrl: MOD.rctrl, rshift: MOD.rshift, ralt: MOD.ralt, altgr: MOD.ralt, rgui: MOD.rgui,
 };
 
-const KEYS = {};
+export const KEYS = {};
 
 // a-z, 1-9, 0
 for (let i = 0; i < 26; i++) KEYS[String.fromCharCode(97 + i)] = 0x04 + i;

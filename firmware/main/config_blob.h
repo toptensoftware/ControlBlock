@@ -14,14 +14,16 @@
 // Every pointer in the data is a file offset (0 = null). Relocating adds the
 // blob's address to each slot in the table.
 //
-// Validate walks the whole structure by offsets (so it works on a 64-bit
-// host too) and checks everything the firmware will later trust: every
-// pointer, count, string, op and image. It also requires the relocation
-// table to be exactly the set of non-null pointer slots in the structure, so
-// relocating cannot touch anything else. Relocate is then safe to run.
+// Validate walks the whole structure by offsets (the layout comes from the
+// generated structs, config_types.h) and checks everything the firmware will
+// later trust: every pointer, count, string, op and image. It also requires the
+// relocation table to be exactly the set of non-null pointer slots in the
+// structure, so relocating cannot touch anything else. Relocate is then safe to
+// run, and the relocated blob is read through the structs (ConfigRoot).
 
 #include <stddef.h>
 #include <stdint.h>
+#include "config_types.h"
 #include "key_layout.h"
 #include "page_compositor.h"
 #include "screen_layout.h"
@@ -37,6 +39,8 @@
 #define CONFIG_MAX_BINDINGS     256         // per list
 #define CONFIG_MAX_OPS          64          // per op list
 #define CONFIG_MAX_ACTIVITY_PAGES (SCREEN_MAX_PAGES - 1)    // Home is page 0
+#define CONFIG_MAX_OP_DATA      4096        // bytes of an http body or a UDP payload
+#define CONFIG_MAX_SCRIPT       16384       // bytes of a script's source (MAX_SCRIPT_BYTES in tools/bake/src/consts.js)
 
 // An image in the blob: its file offset (the image store ID) and byte size.
 // offset 0 = no image.
@@ -83,3 +87,10 @@ ConfigError ConfigValidate(const void *blob, uint32_t size, ConfigSummary *summa
 // device `base` is the blob's address. After this the offsets in the data
 // are absolute addresses: the summary's offsets still index the blob.
 void ConfigRelocate(void *blob, uint32_t size, uint32_t base);
+
+// The root of a blob (validated and relocated to its own address, or just
+// validated if only counts and plain values are read)
+inline const cfgdata::configRoot *ConfigRoot(const void *blob)
+{
+    return (const cfgdata::configRoot *)((const uint8_t *)blob + BPAK_HEADER_SIZE);
+}

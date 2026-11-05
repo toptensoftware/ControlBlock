@@ -437,7 +437,7 @@ The host sets the Wi-Fi credentials; the device keeps them in NVS and connects i
 | 0 | `NO_CREDENTIALS` | Nothing stored; Wi-Fi is not running |
 | 1 | `CONNECTING` | The first attempt: associating or waiting for an IP |
 | 2 | `CONNECTED` | Has an IP |
-| 3 | `RETRYING` | An attempt failed or the link dropped. It stays `RETRYING` across the retries (1 s, doubling to 30 s; at once to 30 s after an authentication failure) until it connects |
+| 3 | `RETRYING` | An attempt failed or the link dropped. It stays `RETRYING` across the retries (1 s, doubling to 30 s; at once to 30 s after an authentication failure) until it connects. After an authentication failure it stays `RETRYING` but stops retrying (the reason says why) until new credentials are set or the device reboots |
 
 ## Device → host events
 

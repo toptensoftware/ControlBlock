@@ -38,14 +38,13 @@ struct WifiStatus
 // numbers here so this file builds on the host.
 //   LEAVE: "disassociated: the station is leaving", which is what our own
 //   esp_wifi_disconnect() / stop produces.
-//   Authentication failures (wrong password): retrying quickly won't help
-//   and some routers lock out, so the first retry already waits the cap.
+//   Authentication failures (wrong password: MIC failure, 802.1X, auth fail):
+//   retrying won't help and some routers lock out, so the machine stops (state stays Retrying, reason set,
+//   no timer) until new credentials arrive or the device reboots.
 #define CB_WIFI_REASON_LEAVE         8
 #define CB_WIFI_REASON_MIC_FAILURE   14
-#define CB_WIFI_REASON_4WAY_TIMEOUT  15
 #define CB_WIFI_REASON_8021X_FAILED  23
 #define CB_WIFI_REASON_AUTH_FAIL     202
-#define CB_WIFI_REASON_HANDSHAKE_TIMEOUT 204
 
 // What the device layer must do after an event. Several can be set; run in
 // this order: stop, disconnect, start, connect.
@@ -82,6 +81,7 @@ private:
     uint8_t   m_reason = 0;
     uint8_t   m_ip[4] = {};
     int       m_failures = 0;           // failed attempts since the last success
-    bool      m_in_flight = false;      // an attempt or a link exists (connect issued, no disconnect yet)
+    bool      m_halted = false;         // authentication failed: no retries until new credentials
+    bool      m_in_flight = false;     // an attempt or a link exists (connect issued, no disconnect yet)
     bool      m_leave_expected = false; // our own disconnect's event is still to come
 };

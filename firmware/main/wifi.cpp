@@ -17,6 +17,8 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "lwip/ip_addr.h"
+#include "ping/ping_sock.h"
 #include "nvs.h"
 #include "heap_log.h"
 #include "port.h"
@@ -37,10 +39,8 @@ static const char *TAG = "wifi";
 // The machine's reason numbers are esp_wifi's (it can't include the header: host tests)
 static_assert(CB_WIFI_REASON_LEAVE == WIFI_REASON_ASSOC_LEAVE, "wifi_state.h reason");
 static_assert(CB_WIFI_REASON_MIC_FAILURE == WIFI_REASON_MIC_FAILURE, "wifi_state.h reason");
-static_assert(CB_WIFI_REASON_4WAY_TIMEOUT == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT, "wifi_state.h reason");
 static_assert(CB_WIFI_REASON_8021X_FAILED == WIFI_REASON_802_1X_AUTH_FAILED, "wifi_state.h reason");
 static_assert(CB_WIFI_REASON_AUTH_FAIL == WIFI_REASON_AUTH_FAIL, "wifi_state.h reason");
-static_assert(CB_WIFI_REASON_HANDSHAKE_TIMEOUT == WIFI_REASON_HANDSHAKE_TIMEOUT, "wifi_state.h reason");
 
 // ---------------------------------------------------------------------------
 // Credentials in NVS: one blob, so a power loss leaves the old or the new
@@ -148,6 +148,14 @@ void wifi_get_status(WifiStatus *out)
     }
 }
 
+bool wifi_is_connected(void)
+{
+    s_snap_lock.Enter();
+    bool up = s_snap.state == (uint8_t)WifiState::Connected;
+    s_snap_lock.Exit();
+    return up;
+}
+
 static void post(const Msg &m)
 {
     // Handlers can't wait. A full queue means the task is wedged; the next
@@ -246,6 +254,73 @@ static void driver_connect(void)
     ESP_LOGI(TAG, "connecting to \"%s\" (%u byte password)", s_creds.ssid, (unsigned)s_creds.pass_len);
 }
 
+// ---- Link diagnostics ----
+// Gateway, mask, RSSI and a short ping of the gateway, to tell a weak or slow
+// link from a problem further up. Logged once per connect; with WIFI_DIAG
+// (main/CMakeLists.txt, -DCB_WIFI_DIAG=ON) also every WIFI_DIAG_PERIOD_MS.
+
+#ifndef WIFI_DIAG
+#define WIFI_DIAG 0
+#endif
+#define WIFI_DIAG_PERIOD_MS  5000
+#define GATEWAY_PINGS_AT_CONNECT 4
+
+static void on_ping_success(esp_ping_handle_t h, void *)
+{
+    uint32_t seq, ms;
+    uint8_t  ttl;
+    esp_ping_get_profile(h, ESP_PING_PROF_SEQNO, &seq, sizeof(seq));
+    esp_ping_get_profile(h, ESP_PING_PROF_TTL, &ttl, sizeof(ttl));
+    esp_ping_get_profile(h, ESP_PING_PROF_TIMEGAP, &ms, sizeof(ms));
+    ESP_LOGI(TAG, "gateway ping #%u: %u ms (ttl %u)", (unsigned)seq, (unsigned)ms, (unsigned)ttl);
+}
+
+static void on_ping_timeout(esp_ping_handle_t h, void *)
+{
+    uint32_t seq;
+    esp_ping_get_profile(h, ESP_PING_PROF_SEQNO, &seq, sizeof(seq));
+    ESP_LOGW(TAG, "gateway ping #%u: timed out", (unsigned)seq);
+}
+
+static void on_ping_end(esp_ping_handle_t h, void *)
+{
+    uint32_t sent, received, total_ms;
+    esp_ping_get_profile(h, ESP_PING_PROF_REQUEST, &sent, sizeof(sent));
+    esp_ping_get_profile(h, ESP_PING_PROF_REPLY, &received, sizeof(received));
+    esp_ping_get_profile(h, ESP_PING_PROF_DURATION, &total_ms, sizeof(total_ms));
+    ESP_LOGI(TAG, "gateway ping: %u sent, %u received", (unsigned)sent, (unsigned)received);
+    esp_ping_delete_session(h);
+}
+
+// Log the link and ping the gateway `pings` times (0: just the link line)
+static void log_link(int pings)
+{
+    esp_netif_ip_info_t info;
+    wifi_ap_record_t    ap;
+    if (!s_netif || esp_netif_get_ip_info(s_netif, &info) != ESP_OK)
+        return;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
+        ESP_LOGI(TAG, "link: gateway " IPSTR ", mask " IPSTR ", rssi %d dBm, channel %u",
+                 IP2STR(&info.gw), IP2STR(&info.netmask), (int)ap.rssi, (unsigned)ap.primary);
+    else
+        ESP_LOGW(TAG, "link: gateway " IPSTR ", mask " IPSTR ", no AP info", IP2STR(&info.gw), IP2STR(&info.netmask));
+    if (pings <= 0 || info.gw.addr == 0)
+        return;
+
+    esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
+    cfg.count       = (uint32_t)pings;
+    cfg.interval_ms = 500;
+    cfg.timeout_ms  = 2000;
+    ip_addr_set_ip4_u32(&cfg.target_addr, info.gw.addr);
+    esp_ping_callbacks_t cbs = {};
+    cbs.on_ping_success = on_ping_success;
+    cbs.on_ping_timeout = on_ping_timeout;
+    cbs.on_ping_end     = on_ping_end;
+    esp_ping_handle_t h;
+    if (esp_ping_new_session(&cfg, &cbs, &h) != ESP_OK || esp_ping_start(h) != ESP_OK)
+        ESP_LOGW(TAG, "couldn't start the gateway ping");
+}
+
 static void publish(void)
 {
     s_snap_lock.Enter();
@@ -281,6 +356,7 @@ static void apply(const WifiAction &a)
             const uint8_t *ip = s_machine.Ip();
             ESP_LOGI(TAG, "got IP %u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
             log_heap(TAG, "with Wi-Fi connected");
+            log_link(GATEWAY_PINGS_AT_CONNECT);
         }
         if (s_state_cb)
             s_state_cb(s_machine.GetState(), s_machine.Ip());
@@ -308,12 +384,19 @@ static void handle(const Msg &m)
 
 static void wifi_task(void *)
 {
+#if WIFI_DIAG
+    int64_t diag_at_us = 0;
+#endif
     while (1) {
         TickType_t wait = portMAX_DELAY;
         if (s_retry_armed) {
             int64_t left_us = s_retry_at_us - esp_timer_get_time();
             wait = left_us > 0 ? pdMS_TO_TICKS((left_us + 999) / 1000) : 0;
         }
+#if WIFI_DIAG
+        if (s_machine.GetState() == WifiState::Connected && wait > pdMS_TO_TICKS(WIFI_DIAG_PERIOD_MS))
+            wait = pdMS_TO_TICKS(WIFI_DIAG_PERIOD_MS);
+#endif
 
         Msg m;
         if (xQueueReceive(s_queue, &m, wait) == pdTRUE) {
@@ -322,6 +405,12 @@ static void wifi_task(void *)
             s_retry_armed = false;
             apply(s_machine.OnRetryTimer());
         }
+#if WIFI_DIAG
+        if (s_machine.GetState() == WifiState::Connected && esp_timer_get_time() >= diag_at_us) {
+            diag_at_us = esp_timer_get_time() + (int64_t)WIFI_DIAG_PERIOD_MS * 1000;
+            log_link(1);
+        }
+#endif
     }
 }
 

@@ -21,16 +21,16 @@ namespace
         return ConfigValidate(g.Data(), g.Size(), s ? s : &tmp);
     }
 
-    // Offset of the first op with `code` in Home's bindings, or 0
-    uint32_t FindHomeOp(const List<uint8_t> &b, uint32_t code)
+    // Offset of the `nth` (from 0) op with `code` in Home's bindings, or 0
+    uint32_t FindHomeOp(const List<uint8_t> &b, uint32_t code, int nth = 0)
     {
-        uint32_t n = U32(b, CB_HOME_BINDINGS), bindings = U32(b, CB_HOME_BINDINGS + 4);
+        uint32_t n = U32(b, CB_HOME_BINDINGS), bindings = U32(b, CB_HOME_BINDINGS_PTR);
         for (uint32_t i = 0; i < n; i++) {
-            uint32_t bind = bindings + i * 16;
-            uint32_t ops = U32(b, bind + 12);
-            for (uint32_t k = 0; k < U32(b, bind + 8); k++) {
-                uint32_t op = U32(b, ops + k * 4);
-                if (U32(b, op) == code)
+            uint32_t bind = bindings + i * (uint32_t)sizeof(cfgdata::binding);
+            uint32_t ops = U32(b, bind + CB_OFF(binding, ops));
+            for (uint32_t k = 0; k < U32(b, bind + CB_OFF(binding, ops_count)); k++) {
+                uint32_t op = U32(b, ops + k * (uint32_t)sizeof(cfgdata::op *));
+                if (U32(b, op) == code && nth-- == 0)
                     return op;
             }
         }
@@ -243,9 +243,9 @@ Fact("ConfigBlob Rejects Bad Pointers And Counts")
     Assert(Validate(With(CB_KEY_COUNT(CB_HOME_KEY(1), 1), 0)) != ConfigError::Ok);
     // Home bindings, devices and activities
     Assert(Validate(With(CB_HOME_BINDINGS, 5000)) == ConfigError::BadLimit);
-    Assert(Validate(With(CB_HOME_BINDINGS + 4, table)) == ConfigError::BadPointer);
-    Assert(Validate(With(CB_ROOT_DEVICES + 4, table - 4)) == ConfigError::BadPointer);
-    Assert(Validate(With(CB_ROOT_ACTIVITIES + 4, table - 8)) == ConfigError::BadPointer);
+    Assert(Validate(With(CB_HOME_BINDINGS_PTR, table)) == ConfigError::BadPointer);
+    Assert(Validate(With(CB_ROOT_DEVICES_PTR, table - 4)) == ConfigError::BadPointer);
+    Assert(Validate(With(CB_ROOT_ACTIVITIES_PTR, table - 8)) == ConfigError::BadPointer);
 }
 
 Fact("ConfigBlob Rejects Strings Without A Terminator")
@@ -258,20 +258,35 @@ Fact("ConfigBlob Rejects Strings Without A Terminator")
     Assert(Validate(b) == ConfigError::BadPointer);
 }
 
+Fact("ConfigBlob Caps A Script's Source")
+{
+    List<uint8_t> b = LoadSample();
+    // The sample's script op (op 8, a 12 byte source "return param"): its source_count
+    uint32_t count_off = 0;
+    for (uint32_t i = 32; i + 12 < Table(b); i += 4)
+        if (U32(b, i) == OP_SCRIPT && U32(b, i + 4) == 12) {
+            count_off = i + 4;
+            break;
+        }
+    Assert(count_off != 0);
+    Assert(Validate(With(count_off, CONFIG_MAX_SCRIPT + 1)) == ConfigError::BadLimit);
+    Assert(Validate(With(count_off, 0)) != ConfigError::Ok);                    // an empty source is no script
+}
+
 Fact("ConfigBlob Enforces Limits")
 {
     List<uint8_t> b = LoadSample();
-    uint32_t acts = U32(b, CB_ROOT_ACTIVITIES + 4);
-    // The first activity: devices at +8, pages at +16, bindings at +24
+    uint32_t acts = U32(b, CB_ROOT_ACTIVITIES_PTR);
+    // The first activity's device, page and binding counts
     Assert(Validate(With(CB_ROOT_DEVICES, CONFIG_MAX_DEVICES + 1)) == ConfigError::BadLimit);
     Assert(Validate(With(CB_ROOT_ACTIVITIES, CONFIG_MAX_ACTIVITIES + 1)) == ConfigError::BadLimit);
-    Assert(Validate(With(acts + 16, CONFIG_MAX_ACTIVITY_PAGES + 1)) == ConfigError::BadLimit);
-    Assert(Validate(With(acts + 16, 0)) == ConfigError::BadLimit);            // an activity needs a page
-    Assert(Validate(With(acts + 24, CONFIG_MAX_BINDINGS + 1)) == ConfigError::BadLimit);
-    Assert(Validate(With(acts + 8, CONFIG_MAX_DEVICES + 1)) == ConfigError::BadLimit);
+    Assert(Validate(With(acts + CB_OFF(activity, pages_count), CONFIG_MAX_ACTIVITY_PAGES + 1)) == ConfigError::BadLimit);
+    Assert(Validate(With(acts + CB_OFF(activity, pages_count), 0)) == ConfigError::BadLimit);            // an activity needs a page
+    Assert(Validate(With(acts + CB_OFF(activity, bindings_count), CONFIG_MAX_BINDINGS + 1)) == ConfigError::BadLimit);
+    Assert(Validate(With(acts + CB_OFF(activity, devices_count), CONFIG_MAX_DEVICES + 1)) == ConfigError::BadLimit);
 
-    // An op list over the limit (the first activity's didActivate: +48)
-    Assert(Validate(With(acts + 48, CONFIG_MAX_OPS + 1)) == ConfigError::BadLimit);
+    // An op list over the limit (the first activity's didActivate)
+    Assert(Validate(With(acts + CB_OFF(activity, didActivate_count), CONFIG_MAX_OPS + 1)) == ConfigError::BadLimit);
 }
 
 Fact("ConfigBlob Rejects Bad Ops")
@@ -285,22 +300,58 @@ Fact("ConfigBlob Rejects Bad Ops")
     Assert(Validate(With(hid, 0)) == ConfigError::BadOp);
     Assert(Validate(With(hid, 9)) == ConfigError::BadOp);
     Assert(Validate(With(hid, 0xFFFFFFFF)) == ConfigError::BadOp);
-    Assert(Validate(With(hid + 4, 4)) == ConfigError::BadOp);                  // hid mode 0..3
-    Assert(Validate(With(sw + 4, 2)) == ConfigError::BadIndex);                // activity 2 of 2
-    Assert(Validate(With(sw + 4, 0xFFFFFFFF)) == ConfigError::BadIndex);
+    Assert(Validate(With(hid + CB_OFF(hidKeyOp, mode), 4)) == ConfigError::BadOp);                  // hid mode 0..3
+    Assert(Validate(With(sw + CB_OFF(switchActivityOp, index), 2)) == ConfigError::BadIndex);       // activity 2 of 2
+    // Only the none sentinel is allowed past the activity count
+    Assert(Validate(With(sw + CB_OFF(switchActivityOp, index), 0xFFFFFFFE)) == ConfigError::BadIndex);
+    Assert(Validate(With(sw + CB_OFF(switchActivityOp, index), CONFIG_ACTIVITY_NONE)) == ConfigError::Ok);
+    Assert(Validate(With(sw + CB_OFF(switchActivityOp, index), 1)) == ConfigError::Ok);
+    // The sample has a real "none" switch (the second one on Home)
+    uint32_t none = FindHomeOp(b, 2, 1);
+    Assert(none && U32(b, none + CB_OFF(switchActivityOp, index)) == CONFIG_ACTIVITY_NONE);
+    Assert(CONFIG_ACTIVITY_NONE == 0xFFFFFFFF);
 
     // An op pointer too close to the end for its struct
     {
-        uint32_t bindings = U32(b, CB_HOME_BINDINGS + 4);
-        uint32_t ops = U32(b, bindings + 12);
+        uint32_t bindings = U32(b, CB_HOME_BINDINGS_PTR);
+        uint32_t ops = U32(b, bindings + CB_OFF(binding, ops));
         Assert(Validate(With(ops, Table(b) - 4)) != ConfigError::Ok);
     }
     // An activity's device index past the device list
     {
-        uint32_t acts = U32(b, CB_ROOT_ACTIVITIES + 4);
-        uint32_t devs = U32(b, acts + 12);
+        uint32_t acts = U32(b, CB_ROOT_ACTIVITIES_PTR);
+        uint32_t devs = U32(b, acts + CB_OFF(activity, devices));
         Assert(Validate(With(devs, 2)) == ConfigError::BadIndex);
         Assert(Validate(With(devs, 0xFFFFFFFF)) == ConfigError::BadIndex);
+    }
+}
+
+Fact("ConfigBlob Only Accepts http URLs In HTTP Ops")
+{
+    // The sample's httpPost and httpGet URLs (in device turnOff / turnOn lists)
+    const char *urls[] = { "http://tv.local/off", "http://avr.local/on" };
+    for (const char *url : urls) {
+        List<uint8_t> good = LoadSample();
+        uint32_t len = (uint32_t)strlen(url), at = 0;
+        for (uint32_t i = 0; i + len < Table(good); i++) {
+            if (memcmp(good.GetBuffer() + i, url, len + 1) == 0) {
+                at = i;
+                break;
+            }
+        }
+        Assert(at != 0);
+        Assert(Validate(good) == ConfigError::Ok);
+
+        // Same length, wrong scheme: not http:// (the bake rejects https:// too)
+        const char *bad[] = { "htxp://", "ftp:///", "Http://", "http:/x/", "http:", "" };
+        for (const char *scheme : bad) {
+            List<uint8_t> b = LoadSample();
+            uint32_t n = (uint32_t)strlen(scheme);
+            memcpy(b.GetBuffer() + at, scheme, n);
+            if (n < 7)
+                b.GetBuffer()[at + n] = 0;          // a short string: ends early
+            Assert(Validate(b) == ConfigError::BadOp);
+        }
     }
 }
 

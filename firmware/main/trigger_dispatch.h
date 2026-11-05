@@ -6,17 +6,19 @@
 // pushed onto the op queue in config order. Unmatched triggers are ignored.
 // Platform independent; the caller serialises calls.
 //
-// `param` is accepted so every source has one entry point, but it isn't used
-// yet: only script ops take it, and the queue doesn't carry it until they exist.
+// `param` (null: none) goes into the queue's param pool with each pushed list
+// and reaches every op of it as OpTask::param. A trigger whose param finds the
+// pool full is dropped and counted (OpQueue::ParamDropped), like a full queue.
 
 #include <stdint.h>
-#include "config_view.h"
+#include "config_types.h"
 #include "op_queue.h"
 
 class TriggerDispatcher
 {
 public:
-    void Init(const ConfigView *cfg, OpQueue *queue);
+    // `root`: a validated, relocated config (null: no config, nothing matches)
+    void Init(const cfgdata::configRoot *root, OpQueue *queue);
 
     // The selected activity (its bindings join Home's), or -1 for none.
     // False, and unchanged, for an index outside the config.
@@ -25,17 +27,23 @@ public:
     // True if some binding matches: the key gesture asks before deferring `tap`
     bool HasBinding(const char *control, const char *event) const;
 
-    // Push the matching op lists; returns how many bindings matched
+    // Push the matching op lists; returns how many bindings matched (a list
+    // that was then dropped still counts)
     int Trigger(const char *control, const char *event, const char *param);
 
 private:
+    struct Bindings
+    {
+        uint32_t                count;
+        const cfgdata::binding *items;      // null: none
+    };
+
     // `fn(binding)` for every match in one list; `fn` returns false to stop
-    template <class F> void ForMatches(const ConfigView::Array &list, const char *control, const char *event, F fn) const;
+    template <class F> void ForMatches(const Bindings &list, const char *control, const char *event, F fn) const;
     template <class F> void ForAllMatches(const char *control, const char *event, F fn) const;
 
-    const ConfigView *m_cfg      = nullptr;
+    const cfgdata::configRoot *m_root = nullptr;
     OpQueue          *m_queue    = nullptr;
-    ConfigView::Array m_home     = {};
-    ConfigView::Array m_activity = {};      // items null: none selected
-    ConfigView::Array m_activities = {};
+    Bindings          m_home     = {};
+    Bindings          m_activity = {};      // items null: none selected
 };

@@ -1,15 +1,15 @@
 // The trigger dispatcher and the global op queue (docs/standalone.md "Triggers
 // and bindings", "Actions"). The config is the sample baked by tools/bake,
-// read unrelocated (pointers are offsets: ConfigView adjusts by the blob's
-// address). Home's bindings: touch[0,0] tap, touch[1,0] tap + long,
-// touch[2,0] tap (switchActivity). Activity 0 ("Watch"): touch[5,0] tap
-// (script), macro1 tap (hidKey). Activity 1 ("Listen"): none.
+// relocated in place and read through the generated structs. Home's bindings:
+// touch[0,0] tap, touch[1,0] tap + long, touch[2,0] tap (switchActivity).
+// Activity 0 ("Watch"): touch[5,0] tap (script), macro1 tap (hidKey).
+// Activity 1 ("Listen"): none.
 
 #include "UnitTesting.h"
 #include "Core.h"
 #include "config_env.h"
-#include "config_view.h"
 #include "op_queue.h"
+#include "op_registry.h"
 #include "trigger_dispatch.h"
 
 using namespace SimpleLib;
@@ -17,36 +17,40 @@ using namespace config_env;
 
 namespace
 {
-    // The sample, a fake clock, and a recorder for the ops the queue runs
+    // The sample, a fake clock, the registry's executors (no HID keyboard, so
+    // hidKey is Done at once; delay really waits) and a recorder for the ops
+    // that start
     struct Rig
     {
         List<uint8_t>     bytes = LoadSample();
-        ConfigView        cfg   = ConfigView(bytes.GetBuffer(), (uintptr_t)bytes.GetBuffer());
+        const cfgdata::configRoot *root = nullptr;
         OpQueue           queue;
         TriggerDispatcher disp;
+        ExecCtx           exec = {};
         uint32_t          now = 1000;
         uint32_t          run[256];             // op codes in the order they ran
         int               ran = 0;
 
         Rig()
         {
-            OpHost h = {};
-            h.ctx    = this;
-            h.now_ms = [](void *c) { return ((Rig *)c)->now; };
-            h.run    = [](const ConfigView &, const uint8_t *op, uint32_t code, void *c) {
+            root = Relocate(bytes);
+            exec.ctx     = this;
+            exec.now_ms  = [](void *c) { return ((Rig *)c)->now; };
+            exec.started = [](const cfgdata::op *op, void *c) {
                 Rig *r = (Rig *)c;
                 if (r->ran < 256)
-                    r->run[r->ran++] = code;
+                    r->run[r->ran++] = op->op;
             };
-            queue.Init(&cfg, h);
-            disp.Init(&cfg, &queue);
+            exec.queue = &queue;
+            queue.Init(OpRegistryHost(&exec));
+            disp.Init(root, &queue);
         }
 
         // Poll until the queue is empty or stuck (a delay), at the current time
         void Drain() { for (int i = 0; i < 1000 && queue.Poll(); i++) {} }
     };
 
-    const uint32_t HID = 3, DELAY = 1, SWITCH = 2;      // op codes (consts.js OP)
+    const uint32_t HID = OP_HID_KEY, DELAY = OP_DELAY, SWITCH = OP_SWITCH_ACTIVITY;
 }
 
 Fact("Trigger Matches Home Binding Exactly")
@@ -173,6 +177,40 @@ Fact("Delay Survives The Clock Wrapping")
     r.now += 1;
     r.Drain();
     Assert(r.ran == 2);
+}
+
+Fact("Trigger Param Reaches The Ops And Is Freed Afterwards")
+{
+    Rig r;
+    // touch[1,0] long = a delay: it is Pending, so the param is still held
+    Assert(r.disp.Trigger("touch[1,0]", "long", "state=on") == 1);
+    Assert(r.queue.ParamsInUse() == 1);
+    r.queue.Poll();                                 // starts the delay
+    Assert(r.queue.ParamsInUse() == 1);
+    r.now += 1000;
+    r.Drain();
+    Assert(r.queue.ParamsInUse() == 0);
+
+    // No param (null or empty) never takes a slot
+    r.disp.Trigger("touch[0,0]", "tap", nullptr);
+    r.disp.Trigger("touch[0,0]", "tap", "");
+    Assert(r.queue.ParamsInUse() == 0);
+    Assert(r.queue.Count() == 2);
+}
+
+Fact("Trigger With A Param Is Dropped When The Pool Is Full")
+{
+    Rig r;
+    for (int i = 0; i < PARAM_SLOTS; i++)
+        r.disp.Trigger("touch[0,0]", "tap", "p");
+    Assert(r.queue.Count() == PARAM_SLOTS);
+    Assert(r.disp.Trigger("touch[0,0]", "tap", "q") == 1);     // it matched, but could not be queued
+    Assert(r.queue.Count() == PARAM_SLOTS);
+    Assert(r.queue.ParamDropped() == 1);
+    r.Drain();
+    Assert(r.queue.ParamsInUse() == 0);
+    r.disp.Trigger("touch[0,0]", "tap", "q");
+    Assert(r.queue.Count() == 1);
 }
 
 Fact("Full Queue Drops Whole Lists And Counts Them")

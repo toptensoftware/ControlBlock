@@ -19,3 +19,17 @@
 // All or nothing: on a failure (an image the store refuses) the store and
 // layout are as they were, and false is returned.
 bool ConfigApplyHome(const ConfigSummary &config, const uint8_t *blob, ImageStore *store, KeyLayout *layout);
+
+// Make activity `to` (-1 = none) the strip's pages 1..n: the page count becomes
+// 1 + its page count and all 15 keys of each page are set (empty ones too, so
+// the previous activity's keys never show). `root` is the validated blob
+// relocated to `blob`; `from` is the activity whose pages are there now (-1 =
+// none, e.g. after a Reset), whose images are freed unless Home or the new
+// activity uses them. New images are registered with the checked AddExternal
+// (ID = offset in the blob), once each. Home (page 0) is never touched.
+//
+// All or nothing: if the store refuses an image, the store, layout and page
+// count are as they were and false is returned. Also false for an index outside
+// the config.
+bool ConfigApplyActivity(const cfgdata::configRoot *root, const uint8_t *blob, int from, int to,
+                         ImageStore *store, KeyLayout *layout);

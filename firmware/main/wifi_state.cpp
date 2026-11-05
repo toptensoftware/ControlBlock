@@ -8,11 +8,11 @@ namespace
     bool is_auth_failure(uint8_t reason)
     {
         switch (reason) {
+        // Timeouts (4-way handshake, handshake) are not here: a weak signal
+        // causes them too, so they keep retrying
         case CB_WIFI_REASON_MIC_FAILURE:
-        case CB_WIFI_REASON_4WAY_TIMEOUT:
         case CB_WIFI_REASON_8021X_FAILED:
         case CB_WIFI_REASON_AUTH_FAIL:
-        case CB_WIFI_REASON_HANDSHAKE_TIMEOUT:
             return true;
         }
         return false;
@@ -40,6 +40,7 @@ WifiAction WifiMachine::OnCredentials(bool present)
     }
     m_in_flight = false;
     m_failures  = 0;
+    m_halted    = false;
     a.cancel_retry = true;
     memset(m_ip, 0, sizeof(m_ip));
 
@@ -107,8 +108,13 @@ WifiAction WifiMachine::OnDisconnected(uint8_t reason)
     m_state     = WifiState::Retrying;
     a.changed   = prev != WifiState::Retrying;
 
-    // Wrong password: straight to the cap. Otherwise 1 s, doubling.
-    a.retry_ms = is_auth_failure(reason) ? WIFI_RETRY_MAX_MS : backoff_ms(m_failures);
+    if (is_auth_failure(reason)) {
+        // Wrong password: stop until new credentials or a reboot
+        m_halted = true;
+        a.cancel_retry = true;
+        return a;
+    }
+    a.retry_ms = backoff_ms(m_failures);    // 1 s, doubling
     m_failures++;
     return a;
 }
@@ -116,7 +122,7 @@ WifiAction WifiMachine::OnDisconnected(uint8_t reason)
 WifiAction WifiMachine::OnRetryTimer()
 {
     WifiAction a;
-    if (m_state != WifiState::Retrying || m_in_flight)
+    if (m_state != WifiState::Retrying || m_in_flight || m_halted)
         return a;                           // stale timer
     m_in_flight = true;
     a.connect = true;                       // still Retrying: no event per attempt

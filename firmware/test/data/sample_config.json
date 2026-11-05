@@ -18,7 +18,9 @@
       { "color": "#aa2222" },
       null,
       { "color": "#225522", "icon": "#play", "label": "Copy", "tap": { "op": "hidKey", "keys": "ctrl+c" } },
-      { "color": "#222255", "icon": "#play", "label": "Hold","press": { "op": "hidKey", "keys": "shift+a", "mode": "hold" }, "release": { "op": "hidKey", "keys": "shift+a", "mode": "hold" } }
+      { "color": "#222255", "icon": "#play", "label": "Hold","press": { "op": "hidKey", "keys": "shift+a", "mode": "hold" }, "release": { "op": "hidKey", "keys": "shift+a", "mode": "hold" } },
+      null,
+      { "color": "#552222", "action": { "op": "switchActivity", "activity": null } }
     ]
   },
   "activities": {
@@ -32,6 +34,10 @@
       ],
       "bindings": [ { "control": "macro1", "event": "tap", "do": { "op": "hidKey", "keys": "ctrl+c" } } ]
     },
-    "Listen": { "pages": [ { "keys": [ { "icon": "#play" } ] } ] }
+    "Listen": {
+      "devices": ["avr"],
+      "hooks": { "willActivate": { "op": "delay", "ms": 20 } },
+      "pages": [ { "keys": [ { "icon": "#play" } ] } ]
+    }
   }
 }

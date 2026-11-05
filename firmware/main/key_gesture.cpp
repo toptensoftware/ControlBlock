@@ -16,8 +16,13 @@ void TouchControlName(int page, int key, char *buf)
 void GestureBank::Init(const GestureHost &host, uint32_t long_press_ms)
 {
     m_host = host;
-    memset(m_slot, 0, sizeof(m_slot));
+    Reset();
     SetLongPressMs(long_press_ms);
+}
+
+void GestureBank::Reset()
+{
+    memset(m_slot, 0, sizeof(m_slot));
 }
 
 void GestureBank::SetLongPressMs(uint32_t ms)

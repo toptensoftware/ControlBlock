@@ -65,6 +65,9 @@ CONFIG_ESP_WIFI_RX_BA_WIN=6
 CONFIG_ESP_WIFI_TX_BA_WIN=4
 CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_0=y
 CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+# The net worker (net_worker.cpp) speaks plain http:// only (the bake and the
+# blob validator reject https://): leave TLS out of esp_http_client.
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=n
 
 # GT911 touch
 CONFIG_ESP_LCD_TOUCH_MAX_POINTS=5
