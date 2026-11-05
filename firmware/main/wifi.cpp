@@ -1,8 +1,8 @@
 // Wi-Fi, device layer. Spec: docs/wifi.md. Hardware only: the rules live in
 // wifi_credentials.cpp and wifi_state.cpp, which the host tests cover.
 //
-// Everything that touches the driver runs on one task, pinned to core 0 (core
-// 1 belongs to the compositor and the bounce fill). The driver's event
+// Everything that touches the driver runs on one task, pinned to the driver's
+// core (WIFI_TASK_CORE). The driver's event
 // handlers and the protocol task (a credentials change) only post to its
 // queue.
 
@@ -26,9 +26,13 @@
 
 static const char *TAG = "wifi";
 
-// Core 0, like the protocol task: Wi-Fi's radio interrupt runs on the core
-// that started the driver
+// The same core as the driver's own task (sdkconfig): Wi-Fi's radio interrupt
+// runs on the core that started the driver. Core 0 (sdkconfig.defaults).
+#if CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_1
+#define WIFI_TASK_CORE   1
+#else
 #define WIFI_TASK_CORE   0
+#endif
 #define WIFI_TASK_PRIO   3
 #define WIFI_TASK_STACK  5120
 #define WIFI_QUEUE_LEN   8
@@ -265,10 +269,16 @@ static void driver_connect(void)
 #define WIFI_DIAG_PERIOD_MS  5000
 #define GATEWAY_PINGS_AT_CONNECT 4
 
+// 1 while a ping session runs: one at a time, so overlapping sessions don't skew
+// the times. Set by the Wi-Fi task, cleared on the esp_ping task.
+static uint32_t s_ping_busy;
+
+// Profile types are esp_ping's: SEQNO is 16 bits, TTL 8, the rest 32
 static void on_ping_success(esp_ping_handle_t h, void *)
 {
-    uint32_t seq, ms;
-    uint8_t  ttl;
+    uint16_t seq = 0;
+    uint8_t  ttl = 0;
+    uint32_t ms  = 0;
     esp_ping_get_profile(h, ESP_PING_PROF_SEQNO, &seq, sizeof(seq));
     esp_ping_get_profile(h, ESP_PING_PROF_TTL, &ttl, sizeof(ttl));
     esp_ping_get_profile(h, ESP_PING_PROF_TIMEGAP, &ms, sizeof(ms));
@@ -277,19 +287,21 @@ static void on_ping_success(esp_ping_handle_t h, void *)
 
 static void on_ping_timeout(esp_ping_handle_t h, void *)
 {
-    uint32_t seq;
+    uint16_t seq = 0;
     esp_ping_get_profile(h, ESP_PING_PROF_SEQNO, &seq, sizeof(seq));
     ESP_LOGW(TAG, "gateway ping #%u: timed out", (unsigned)seq);
 }
 
 static void on_ping_end(esp_ping_handle_t h, void *)
 {
-    uint32_t sent, received, total_ms;
+    uint32_t sent = 0, received = 0, total_ms = 0;
     esp_ping_get_profile(h, ESP_PING_PROF_REQUEST, &sent, sizeof(sent));
     esp_ping_get_profile(h, ESP_PING_PROF_REPLY, &received, sizeof(received));
     esp_ping_get_profile(h, ESP_PING_PROF_DURATION, &total_ms, sizeof(total_ms));
-    ESP_LOGI(TAG, "gateway ping: %u sent, %u received", (unsigned)sent, (unsigned)received);
+    ESP_LOGI(TAG, "gateway ping: %u sent, %u received, %u ms in all",
+             (unsigned)sent, (unsigned)received, (unsigned)total_ms);
     esp_ping_delete_session(h);
+    port::AtomicStore(&s_ping_busy, 0);
 }
 
 // Log the link and ping the gateway `pings` times (0: just the link line)
@@ -306,6 +318,8 @@ static void log_link(int pings)
         ESP_LOGW(TAG, "link: gateway " IPSTR ", mask " IPSTR ", no AP info", IP2STR(&info.gw), IP2STR(&info.netmask));
     if (pings <= 0 || info.gw.addr == 0)
         return;
+    if (!port::AtomicCompareExchange(&s_ping_busy, 0, 1))
+        return;                             // the last session is still running: skip this one
 
     esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
     cfg.count       = (uint32_t)pings;
@@ -316,9 +330,13 @@ static void log_link(int pings)
     cbs.on_ping_success = on_ping_success;
     cbs.on_ping_timeout = on_ping_timeout;
     cbs.on_ping_end     = on_ping_end;
-    esp_ping_handle_t h;
-    if (esp_ping_new_session(&cfg, &cbs, &h) != ESP_OK || esp_ping_start(h) != ESP_OK)
+    esp_ping_handle_t h = nullptr;
+    if (esp_ping_new_session(&cfg, &cbs, &h) != ESP_OK || esp_ping_start(h) != ESP_OK) {
         ESP_LOGW(TAG, "couldn't start the gateway ping");
+        if (h)
+            esp_ping_delete_session(h);
+        port::AtomicStore(&s_ping_busy, 0);
+    }
 }
 
 static void publish(void)

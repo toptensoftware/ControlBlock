@@ -20,26 +20,6 @@
                 "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;sdkconfig.release",
                 "SDKCONFIG": "./build/release/sdkconfig"
             }
-        },
-        {
-            "name": "debug-iram",
-            "displayName": "Debug + Wi-Fi/lwIP in IRAM",
-            "description": "debug with sdkconfig.wifi_iram layered on (own build dir, for comparing)",
-            "binaryDir": "build/debug-iram",
-            "cacheVariables": {
-                "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;sdkconfig.wifi_iram",
-                "SDKCONFIG": "./build/debug-iram/sdkconfig"
-            }
-        },
-        {
-            "name": "release-iram",
-            "displayName": "Release + Wi-Fi/lwIP in IRAM",
-            "description": "release with sdkconfig.wifi_iram layered on (own build dir, for comparing)",
-            "binaryDir": "build/release-iram",
-            "cacheVariables": {
-                "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;sdkconfig.release;sdkconfig.wifi_iram",
-                "SDKCONFIG": "./build/release-iram/sdkconfig"
-            }
         }
     ]
 }

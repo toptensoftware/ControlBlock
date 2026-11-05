@@ -387,7 +387,9 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(screen_init(1));        // the layout starts with one empty page
     log_heap(TAG, "after the screen (display driver)");
     config_boot_apply();                    // the stored config's Home, if any
+#if !NO_DISPLAY
     ESP_ERROR_CHECK(display_enable_backlight(true));
+#endif
 
 #if RUN_STRESS
     ESP_ERROR_CHECK(load_demo_images());

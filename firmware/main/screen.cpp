@@ -160,6 +160,13 @@ IRAM_ATTR static void preload_chunk(int y)
 // Bounce buffer fill: runs in the LCD DMA ISR.
 IRAM_ATTR static bool fill_lines(uint16_t *dest, int y, int count, void *ctx)
 {
+#if IDLE_FILL
+    // Diagnostic (screen.h): the panel keeps running but the bounce buffers are
+    // never refilled, so no PSRAM reads and almost no ISR time
+    if (y == 0)
+        s_frame_count = s_frame_count + 1;
+    return false;
+#endif
     uint32_t start = esp_cpu_get_cycle_count();
     BaseType_t woken = pdFALSE;
     const int y0 = y;
@@ -226,7 +233,13 @@ esp_err_t screen_init(int num_pages)
     s_num_pages = num_pages;
     ESP_LOGI(TAG, "%d pages", num_pages);
 
+#if NO_DISPLAY
+    // Diagnostic (main/CMakeLists.txt): no panel, so no fill ISR and no PSRAM reads
+    ESP_LOGW(TAG, "NO_DISPLAY build: the display is not started");
+    return ESP_OK;
+#else
     return display_init_bounce(fill_lines, NULL);
+#endif
 }
 
 int screen_page_count(void)

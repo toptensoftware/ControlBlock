@@ -5,6 +5,20 @@
 #include "waveshare_rgb_lcd_port.h"
 #include "screen_layout.h"
 
+// Diagnostic: screen_init() leaves the display off (no panel, no fill ISR) and
+// main leaves the backlight off. Build with -DCB_NO_DISPLAY=ON (main/CMakeLists.txt).
+#ifndef NO_DISPLAY
+#define NO_DISPLAY  0
+#endif
+
+// Diagnostic: the panel runs as normal (same signals and clock) but the bounce
+// fill returns at once, so the screen shows stale lines. Tells radio
+// interference from the panel apart from the fill's CPU and PSRAM load. Build
+// with -DCB_IDLE_FILL=ON (main/CMakeLists.txt).
+#ifndef IDLE_FILL
+#define IDLE_FILL  0
+#endif
+
 // Start the display in bounce-buffer mode with `num_pages` pages. Page
 // pixels come from the compositor (compositor.h): at each frame start the
 // bounce fill asks it for the pages in view. Call comp_init() first.

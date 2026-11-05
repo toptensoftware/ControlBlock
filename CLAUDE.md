@@ -18,7 +18,7 @@ ESP-IDF v6.0 at `C:\esp\v6.0\esp-idf`, tools in `C:\Espressif`. From PowerShell 
 ```powershell
 Remove-Item Env:MSYSTEM -ErrorAction SilentlyContinue   # idf.py refuses to run under Git Bash's MSYS variable
 . C:\Espressif\tools\Microsoft.v6.0.PowerShell_profile.ps1
-idf.py --preset debug build              # or: idf.py --preset release -p COMx flash monitor
+idf.py --preset debug build              # or: idf.py --preset release -p COM3 flash monitor (the board is on COM3)
 ```
 
 - Presets (`firmware/CMakePresets.json`): `debug` (`build/debug`, `-Og`, assertions on; the default) and `release` (`build/release`, `-O2`, `NDEBUG`; use for timing). `$env:IDF_PRESET = "release"` skips `--preset`.

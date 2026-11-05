@@ -14,11 +14,21 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #define DISPLAY_H_RES               (800)
 #define DISPLAY_V_RES               (480)
+// Pixel clock: 25 MHz (~61 fps) unless the build sets PIXEL_CLOCK_MHZ (-DCB_PIXEL_CLOCK_MHZ=n,
+// main/CMakeLists.txt; whole MHz). A slower clock gives each fill a bigger budget but fewer fps.
+#ifdef PIXEL_CLOCK_MHZ
+#define DISPLAY_PIXEL_CLOCK_HZ      (PIXEL_CLOCK_MHZ * 1000 * 1000)
+#else
 #define DISPLAY_PIXEL_CLOCK_HZ      (25 * 1000 * 1000)
+#endif
 #define DISPLAY_HSYNC_PULSE         (4)
 #define DISPLAY_HSYNC_BACK_PORCH    (8)
 #define DISPLAY_HSYNC_FRONT_PORCH   (8)
 #define DISPLAY_H_TOTAL             (DISPLAY_H_RES + DISPLAY_HSYNC_PULSE + DISPLAY_HSYNC_BACK_PORCH + DISPLAY_HSYNC_FRONT_PORCH)
+#define DISPLAY_VSYNC_PULSE         (4)
+#define DISPLAY_VSYNC_BACK_PORCH    (8)
+#define DISPLAY_VSYNC_FRONT_PORCH   (8)
+#define DISPLAY_V_TOTAL             (DISPLAY_V_RES + DISPLAY_VSYNC_PULSE + DISPLAY_VSYNC_BACK_PORCH + DISPLAY_VSYNC_FRONT_PORCH)
 #define DISPLAY_DATA_WIDTH          (16)
 #define DISPLAY_BOUNCE_BUFFER_LINES (15)
 #define DISPLAY_BOUNCE_BUFFER_SIZE  (DISPLAY_H_RES * DISPLAY_BOUNCE_BUFFER_LINES)
@@ -45,6 +55,10 @@
 #define DISPLAY_IO_RGB_DATA13       (GPIO_NUM_42)
 #define DISPLAY_IO_RGB_DATA14       (GPIO_NUM_41)
 #define DISPLAY_IO_RGB_DATA15       (GPIO_NUM_40)
+// Drive strength of the panel pins above (HSYNC, VSYNC, DE, PCLK, data). At the default (2)
+// their fast edges jam the 2.4 GHz radio (pings of 100s of ms, lost packets); 0 fixes it
+// and the picture is fine (wip/wip-wifi-latency.md).
+#define DISPLAY_PIN_DRIVE_CAP       (GPIO_DRIVE_CAP_0)
 
 // Called from the vsync ISR once a display_set_framebuffer() swap has completed
 // and the previously-displayed buffer is safe to draw into again.

@@ -105,6 +105,27 @@ if(CB_WIFI_DIAG)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE WIFI_DIAG=1)
 endif()
 
+# Diagnostic: everything but the display (screen.cpp NO_DISPLAY): no panel, no bounce fill ISR,
+# backlight left off. For telling display load apart from other causes (wip/wip-wifi-latency.md).
+#   idf.py --preset debug -DCB_NO_DISPLAY=ON build   (OFF turns it off again)
+if(CB_NO_DISPLAY)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE NO_DISPLAY=1)
+endif()
+
+# Diagnostic: the panel runs but the bounce fill does nothing (screen.cpp IDLE_FILL): the
+# panel's signals without the fill's CPU and PSRAM load (wip/wip-wifi-latency.md).
+#   idf.py --preset debug -DCB_IDLE_FILL=ON build   (OFF turns it off again)
+if(CB_IDLE_FILL)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE IDLE_FILL=1)
+endif()
+
+# Pixel clock experiment (waveshare_rgb_lcd_port.h PIXEL_CLOCK_MHZ): whole MHz, default 25 (~61 fps).
+# The fill budget follows it (~615 us at 20 MHz). idf.py has no -U: an empty value removes it.
+#   idf.py --preset release -DCB_PIXEL_CLOCK_MHZ=20 build   (-DCB_PIXEL_CLOCK_MHZ= goes back to 25)
+if(CB_PIXEL_CLOCK_MHZ)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE PIXEL_CLOCK_MHZ=${CB_PIXEL_CLOCK_MHZ})
+endif()
+
 # Once-a-second stats line (main.cpp STATS_LOG): fps, fill, compositor, images, net.
 #   idf.py --preset debug -DCB_STATS_LOG=ON build   (OFF turns it off again)
 if(CB_STATS_LOG)

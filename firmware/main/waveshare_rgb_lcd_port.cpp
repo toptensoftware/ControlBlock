@@ -67,7 +67,11 @@ static esp_err_t display_init_common(PFNBUFFERREADY ready_cb, PFNFILLLINES fill_
     s_fill_cb   = fill_cb;
     s_fill_ctx  = fill_ctx;
 
-    ESP_LOGI(TAG, "Install RGB LCD panel driver");
+    ESP_LOGI(TAG, "Install RGB LCD panel driver: pixel clock %d MHz (~%d.%d fps), fill budget %d us",
+             DISPLAY_PIXEL_CLOCK_HZ / 1000000,
+             DISPLAY_PIXEL_CLOCK_HZ / (DISPLAY_H_TOTAL * DISPLAY_V_TOTAL),
+             DISPLAY_PIXEL_CLOCK_HZ / (DISPLAY_H_TOTAL * DISPLAY_V_TOTAL / 10) % 10,
+             DISPLAY_BOUNCE_BUDGET_US);
     esp_lcd_rgb_panel_config_t panel_config = {};
     panel_config.clk_src                        = LCD_CLK_SRC_DEFAULT;
     panel_config.timings.pclk_hz                = DISPLAY_PIXEL_CLOCK_HZ;
@@ -76,9 +80,9 @@ static esp_err_t display_init_common(PFNBUFFERREADY ready_cb, PFNFILLLINES fill_
     panel_config.timings.hsync_pulse_width       = DISPLAY_HSYNC_PULSE;
     panel_config.timings.hsync_back_porch        = DISPLAY_HSYNC_BACK_PORCH;
     panel_config.timings.hsync_front_porch       = DISPLAY_HSYNC_FRONT_PORCH;
-    panel_config.timings.vsync_pulse_width       = 4;
-    panel_config.timings.vsync_back_porch        = 8;
-    panel_config.timings.vsync_front_porch       = 8;
+    panel_config.timings.vsync_pulse_width       = DISPLAY_VSYNC_PULSE;
+    panel_config.timings.vsync_back_porch        = DISPLAY_VSYNC_BACK_PORCH;
+    panel_config.timings.vsync_front_porch       = DISPLAY_VSYNC_FRONT_PORCH;
     panel_config.timings.flags.pclk_active_neg   = 1;
     panel_config.data_width                      = DISPLAY_DATA_WIDTH;
     panel_config.bounce_buffer_size_px           = DISPLAY_BOUNCE_BUFFER_SIZE;
@@ -111,6 +115,19 @@ static esp_err_t display_init_common(PFNBUFFERREADY ready_cb, PFNFILLLINES fill_
     panel_config.data_gpio_nums[15]              = DISPLAY_IO_RGB_DATA15;
 
     ESP_RETURN_ON_ERROR(esp_lcd_new_rgb_panel(&panel_config, &s_panel), TAG, "RGB panel create failed");
+
+    // Weak drive on the panel pins (DISPLAY_PIN_DRIVE_CAP: slower edges keep their noise
+    // off the Wi-Fi radio). The driver has just configured them, at the default (2).
+    {
+        const gpio_num_t pins[] = { panel_config.hsync_gpio_num, panel_config.vsync_gpio_num,
+                                    panel_config.de_gpio_num, panel_config.pclk_gpio_num };
+        for (gpio_num_t pin : pins)
+            ESP_ERROR_CHECK(gpio_set_drive_capability(pin, DISPLAY_PIN_DRIVE_CAP));
+        for (int i = 0; i < DISPLAY_DATA_WIDTH; i++)
+            ESP_ERROR_CHECK(gpio_set_drive_capability((gpio_num_t)panel_config.data_gpio_nums[i],
+                                                      DISPLAY_PIN_DRIVE_CAP));
+        ESP_LOGI(TAG, "panel pins at drive capability %d", (int)DISPLAY_PIN_DRIVE_CAP);
+    }
 
     // Register callbacks before init — the DMA engine starts on init.
     esp_lcd_rgb_panel_event_callbacks_t cbs = {};
