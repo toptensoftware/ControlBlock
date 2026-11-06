@@ -1,6 +1,6 @@
 # Activity and device management
 
-Status: Plan
+Status: Implement (steps 1-8 done; step 9 hardware checklist is the user's)
 
 ## Description
 Add the standalone-mode "activity" and "device" layers: the device holds a Home page plus
@@ -73,7 +73,8 @@ Triggers and bindings), `docs/config-format.md` (Home and activities; Devices).
   `queue` pointer "for ops that push more (switchActivity, script)".
 - Net ops (httpGet/httpPost/udpPacket/sendWol) are built and host tested, **not yet verified on
   hardware** (Wi-Fi hardware testing pending), so device turnOn/turnOff lists built from them are
-  unverified too.
+  unverified too. **Update 2026-11-06:** the net ops now work on the hardware (see CLAUDE.md, Net
+  ops); turnOn/turnOff lists are still to be run (step 9 g).
 
 **Missing (everything runtime):**
 - `OP_SWITCH_ACTIVITY` has **no executor** (`op_registry.cpp` entry is all nullptr: the op is
@@ -632,7 +633,7 @@ the agent flags it but carries on. No commits unless asked. Only PROPOSE CLAUDE.
   switch, `check_image` cost under the model lock, release build; (e) held key during a switch
   leaves no stuck HID key; (f) A->B->C pressed quickly: ops run in order, queue ring full case
   logs and does nothing; (g) device turnOn/turnOff with real equipment or a UDP/HTTP listener
-  (depends on the unverified net ops and Wi-Fi), shared device not power cycled, long `delay`
+  (the net ops and Wi-Fi work on the hardware since 2026-11-06), shared device not power cycled, long `delay`
   warm-up holds touches; (h) hosted `TAKE_CONTROL`/`RELEASE_CONTROL` mid-switch: Home only, no
   activity, mask kept; (i) swipe task and op task lock-order soak (no deadlock, no watchdog) with
   repeated rapid switches; (j) `RUN_STRESS` with a stored config containing activities. Results

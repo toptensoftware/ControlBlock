@@ -53,6 +53,33 @@ test("pipelined requests resolve in order", async () => {
     await cb.close();
 });
 
+test("a message that ends on a whole USB packet is followed by a zero-length packet", async () => {
+    // FakeDevice holds back a transfer that ends on a full packet until a short
+    // packet or a ZLP ends it, like the device: without the ZLP these hang
+    const { dev, cb } = await connected();
+    const sizes = [];
+    const send = dev.transferOut.bind(dev);
+    dev.transferOut = async (ep, data) => { sizes.push(new Uint8Array(data).length); return send(ep, data); };
+
+    for (const n of [52, 52 + 64, 52 + 512, 500])     // messages of 64, 128, 576 and 512 bytes
+        assert.equal((await cb.ping(new Uint8Array(n))).length, n);
+    assert.deepEqual(sizes, [64, 0, 128, 0, 576, 0, 512, 0]);
+
+    sizes.length = 0;
+    await cb.ping(new Uint8Array(53));                  // 65 bytes: a short packet ends it
+    assert.deepEqual(sizes, [65]);
+    await cb.close();
+});
+
+test("uploadConfig works when the last chunk ends on a whole USB packet", async () => {
+    // The case found on the hardware: a 53464-byte blob, whose last CONFIG_DATA was 4352 bytes
+    const { dev, cb } = await connected({ config: {} });
+    const r = await cb.uploadConfig(blobOf(53464));
+    assert.equal(r.uploaded, true);
+    assert.equal(dev.config.stored.size, 53464);
+    await cb.close();
+});
+
 test("a failed request throws ControlBlockError", async () => {
     const { cb } = await connected({ handler: () => ({ status: Status.NOT_FOUND, data: new Uint8Array(0) }) });
     await assert.rejects(cb.setKeys([{ page: 0, key: 0, bg: 99 }]),

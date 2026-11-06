@@ -1,6 +1,6 @@
 # Wi-Fi latency
 
-Status: Implement
+Status: Complete
 
 ## Description
 Pings from the ESP32 to the gateway take ~250 ms, where other machines on the same network
@@ -364,7 +364,7 @@ doesn't build the drivers, `wifi.cpp` or the presets). Each step builds debug an
 - [x] 5. **Hardware checks (user):** release build: `ping -n 50` at rest and while swiping, the
   picture (fine detail, colours, swiping), the `RUN_STRESS` run (late fills unchanged), and the
   gateway ping log lines now showing sane sequence numbers.
-- [ ] 6. **Pixel clock experiment** (for fill headroom, not needed for Wi-Fi): add
+- [x] 6. **Pixel clock experiment** (20 MHz adopted as the default 2026-11-05, may change after further tests) (for fill headroom, not needed for Wi-Fi): add
   `-DCB_PIXEL_CLOCK_MHZ=` overriding `DISPLAY_PIXEL_CLOCK_HZ` (the bounce budget already
   follows it). The user tries e.g. 20, 18 and 16 MHz (about 49, 44 and 39 fps) and judges swipe
   smoothness, `RUN_STRESS` late fills and fill headroom (budget ~492 µs at 25 MHz, ~615 µs at
@@ -387,11 +387,11 @@ doesn't build the drivers, `wifi.cpp` or the presets). Each step builds debug an
     Waiting on the user: adopt 20 MHz as the default, or try 18/16 first. If 20 MHz is adopted,
     consider (separately, with a stress run) larger compositor slices / status bands to use
     the longer gaps.
-- [ ] 7. **Docs** (propose the changes to the user first, Rule 4): CLAUDE.md (Hardware: panel pin
+- [x] 7. **Docs** (done 2026-11-05: CLAUDE.md and docs/wifi.md; default clock left at 25 MHz, 20 MHz recorded as tried) (propose the changes to the user first, Rule 4): CLAUDE.md (Hardware: panel pin
   drive and why; Firmware: the diagnostic switches and `CB_PIXEL_CLOCK_MHZ`; Open Items: Wi-Fi
   latency resolved, internal RAM figures (release: ~108 KB free with the driver up, ~106 KB
   connected, largest block 64 KB; see Notes, "Step 5"); the fill figures if the pixel clock
   changes); `docs/wifi.md` (Cores: the fill is on core
   0, not core 1; Internal RAM figures; a short "Latency" section with the cause and fix;
   IRAM opts tried and rejected); `docs/backlight-waveshare-support.md` doesn't need it.
-- [ ] 8. Rename this file to `wip/complete-wifi-latency.md`.
+- [x] 8. Rename this file to `wip/complete-wifi-latency.md`.

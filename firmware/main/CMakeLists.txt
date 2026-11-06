@@ -119,7 +119,7 @@ if(CB_IDLE_FILL)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE IDLE_FILL=1)
 endif()
 
-# Pixel clock experiment (waveshare_rgb_lcd_port.h PIXEL_CLOCK_MHZ): whole MHz, default 25 (~61 fps).
+# Pixel clock experiment (waveshare_rgb_lcd_port.h PIXEL_CLOCK_MHZ): whole MHz, default 20 (~49 fps).
 # The fill budget follows it (~615 us at 20 MHz). idf.py has no -U: an empty value removes it.
 #   idf.py --preset release -DCB_PIXEL_CLOCK_MHZ=20 build   (-DCB_PIXEL_CLOCK_MHZ= goes back to 25)
 if(CB_PIXEL_CLOCK_MHZ)

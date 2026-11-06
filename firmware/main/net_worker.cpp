@@ -30,6 +30,7 @@ static const char *TAG = "net";
 #define HTTP_BUF_SIZE   1024            // esp_http_client's receive and transmit buffers
 #define HEADER_NAME_MAX  48
 #define HEADER_VALUE_MAX 256
+#define HTTP_USER_AGENT  "ControlBlock"
 
 namespace
 {
@@ -120,10 +121,22 @@ namespace
         }
     }
 
-    // The request's headers (and the post's Content-Type) onto the client, replacing the last request's
+    // The request's headers (and the post's Content-Type) onto the client, replacing the last request's.
+    // Clearing also drops the client's own Host and User-Agent, so they go back first (the op's
+    // headers may override them). With no headers at all the client sends nothing, not even the
+    // request line, and then times out waiting for the reply.
     void set_headers(const NetRequest &r)
     {
         esp_http_client_delete_all_headers(s_client);
+        const char *host;
+        uint32_t host_len;
+        if (NetUrlHost(r.url, &host, &host_len) && host_len < HEADER_VALUE_MAX) {
+            char value[HEADER_VALUE_MAX];
+            memcpy(value, host, host_len);
+            value[host_len] = 0;
+            esp_http_client_set_header(s_client, "Host", value);
+        }
+        esp_http_client_set_header(s_client, "User-Agent", HTTP_USER_AGENT);
         if (r.kind == NetKind::HttpPost && r.content_type)
             esp_http_client_set_header(s_client, "Content-Type", r.content_type);
 
@@ -190,6 +203,19 @@ namespace
         ESP_LOGW(TAG, "http %s %s: %s", post ? "POST" : "GET", r.url, esp_err_to_name(err));
         drop_client();                          // start clean next time
         return o;
+    }
+
+    // One line per finished request (failures have also logged their cause)
+    void log_outcome(const NetRequest &r, const Outcome &o)
+    {
+        static const char *const kinds[]   = { "GET", "POST", "UDP", "WoL" };
+        static const char *const results[] = { "ok", "timed out", "failed" };
+        const char *what = r.kind == NetKind::HttpGet || r.kind == NetKind::HttpPost ? r.url : r.Host();
+        if (o.result == NetResult::Ok && (r.kind == NetKind::HttpGet || r.kind == NetKind::HttpPost))
+            ESP_LOGI(TAG, "%s %s: %u, %lu body bytes", kinds[(int)r.kind], what, (unsigned)o.status,
+                     (unsigned long)o.body_len);
+        else
+            ESP_LOGI(TAG, "%s %s: %s", kinds[(int)r.kind], what, results[(int)o.result]);
     }
 
     // ---- UDP and wake-on-LAN ----
@@ -274,8 +300,7 @@ namespace
                     s_stats.failed++;
                 xSemaphoreGive(s_lock);
 
-                ESP_LOGD(TAG, "kind %d: result %d, status %u, %lu body bytes", (int)req.kind, (int)o.result,
-                         (unsigned)o.status, (unsigned long)o.body_len);
+                log_outcome(req, o);
             }
         }
     }

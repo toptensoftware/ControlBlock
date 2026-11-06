@@ -50,3 +50,25 @@ ch422g_set(CH422G_BACKLIGHT, false);   // writes 0x1A to 0x38
 1. Can switching EXIO2 (backlight) cause the CH343P USB port to drop? For example, a supply dip from the backlight driver, or the backlight enable sharing a net with something on the UART USB path.
 2. Is there anything on the board that ties backlight power to the USB-UART bridge (reset or power)?
 3. Any recommended decoupling or a hardware revision with a fix?
+
+---
+
+## Waveshare's reply (received 2026-11-06)
+
+They checked the schematic and the CH422G datasheet:
+
+- Address mapping and output values are correct: `0x24` is the 7-bit system command address, `0x01` makes EXIO0-7 outputs, `0x38` is the EXIO output byte; EXIO2 high (`0x1E`) = backlight on, low (`0x1A`) = off.
+- **The CH422G does not use standard I2C ACK behaviour.** With the ESP-IDF I2C master driver, set `cfg.flags.disable_ack_check = true` on both CH422G device handles. Otherwise the driver may see a NACK and end the transaction before the output updates. Also log and check the return value of every init write.
+- The backlight is on at power-up because DISP has a 10 kΩ pull-up to 3.3 V and the CH422G EXIO pins default to inputs. Once the CH422G is configured, writing EXIO2 low should turn it off.
+- EXIO2/DISP is **not** connected to the CH343P USB data or reset path. EXIO5 only controls the native USB/CAN mux, not the CH343P port.
+- Likely cause: the backlight driver and the CH343P share the 3.3 V supply, so the backlight's startup current may dip the 3.3 V or 5 V rail and make the CH343P drop and reconnect. Powering both USB ports at once may also upset the board's power-switching circuit.
+
+Suggested tests (none done yet):
+
+1. Add `cfg.flags.disable_ack_check = true` to both CH422G handles (`ch422g.cpp`).
+2. Measure DISP/EXIO2: near 0 V when off, 3.3 V when on.
+3. Test with only the UART USB port connected (native USB unplugged).
+4. Use a stable 5 V supply; if possible scope the 3.3 V and VBUS rails while the backlight turns on.
+5. Diagnostic: a 47-220 µF capacitor between 3.3 V and GND near the backlight driver.
+
+They recommend finishing these before concluding whether it's the CH422G transaction or a supply dip. No hardware revision or schematic link between the backlight and the CH343P reset was offered.

@@ -2,7 +2,7 @@
 
 #include <string.h>
 #include "config_store.h"
-#include "crc32.h"
+#include "crc32_table.h"
 
 namespace
 {

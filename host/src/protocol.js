@@ -6,6 +6,7 @@ export const USB_VID   = 0x303A;    // Espressif, with a development PID
 export const USB_PID   = 0x4020;
 export const INTERFACE = 0;         // the vendor interface
 export const ENDPOINT  = 1;         // bulk OUT 0x01 / IN 0x81
+export const USB_PACKET_SIZE = 64;  // full-speed bulk packet: a write of a whole number of these is ended with a ZLP
 
 export const PROTOCOL_VERSION  = 1;
 export const MAGIC             = 0x4243;
@@ -152,7 +153,7 @@ export class MessageParser
     }
 }
 
-// CRC-32 as zlib's crc32() (the device's config check: firmware/main/crc32.h).
+// CRC-32 as zlib's crc32() (the device's config check: firmware/main/crc32_table.h).
 // Pass the previous result as `crc` to chain pieces. Always unsigned.
 const CRC_TABLE = (() => {
     const t = new Uint32Array(256);

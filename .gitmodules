@@ -13,3 +13,6 @@
 [submodule "lua"]
 	path = lua
 	url = https://github.com/lua/lua.git
+[submodule "PacketEncoder"]
+	path = PacketEncoder
+	url = git@github.com:toptensoftware/PacketEncoder

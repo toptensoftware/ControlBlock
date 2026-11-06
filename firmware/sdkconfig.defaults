@@ -35,7 +35,9 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # TinyUSB: the vendor interface for the host protocol (docs/protocol.md).
 # Bigger FIFOs than the defaults (64) so uploads stream; the endpoint buffer
-# lets one transfer carry several 64-byte packets.
+# lets one transfer carry several 64-byte packets. A transfer then only ends
+# when full or at a short packet, so hosts must send a ZLP after a write that
+# is a multiple of 64 bytes (docs/protocol.md, "Zero-length packets").
 CONFIG_TINYUSB_VENDOR_COUNT=1
 CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=4096
 CONFIG_TINYUSB_VENDOR_TX_BUFSIZE=2048

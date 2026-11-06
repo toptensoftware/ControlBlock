@@ -7,7 +7,7 @@ How images are stored, replaced and freed on the device is in [`image-assets.md`
 ## Design summary
 
 - **Transport:** A USB vendor interface with one bulk OUT and one bulk IN endpoint. It is reached through WebUSB in browsers and libusb (`usb` package) in Node.
-- **Messages:** Each message is a 12-byte header followed by a payload. Messages run back to back on a byte stream; the protocol does not rely on USB packet boundaries or zero-length packets.
+- **Messages:** Each message is a 12-byte header followed by a payload. Messages run back to back on a byte stream; the protocol does not rely on USB packet boundaries. A host write whose length is a whole number of 64-byte packets **must be followed by a zero-length packet** (see [Zero-length packets](#zero-length-packets)).
 - **Requests and responses:** The host sends requests. Every request gets exactly one response, in order. The host may have several requests in flight (pipelining).
 - **Events:** The device sends events (key presses, page changes) without being asked.
 - **Images:** Images are stored on the device under 32-bit IDs that the host chooses (`0` = none). Using a content hash (CRC-32, say) as the ID gives caching for free: the host asks the device which IDs it already has and uploads only the missing ones. Uploading to an ID that's already there replaces the image everywhere it's used. All images are **rle565** (`.rle565`) with alpha, `key_w`×`key_h`.
@@ -36,6 +36,12 @@ How images are stored, replaced and freed on the device is in [`image-assets.md`
 | Device class | `0xEF`/`0x02`/`0x01` (composite, IAD), so later interfaces need no change here |
 
 The device is a composite device. The vendor interface (interface 0) carries this protocol; standalone mode adds a HID keyboard interface (interface 1, EP 0x82 IN) alongside it, which is not part of this protocol. USB MIDI may be added later.
+
+### Zero-length packets
+
+The host **must** end every bulk OUT transfer whose length is a multiple of 64 (the max packet size) with a zero-length packet (ZLP), the usual USB way of marking the end of a transfer. With WebUSB or the `usb` package that is a second `transferOut` with an empty buffer, straight after the first. Other lengths end in a short packet and need nothing.
+
+Why: for speed, the device receives in 512-byte transfers (`CONFIG_TINYUSB_VENDOR_EPSIZE`), and a transfer completes only when it is full or a short packet ends it. Without the ZLP, the bytes after the last 512-byte boundary of such a write wait on the device until more data arrives: the request is never answered and the host times out. (Found with a 4352-byte `CONFIG_DATA`.) The host library does this in `ControlBlock._write`, and its test `FakeDevice` holds back data the same way the device does.
 
 ### Control request: reset stream
 

@@ -6,7 +6,7 @@
 #include "UnitTesting.h"
 #include "Core.h"
 #include "config_store.h"
-#include "crc32.h"
+#include "crc32_table.h"
 #include "flash_env.h"
 
 using namespace SimpleLib;

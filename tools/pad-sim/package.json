@@ -1,0 +1,16 @@
+{
+  "name": "pad-sim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Macro pad tooling: dump the C3 pad link, or play a simulated pad onto a serial port",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "serialport": "^13.0.0"
+  }
+}

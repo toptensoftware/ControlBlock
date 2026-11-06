@@ -32,7 +32,7 @@ The header is written **last**. Starting an upload erases the header sector firs
 
 | File | What |
 |---|---|
-| `firmware/main/crc32.h` | zlib-compatible CRC-32 (header only, pure) |
+| `firmware/main/crc32_table.h` | zlib-compatible CRC-32 (header only, pure) |
 | `firmware/main/config_store.cpp/.h` | the upload state machine and header format over an injected `ConfigFlash` (erase, write, read, busy). Pure, host tested |
 | `firmware/main/config_flash.cpp/.h` | device only: `ConfigFlash` over `esp_partition` |
 | `firmware/main/protocol.cpp/.h` | the three messages, the `GET_INFO` fields, restart after the commit response |
@@ -44,7 +44,7 @@ The header is written **last**. Starting an upload erases the header sector firs
 
 1. [x] Spec: `protocol.md`, `standalone.md`, this plan
 2. [x] Firmware tests: `TestConfigStore.cpp` (CRC vector, header, lazy erase, ordering, errors, interruption, readback failure, flash errors, busy), `TestProtocol.cpp` (messages, `GET_INFO`, `RESET_STREAM`, restart)
-3. [x] Firmware code: `crc32.h`, `config_store`, `protocol`; host tests pass
+3. [x] Firmware code: `crc32_table.h`, `config_store`, `protocol`; host tests pass
 4. [x] Host tests: `protocol.test.js` (encoders, CRC, `GET_INFO`), `ControlBlock.test.js` + `FakeDevice` config emulation (chunking, windowing, skip when unchanged, errors, `waitOpen`)
 5. [x] Host code
 6. [x] Bake tests (`upload.test.js` against `FakeDevice`), then `upload.js` and the CLI

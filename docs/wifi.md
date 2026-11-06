@@ -149,9 +149,9 @@ The state machine is separate from the driver calls (pure: events in, "connect n
 
 ### Cores, RAM and the bounce fill
 
-- **Internal RAM** is the tight resource; see [Internal RAM](#internal-ram) for the measured budget (~120 KB free with the driver up and connected).
+- **Internal RAM** is the tight resource; see [Internal RAM](#internal-ram) for the measured budget (~106 KB free connected, release build).
 - **Wi-Fi/lwIP buffers in PSRAM** (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`) would save the internal RAM but means heavy PSRAM writes while receiving, and **nothing else may write PSRAM heavily while fills run** (CLAUDE.md). Only do this with a `RUN_STRESS` pass that adds Wi-Fi traffic, and look at the late-fill counts.
-- **Cores:** keep the Wi-Fi driver and the lwIP task on core 0 (the defaults; check `CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_0` and `CONFIG_LWIP_TCPIP_TASK_AFFINITY`). Core 1 belongs to the compositor and the fill. The Wi-Fi radio interrupt runs on whichever core started the driver, so start it from a task pinned to core 0.
+- **Cores:** keep the Wi-Fi driver and the lwIP task on core 0 (the defaults; check `CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_0` and `CONFIG_LWIP_TCPIP_TASK_AFFINITY`). Core 1 belongs to the compositor, swipe and touch tasks; the bounce fill ISR runs on core 0 too (`app_main` creates the panel there). Moving Wi-Fi and lwIP to core 1 was tried and helped only part of the way (see [Latency](#latency)). The Wi-Fi radio interrupt runs on whichever core started the driver, so start it from a task pinned to core 0.
 - **Code in PSRAM:** the Wi-Fi driver is largely IRAM/flash code and has IRAM-safe parts; with `SPIRAM_FETCH_INSTRUCTIONS` on, the build and the connection work (WPA2 and WPA3 networks).
 - **Boot order:** `i2c_init`, `ch422g_init`, display, touch, USB, then Wi-Fi last, so a Wi-Fi problem can never keep the screen from coming up.
 
@@ -203,14 +203,34 @@ Boot heap log (`heap_log.h`, internal RAM free, release build):
 
 | Step | Free |
 |---|---|
-| before `esp_wifi_init()` | 152,879 (largest block 112,640) |
-| after init | 142,751 (largest 102,400) |
-| Wi-Fi driver up | 120,715 (largest 79,872) |
-| connected | 118,839 (largest 75,776) |
+| before `esp_wifi_init()` | 139,879 (largest block 98,304) |
+| after init | 129,751 |
+| Wi-Fi driver up | 107,715 (largest 67,584) |
+| connected | 105,831 (largest 64,512, minimum ever 103,119) |
+
+These are from 2026-11-05, with the net worker, ops and Lua work in. A debug build has about 95 KB free with the driver up. The earlier figures (152,879 before init, 118,839 connected) predate that work.
 
 - Fills at rest were unaffected by Wi-Fi coming up (61 fps, 0 over budget). Wi-Fi traffic during a swipe is not tested and not a concern: actions are a quick fire-and-forget after a press.
-- `ESP_WIFI_IRAM_OPT` and `ESP_WIFI_RX_IRAM_OPT` stay off. IRAM and internal RAM are one SRAM, so turning them on takes memory the driver needs (with the memory then tight, the Wi-Fi task couldn't be created or `esp_wifi_init()` failed with `ESP_ERR_NO_MEM`). They might fit now; untried.
+- `ESP_WIFI_IRAM_OPT` and `ESP_WIFI_RX_IRAM_OPT` stay off. IRAM and internal RAM are one SRAM, so turning them on takes memory the driver needs (with the memory then tight, the Wi-Fi task couldn't be created or `esp_wifi_init()` failed with `ESP_ERR_NO_MEM`). They were tried again during the latency work: they cost about 36 KB of internal RAM (about 59 KB free with the driver up) and did not help latency. Rejected.
 - More room if ever needed: trim the Wi-Fi/lwIP buffers (static RX, dynamic RX/TX, TCP windows, mailboxes), or move them to PSRAM (`SPIRAM_TRY_ALLOCATE_WIFI_LWIP`; needs a `RUN_STRESS` pass with Wi-Fi traffic).
+
+## Latency
+
+**Symptom:** pings to and from the device took 3-1400 ms with some loss (other clients on the same AP: 1 ms), even at -36 to -41 dBm with power save off.
+
+**Cause:** radio interference from the RGB panel's pins at the default drive strength (2), most likely the 25 MHz PCLK. **Fix:** drive strength 0 on all 20 panel pins (`DISPLAY_PIN_DRIVE_CAP` in `waveshare_rgb_lcd_port.h`). Pings are now 2-10 ms with no loss, 10-20 ms while swiping, and the picture and the `RUN_STRESS` fill figures are unchanged.
+
+How it was found (a bisection, kept in case it comes back):
+
+- The stock ESP-IDF station example on the same board and AP: fast. The same with ControlBlock's `sdkconfig.defaults`: fast. So not the AP, the board, or our settings.
+- ControlBlock with `-DCB_NO_DISPLAY=ON`: fast. So the display.
+- Wi-Fi and lwIP on core 1 (`CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_1`, `LWIP_TCPIP_TASK_AFFINITY_CPU1`): better but still bad. With the Wi-Fi IRAM optimisations as well: worse. So not core 0 CPU time or PSRAM code fetches alone.
+- `-DCB_IDLE_FILL=ON` (the panel clocking, the fill doing nothing): as bad as ever. So not the fill's load: the running panel signals themselves.
+- Drive strength 0: fixed.
+
+Not tried: drive 1, or weak drive on PCLK only (only worth it if the picture ever shows problems). If latency returns, re-check these two switches first.
+
+The pixel clock can also be lowered (`-DCB_PIXEL_CLOCK_MHZ`, see CLAUDE.md) to give the fill more headroom; that is separate from the Wi-Fi fix.
 
 ## Open questions
 

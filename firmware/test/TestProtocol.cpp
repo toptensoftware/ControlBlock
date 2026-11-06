@@ -8,7 +8,7 @@
 #include "store_env.h"
 #include "flash_env.h"
 #include "wifi_env.h"
-#include "crc32.h"
+#include "crc32_table.h"
 #include "config_env.h"
 
 using namespace SimpleLib;

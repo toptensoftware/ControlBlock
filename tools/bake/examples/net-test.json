@@ -12,7 +12,7 @@
       { "label": "GET\nhang", "tap": { "op": "httpGet", "url": "http://10.1.1.126:8000/hang" } },
       { "label": "GET\ndropped", "tap": { "op": "httpGet", "url": "http://10.255.255.1/" } },
       { "label": "GET\n5 MB", "tap": { "op": "httpGet", "url": "http://10.1.1.126:8000/big" } },
-      { "label": "GET\n2nd host", "tap": { "op": "httpGet", "url": "http://192.168.1.1/" } },
+      { "label": "GET\n2nd host", "tap": { "op": "httpGet", "url": "http://braddev:8000/get?host=2" } },
       { "label": "GET\nslow", "tap": { "op": "httpGet", "url": "http://10.1.1.126:8000/slow" } },
 
       { "label": "UDP\nIP", "tap": { "op": "udpPacket", "host": "10.1.1.126", "port": 9999, "data": "hello by ip" } },

@@ -17,8 +17,8 @@ How the firmware allocates, draws and swaps the pixel buffers the bounce fill re
 
 | Item | Value | Source |
 |---|---|---|
-| Frame | 16.4 ms (~61 fps), 32 chunks of 15 lines | CLAUDE.md, `waveshare_rgb_lcd_port.h` |
-| Fill budget per chunk | ~492 µs (aim < 250) | `DISPLAY_BOUNCE_BUDGET_US` |
+| Frame | 20.5 ms (~49 fps at 20 MHz; was 16.4 ms, ~61 fps at 25 MHz), 32 chunks of 15 lines | CLAUDE.md, `waveshare_rgb_lcd_port.h` |
+| Fill budget per chunk | ~615 µs at 20 MHz (was ~492; aim < 250) | `DISPLAY_BOUNCE_BUDGET_US` |
 | Fill now | ~71 µs at rest, ~200 µs mid-swipe | CLAUDE.md |
 | Page chunk (24,000 B) read from PSRAM | ~285 µs cold, ~68 µs preloaded | `screen.c` comment |
 | Page buffer | 800 x 400 x 2 = 640,000 B | `screen.h` |

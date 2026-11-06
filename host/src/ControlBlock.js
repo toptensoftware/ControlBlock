@@ -13,7 +13,7 @@
 
 import { Emitter } from "./Emitter.js";
 import {
-    USB_VID, USB_PID, INTERFACE, ENDPOINT, PROTOCOL_VERSION, REQ_RESET_STREAM,
+    USB_VID, USB_PID, INTERFACE, ENDPOINT, USB_PACKET_SIZE, PROTOCOL_VERSION, REQ_RESET_STREAM,
     PUT_IMAGE_PREFIX, CONFIG_DATA_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
     encodeWifiSet, decodeWifiCredentials, decodeWifiStatus,
     encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeConfigBegin, encodeConfigData, crc32,
@@ -428,16 +428,25 @@ export class ControlBlock extends Emitter
         return this._seq;
     }
 
-    // Writes go out in order, one transfer at a time
+    // Writes go out in order, one transfer at a time. A transfer of a whole
+    // number of packets is ended with a zero-length packet: the device only
+    // sees the end of a transfer at a short packet (docs/protocol.md)
     _write(bytes)
     {
         const p = this._writes.then(async () => {
-            const r = await this.device.transferOut(ENDPOINT, bytes);
-            if (r.status !== "ok")
-                throw new Error(`transferOut: ${r.status}`);
+            await this._transferOut(bytes);
+            if (bytes.length % USB_PACKET_SIZE === 0)
+                await this._transferOut(new Uint8Array(0));
         });
         this._writes = p.catch(() => { });
         return p;
+    }
+
+    async _transferOut(bytes)
+    {
+        const r = await this.device.transferOut(ENDPOINT, bytes);
+        if (r.status !== "ok")
+            throw new Error(`transferOut: ${r.status}`);
     }
 
     async _readLoop()

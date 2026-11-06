@@ -1,5 +1,5 @@
 // The small pure pieces of the network ops: the wake-on-LAN magic packet, the
-// header list splitter, and the response cap.
+// header list splitter, the url's host, and the response cap.
 
 #include <string.h>
 #include "UnitTesting.h"
@@ -83,6 +83,28 @@ Fact("Net Header Splitter Handles Null Empty And Malformed Lists")
     Assert(h.name_len == 2 && memcmp(h.name, "Ok", 2) == 0);
     Assert(h.value_len == 1 && h.value[0] == '1');
     Assert(!NetNextHeader(&cur, &h));
+}
+
+Fact("Net Url Host Is The Authority After The Scheme")
+{
+    const char *host;
+    uint32_t len;
+
+    Assert(NetUrlHost("http://10.1.1.126:8000/get?x=1", &host, &len));     // the port is kept (Host: header form)
+    Assert(len == 15 && memcmp(host, "10.1.1.126:8000", 15) == 0);
+
+    Assert(NetUrlHost("http://braddev/", &host, &len));
+    Assert(len == 7 && memcmp(host, "braddev", 7) == 0);
+
+    Assert(NetUrlHost("http://braddev", &host, &len));                     // no path
+    Assert(len == 7 && memcmp(host, "braddev", 7) == 0);
+
+    Assert(NetUrlHost("http://braddev?q=1", &host, &len));                 // query straight after the host
+    Assert(len == 7 && memcmp(host, "braddev", 7) == 0);
+
+    Assert(!NetUrlHost("http:///path", &host, &len));                      // empty host
+    Assert(!NetUrlHost("braddev/path", &host, &len));                      // no scheme
+    Assert(!NetUrlHost(nullptr, &host, &len));
 }
 
 Fact("Net Response Is Clipped To The Cap And Says So")

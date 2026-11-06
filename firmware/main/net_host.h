@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #define NET_HTTP_TIMEOUT_MS     10000           // a request that waits this long is given up on
 #define NET_HTTP_MAX_RESPONSE   (16 * 1024)     // a longer response is truncated (the status is kept)
@@ -141,4 +142,22 @@ inline bool NetNextHeader(const char **cursor, NetHeader *h)
     }
     *cursor = p;
     return false;
+}
+
+// The host (and port, if any) of an "scheme://host[:port][/path][?query]" url, as the
+// Host header wants it. False when there is no scheme or the host is empty.
+inline bool NetUrlHost(const char *url, const char **host, uint32_t *len)
+{
+    const char *p = url ? strstr(url, "://") : nullptr;
+    if (!p)
+        return false;
+    p += 3;
+    const char *end = p;
+    while (*end && *end != '/' && *end != '?' && *end != '#')
+        end++;
+    if (end == p)
+        return false;
+    *host = p;
+    *len  = (uint32_t)(end - p);
+    return true;
 }

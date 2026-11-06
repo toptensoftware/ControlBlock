@@ -11,7 +11,7 @@ Mostly design. Built so far: the bake tool, the config upload, loading the store
 - Take control and release (milestone step 1), host tested, **works on the hardware** (checks below passed): `TAKE_CONTROL` (`0x06`) / `RELEASE_CONTROL` (`0x07`), `NOT_HOSTED` (status 11) for layout requests while standalone, `GET_INFO` `flags` bit 2, `Protocol::SetHome` / `Hosted` / `PostDisconnect` / `ServiceDisconnect` (the one `Release()` path), `ProtocolHost::mode_changed`. `usb.cpp` reports unmount and suspend (`CONFIG_TINYUSB_SUSPEND_CALLBACK=y`), and `host_link.cpp` posts them. `host/` has `takeControl()` / `releaseControl()` and `info.hosted`; the demos take control first. In standalone, key events go to the gestures and bindings (step 2); while hosted they go to `Protocol::PostKey`.
 
 - Activity and device management (job `wip/wip-activity-device-management.md`), host tested, **not yet run on the hardware**: the `switchActivity` op (including the "none" target), device on/off tracking, the switch sequence, the page swap, glide and status text. See "Devices and activity switching" below.
-- The net ops (`httpGet`, `httpPost`, `udpPacket`, `sendWol`) are built and host tested but not verified on the hardware, so device `turnOn`/`turnOff` lists made from them are unverified too.
+- The net ops (`httpGet`, `httpPost`, `udpPacket`, `sendWol`) work on the hardware. Device `turnOn`/`turnOff` lists made from them are not yet run on the hardware (activity switching isn't either).
 
 **Next:** hardware checks of activity switching and the net ops; then the Lua script runtime (`script` ops stay no-ops until then). Freeing the blob on a hosted takeover is a later optimisation.
 

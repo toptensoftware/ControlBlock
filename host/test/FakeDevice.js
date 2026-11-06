@@ -2,7 +2,7 @@
 // testing the library without hardware. `handler(msg)` returns the response
 // { status, data } for a request, or null to stay silent.
 
-import { MessageParser, encodeMessage, Writer, Reader, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION, crc32 } from "../src/protocol.js";
+import { MessageParser, encodeMessage, Writer, Reader, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION, USB_PACKET_SIZE, crc32 } from "../src/protocol.js";
 
 export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true, wifiCredentials = false, hosted = false, config } = {})
 {
@@ -18,6 +18,8 @@ export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true
         w.u32(config.capacity).u32(config.size).u32(config.crc);
     return w.done();
 }
+
+const USB_RX_TRANSFER = 512;    // the firmware's receive transfer (CONFIG_TINYUSB_VENDOR_EPSIZE)
 
 // Requests that edit the layout, images or status bar: refused while standalone
 const LAYOUT_REQUESTS = [Msg.RESET, Msg.SET_STATUS_TEXT, Msg.PUT_IMAGE, Msg.FREE_IMAGES, Msg.SET_PAGE_COUNT, Msg.SET_KEYS, Msg.SET_PAGE];
@@ -57,6 +59,7 @@ export class FakeDevice
         this.maxPayload = maxPayload;
         this.handler = handler ?? (() => ({ status: Status.OK, data: new Uint8Array(0) }));
         this._parser = new MessageParser();
+        this._held = new Uint8Array(0);     // received but not delivered (see _receive)
         this._out = [];                 // chunks for transferIn
         this._waiter = null;
     }
@@ -76,9 +79,28 @@ export class FakeDevice
         return { status: "ok", bytesWritten: 0 };
     }
 
+    // Like the firmware's USB receive (docs/protocol.md, "Zero-length packets"): bytes arrive in
+    // 512-byte receive transfers of 64-byte packets, and a transfer only completes when it is full
+    // or a short packet (or a ZLP) ends it. So a transfer that ends on a whole packet leaves the
+    // bytes since the last 512 boundary undelivered until the next short packet or ZLP.
+    _receive(bytes)
+    {
+        if (!bytes.length) {
+            const held = this._held;
+            this._held = new Uint8Array(0);
+            return held;
+        }
+        const all = new Uint8Array(this._held.length + bytes.length);
+        all.set(this._held);
+        all.set(bytes, this._held.length);
+        const keep = bytes.length % USB_PACKET_SIZE ? 0 : all.length % USB_RX_TRANSFER;
+        this._held = all.slice(all.length - keep);
+        return all.subarray(0, all.length - keep);
+    }
+
     async transferOut(ep, data)
     {
-        for (const msg of this._parser.push(new Uint8Array(data))) {
+        for (const msg of this._parser.push(this._receive(new Uint8Array(data)))) {
             this.requests.push(msg);
             if (msg.type === Msg.SET_BACKLIGHT && msg.payload.length >= 1)
                 this.backlight = msg.payload[0] !== 0;

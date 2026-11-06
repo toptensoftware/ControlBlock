@@ -14,12 +14,13 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #define DISPLAY_H_RES               (800)
 #define DISPLAY_V_RES               (480)
-// Pixel clock: 25 MHz (~61 fps) unless the build sets PIXEL_CLOCK_MHZ (-DCB_PIXEL_CLOCK_MHZ=n,
-// main/CMakeLists.txt; whole MHz). A slower clock gives each fill a bigger budget but fewer fps.
+// Pixel clock: 20 MHz (~49 fps, fill budget ~615 us) unless the build sets PIXEL_CLOCK_MHZ
+// (-DCB_PIXEL_CLOCK_MHZ=n, main/CMakeLists.txt; whole MHz). A slower clock gives each fill a bigger
+// budget but fewer fps. 20 MHz was tried and looks fine; 25 MHz was the original.
 #ifdef PIXEL_CLOCK_MHZ
 #define DISPLAY_PIXEL_CLOCK_HZ      (PIXEL_CLOCK_MHZ * 1000 * 1000)
 #else
-#define DISPLAY_PIXEL_CLOCK_HZ      (25 * 1000 * 1000)
+#define DISPLAY_PIXEL_CLOCK_HZ      (20 * 1000 * 1000)
 #endif
 #define DISPLAY_HSYNC_PULSE         (4)
 #define DISPLAY_HSYNC_BACK_PORCH    (8)
