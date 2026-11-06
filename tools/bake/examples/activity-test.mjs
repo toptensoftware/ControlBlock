@@ -5,6 +5,11 @@
 //     node cli.js examples/activity-test.mjs --upload
 
 const SERVER = "10.1.1.126";
+
+// Plain key faces instead of the default gradient shade, which bands visibly in RGB565
+// on the dark faces. `color` alone draws a top-to-bottom shade; a face whose top and
+// bottom are the same colour is flat.
+const FLAT = true;
 const udp = data => ({ op: "udpPacket", host: SERVER, port: 9999, data });
 const get = query => ({ op: "httpGet", url: `http://${SERVER}:8000/get?${query}` });
 
@@ -47,7 +52,25 @@ function page(tag, p, color, overrides = {})
 
 const ping = (name) => ({ label: `Ping\n${name}`, color: "#264653", tap: udp(`ping from ${name}`) });
 
-export default {
+// Every look's `color` (keys, defaults, pressed) becomes a flat face
+function flatten(v)
+{
+    if (Array.isArray(v))
+        return v.map(flatten);
+    if (v === null || typeof v !== "object")
+        return v;
+    const out = {};
+    for (const [k, x] of Object.entries(v))
+    {
+        if (k === "color" && typeof x === "string")
+            out.face = { top: x, bottom: x };
+        else
+            out[k] = flatten(x);
+    }
+    return out;
+}
+
+const config = {
     version: 1,
     defaults: { color: "#22262e", pressed: { color: "#3a86ff" } },
 
@@ -131,3 +154,5 @@ export default {
         },
     },
 };
+
+export default FLAT ? flatten(config) : config;

@@ -410,8 +410,9 @@ against real equipment, Wi-Fi-dependent turnOn ops.
   typical, under 200 µs during a switch, 200-250 µs during a swipe (budget 615), so the `check_image` cost under the
   model lock is fine and no timing log is needed. Not tested: real equipment (g3); the user marked the job complete.
 - Follow-ups outside this job: a busy indicator on the device while the op queue runs (the user's idea, after the
-  slow switches); bake checks for device limits; the two OPEN items above; possible banding on gradient keys
-  (`wip/wip-display-drive-strength.md`).
+  slow switches); bake checks for device limits; the two OPEN items above. The suspected display problem on the
+  gradient keys turned out to be plain RGB565 gradient banding (flat faces look perfect; `FLAT` in
+  `activity-test.mjs`), so its IPI doc was deleted.
 
 ## CLAUDE.md proposals (propose only; CLAUDE.md NOT edited, awaiting the user's confirmation)
 1. **Firmware module list**, add entries for: `activity_switch.cpp/.h` (pure switch plan: list refs in spec

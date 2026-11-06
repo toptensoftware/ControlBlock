@@ -394,6 +394,9 @@ The browser run of the pipeline (`sharp`, rle565 encoder, Lua checker) is untest
 
 - **Look properties** (above) are a proposal and need to be checked against what node-buttonImage and the demo's face SVG can produce at 128x128; in particular the exact split into background and foreground, and the default pressed look.
 - **The defaults chain** (root → activity/home → page → key) is proposed and needs a decision.
+- **Face shade bands:** a plain `color` gets a gentle top-to-bottom shade, which bands visibly in RGB565 on dark
+  faces (seen on the hardware, 2026-11-07; flat faces look clean). Options: make a plain `color` flat by default
+  (a `face` with `top`/`bottom` still gives a gradient), or dither the face when it is encoded.
 - **Control and event names** for the pad and encoder wait on the second MCU's serial format.
 - **HID key names** (including consumer/media keys) are decided when HID is built.
 - **Script API** is still being decided; the `param` global and the module names here follow `standalone.md` but are not final.
