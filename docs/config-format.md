@@ -222,9 +222,31 @@ Every op has an `op` code. Properties beyond those listed are errors.
 ```
 
 - `file` is read at bake time and its **source** goes into the blob (the device stores Lua source, not bytecode).
-- The script receives the trigger's `param` string as a global. The API is `http.get`/`http.post`, `udp`, `hid`, `delay`, `switchActivity` ([`standalone.md`](standalone.md#actions); the surface is still being decided).
-- Stage 1 compiles each script with a Lua 5.4 compiler and fails on a syntax error, naming the path and the Lua error line. Identical sources are stored once.
+- The script receives the trigger's `param` string as a global.
+- Stage 1 compiles each script with a Lua 5.4 compiler and fails on a syntax error, naming the path and the Lua error line. Identical sources are stored once. A source is at most **16 KB** (16384 bytes; the device refuses a bigger one too).
 - Only `script` ops use `param`. Other ops ignore it.
+- Lua 5.4 with 64-bit integers and doubles. Available: base (without `dofile`, `loadfile`, `load`, `require`), `string`, `table`, `math`, `utf8`. No `io`, `os`, `package`, `debug` or `coroutine`. Each script has its own globals, which last until the next takeover or release (not shared between scripts).
+
+#### Script API
+
+The API mirrors the ops, so a script can do anything an op can. Every call takes its arguments positionally or as one table of named fields (`http.get{ url = "http://x/" }`). A failure returns `nil, err`; calls don't raise. Calls run in script order.
+
+| Call | Returns | Notes |
+|---|---|---|
+| `delay(ms)` | `true` | 1..60000. Waits |
+| `switchActivity(name)` | `true`, or `nil, err` | `nil` selects no activity. Queued at the tail of the op queue (runs after the script); `nil, err` if the queue is full or the name is unknown |
+| `hid.key(keys [, mode])` | `true` | `keys` is a chord as in `hidKey`; `mode` is `"tap"` (default, waits until the key is up and settled), `"down"` or `"up"`. `"hold"` is refused: it only means something under `press`/`release` |
+| `http.get(url [, headers])` | `body, status` | Waits for the reply (10 s timeout; `nil, "timeout"`). Bodies over 16 KB are truncated (status still returned) |
+| `http.get{ url=, headers=, reply=false }` | `true` | Fire and forget, like the `httpGet` op |
+| `http.post(url, body [, contentType [, headers]])` | `true` | Fire and forget. `contentType` defaults to `application/x-www-form-urlencoded`. Body up to 4096 bytes |
+| `udp.send(host, port, data)` | `true` | `data` is a string or `{ hex = "de ad be ef" }` (spaces allowed), 1..4096 bytes |
+| `wol.send(mac [, broadcast])` | `true` | `mac` as in `sendWol` |
+| `log(...)`, `print(...)` | | Joined with tabs, written to the device log |
+| `millis()` | integer | Milliseconds since boot |
+
+`headers` is a table of `{ Name = "value" }`. URLs must be `http://`. Fire-and-forget calls don't wait, so a script that only posts runs straight through.
+
+Limits: a script that runs 100 ms without waiting is stopped, a run is cancelled after 30 s in all, and the Lua heap is capped at 256 KB. A stopped or failed script is logged and the queue carries on.
 
 ## Bindings
 
@@ -300,7 +322,7 @@ Errors:
 - More than 15 keys on a page; an activity with no pages; more pages than the firmware allows.
 - `switchActivity` in an activity hook or a device `turnOn`/`turnOff` list (also through `use`).
 - `hold` outside `press`/`release`; both `action` and `tap`; `hidKey` with an unknown key name; bad MAC, port or URL scheme.
-- A `script` with both or neither of `lua` and `file`; a missing file; a Lua syntax error.
+- A `script` with both or neither of `lua` and `file`; a missing file; a Lua syntax error; a source over 16 KB.
 - A missing icon/SVG file, or a render that fails.
 - A `control` of the form `touch[...]` in `bindings`.
 - Resolved config exceeds a device limit: images or pages (the PSRAM image store and the three page buffers are the real limit), blob size (the partition), op list length. Limits are read from the firmware's published constants (the same source as GET_INFO), so they stay in one place.
@@ -399,7 +421,6 @@ The browser run of the pipeline (`sharp`, rle565 encoder, Lua checker) is untest
   (a `face` with `top`/`bottom` still gives a gradient), or dither the face when it is encoded.
 - **Control and event names** for the pad and encoder wait on the second MCU's serial format.
 - **HID key names** (including consumer/media keys) are decided when HID is built.
-- **Script API** is still being decided; the `param` global and the module names here follow `standalone.md` but are not final.
 - **Named actions with arguments** are out of scope (a script reads `param` instead).
 - **Wildcard or templated bindings** (e.g. one binding for `macro1..6`) are the authoring layer's job and are not in this format.
 - **Multiple files:** `$include` for splitting a big config isn't specified. Reusable pieces are `actions`, `defaults` and, in the JS form, ordinary imports.

@@ -55,7 +55,7 @@ side. (Decided: the C3 firmware lives in this repo, in `pad/`.)
   `docs/macro-pad.md` (wire protocol). Also `.gitmodules` lists `PacketEncoder` with an SSH URL.
 - **Other jobs, for context:** `wip/complete-wifi-latency.md` is closed (cause: RGB panel pin drive strength; default
   pixel clock now 20 MHz, may change). `complete-activity-device-management.md` (step 9 = hardware checklist, passed) and
-  `wip-lua-scripts.md` (step 10 docs proposal waiting for the user's OK) are built and host tested but not run on the
+  `complete-lua-scripts.md` (docs applied 2026-11-07) are built and host tested but not run on the
   hardware; net-op hardware tests are the next thing the user will do.
 
 ## Notes

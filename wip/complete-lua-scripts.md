@@ -1,6 +1,6 @@
 # Lua script runtime (`script` op)
 
-Status: Implement (steps 1 to 9 done; step 10 is the docs proposal, waiting on the user)
+Status: Complete (built and host tested; hardware checks listed below and in CLAUDE.md Open Items)
 
 ## Description
 Build phase B of `docs/standalone-ops-plan.md`: the `script` op runs embedded Lua 5.4 source from the config blob, with an API that mirrors the ops. Phase A (net ops, executors, `param`, registry, activity switching) is built and host tested; it is not yet verified on the hardware, but the user says that must not block this work. Hardware-only checks are collected at the end for the user to run later.
@@ -48,7 +48,7 @@ Each step ends building (host tests green; device build where files change). Tes
 - [x] 7. **`script` in the queue.** The registry's `script` entry calls `ScriptHost`. `TestScriptQueue.cpp`: holds the queue while waiting, error ends only that op, takeover cancels and abandons the reply, queued switch ops run after the script. `Standalone` owns the `ScriptHost` (`StandaloneHost::script` platform; realloc null = scripts off) and closes it on every re-arm; three tests in `TestStandalone.cpp`.
 - [x] 8. **Device wiring.** `standalone_task.cpp`: PSRAM realloc (`heap_caps_realloc`), log to `ESP_LOGI("lua")`, op task stack 4096 -> 12288. `net_worker.cpp`: 16 KB PSRAM response buffer for waited requests, `take_reply`/`abandon`. `lua_include.h` works around this toolchain leaving `LLONG_MAX` undefined in C++. Debug and release device builds: 0 errors (one harmless linker warning that `times` is not implemented, from Lua's seed code).
 - [x] 9. **Bake side.** `MAX_SCRIPT_BYTES` = 16384 (bake) = `CONFIG_MAX_SCRIPT` (blob validator, now enforced; tests on both sides). A bake test pins the checker to Lua 5.4 with 64-bit integers. The minor version is not readable from wasmoon.
-- [ ] 10. **Docs proposal** (not applied; see "Proposed doc changes" below). Waiting for the user's OK.
+- [x] 10. **Docs.** Approved by the user and applied 2026-11-07 (CLAUDE.md, standalone.md, config-format.md, standalone-ops-plan.md). The script API table went into config-format.md only; standalone.md links to it (one copy).
 
 ## Results
 - Host tests: 552 pass (debug and release). Bake: 139 pass. Device debug and release builds: 0 errors. App size 0x114490 (release), 46% of the app partition free.
@@ -72,7 +72,7 @@ Each step ends building (host tests green; device build where files change). Tes
 ### Hardware checks (for the user, later)
 - Late-fill counts and internal RAM with scripts running (new `RUN_STRESS` script-loop case), Lua PSRAM writes vs the bounce fill.
 - Button-to-request latency; a script holding the queue during `http.get`; held key released on takeover.
-- Requires the net ops to be verified first (still pending).
+- Net ops verified on the hardware 2026-11-06 and activity switching 2026-11-07, so these can run now.
 - Op task stack (12 KB): check `uxTaskGetStackHighWaterMark` with a deeply recursive script.
 - `http.get` reply path end to end (PSRAM response buffer, timeout, abandon on takeover).
 - Key-event latency while a script is mid-slice (standalone lock held).
