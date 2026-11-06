@@ -1,16 +1,32 @@
 // Key images for the device: RGBA in, rle565 (with alpha) out, with a
-// content ID. Node only (sharp, the rle565 encoder). docs/image-assets.md.
+// content ID. Node only (sharp, node-buttonImage, the rle565 encoder).
+// docs/image-assets.md.
 
-import zlib from "node:zlib";
 import sharp from "sharp";
 import { packRle } from "rle565";
+import { ButtonImage } from "@toptensoftware/node-buttonImage";
+import { crc32 } from "./protocol.js";
 
 // The image's ID: CRC-32 of the encoded file, 0 mapped to 1 (0 means none).
 // The same image gets the same ID in every session and app.
 export function imageId(data)
 {
-    const crc = zlib.crc32(data) >>> 0;
+    const crc = crc32(data);
     return crc === 0 ? 1 : crc;
+}
+
+// A node-buttonImage definition (its settings object) rendered to
+// size x size RGBA
+export async function renderButtonImage(def, size)
+{
+    const rgba = await new ButtonImage(def).render(size, size, 4);
+    return new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+}
+
+// The same, encoded and ready to upload: { id, data }
+export async function buttonKeyImage(def, size)
+{
+    return keyImage(await renderButtonImage(def, size), size, size, size);
 }
 
 // Encode width x height RGBA pixels to rle565

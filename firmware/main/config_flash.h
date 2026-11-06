@@ -1,7 +1,7 @@
 #pragma once
 
 // Device side of the config store: the `config` flash partition
-// (firmware/partitions.csv) as a ConfigFlash. Spec: docs/config-upload-plan.md.
+// (firmware/partitions.csv) as a ConfigFlash. Spec: docs/standalone.md.
 
 #include "config_store.h"
 

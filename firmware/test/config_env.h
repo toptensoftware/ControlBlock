@@ -1,6 +1,6 @@
 #pragma once
 
-// Test environment for the config blob: the sample blob baked by tools/bake
+// Test environment for the config blob: the sample blob baked by host/src/bake
 // (data/sample_config.json -> data/sample_config.bin), helpers to read and
 // rebuild it, and a buffer that faults on any read past its end.
 

@@ -1,6 +1,6 @@
 // The config upload: CRC-32, the partition's header, and the upload state
 // machine over a fake NOR flash (docs/protocol.md "Configuration upload",
-// docs/config-upload-plan.md)
+// docs/standalone.md "Config storage")
 
 #include <string.h>
 #include "UnitTesting.h"

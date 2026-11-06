@@ -2,6 +2,7 @@
 // testing the library without hardware. `handler(msg)` returns the response
 // { status, data } for a request, or null to stay silent.
 
+import { ControlBlock } from "../src/ControlBlock.js";
 import { MessageParser, encodeMessage, Writer, Reader, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION, USB_PACKET_SIZE, crc32 } from "../src/protocol.js";
 
 export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true, wifiCredentials = false, hosted = false, config } = {})
@@ -241,4 +242,17 @@ export class FakeDevice
             return { status: "ok", data: new DataView(new ArrayBuffer(0)) };
         return { status: "ok", data: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength) };
     }
+}
+
+// An `open(options)` that connects a ControlBlock to `dev` (what ControlBlock.open does for a
+// real device), for code that takes an injected opener (uploadBlob, the cli). Each call's
+// options are pushed onto `opened`.
+export function fakeOpener(dev, { opened = [], timeoutMs = 500 } = {})
+{
+    return async options => {
+        opened.push(options);
+        const cb = new ControlBlock(dev, { timeoutMs });
+        await cb.connect();
+        return cb;
+    };
 }

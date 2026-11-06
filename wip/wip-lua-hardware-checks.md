@@ -22,7 +22,7 @@ user to run later:
 ## Flagged assumptions
 - The stress churn script and its 18 ms busy / 1 tick idle pattern stand in for a busy script; real scripts are
   shorter. If the cases are fine, a real config is too.
-- `tools/test-server/net_test_server.py` (gitignored) gains `/mute` (GET state, POST toggle) and millisecond timestamps for the
+- `examples/test-server/net_test_server.py` gains `/mute` (GET state, POST toggle) and millisecond timestamps for the
   latency checks.
 
 ## Plan
@@ -32,15 +32,15 @@ user to run later:
 - [x] 2. `RUN_STRESS` script cases: `lua churn, at rest`, `lua churn, mid-swipe`, `lua + keys, mid, flush`; each logs a
   `lua:` line under its `stress` line. The churn task is `stress_lua` (core 0, prio 3, 12 KB). `s_script_runs` is
   `volatile`: GCC rejects `++` on it (`-Werror=volatile`), so it is `x = x + 1` (one writer).
-- [x] 3. `tools/bake/examples/script-test.mjs` (bakes: 81,516 bytes); `examples/test-common.mjs` now holds `SERVER`,
+- [x] 3. `examples/script-test.mjs` (bakes: 81,516 bytes); `examples/test-common.mjs` now holds `SERVER`,
   `udp`/`get` and `flatten`, shared with `activity-test.mjs` (its bake is byte-identical to before).
-  `tools/test-server/net_test_server.py`: ms timestamps, `/mute`.
+  `examples/test-server/net_test_server.py`: ms timestamps, `/mute`.
 - [x] 4. Builds: debug, release and debug + `RUN_STRESS` all 0 errors (the debug build dir was switched back to
   `CB_RUN_STRESS=OFF`). Host tests 553 pass, bake 139 pass.
 
 ## Hardware checklist (for the user)
-Before you start: `python tools/test-server/net_test_server.py` on the PC (10.1.1.126; change `SERVER` in
-`tools/bake/examples/test-common.mjs` if the address has moved).
+Before you start: `python examples/test-server/net_test_server.py` on the PC (10.1.1.126; change `SERVER` in
+`examples/test-common.mjs` if the address has moved).
 
 **A. Stress (Lua writing PSRAM):** `idf.py --preset release -DCB_RUN_STRESS=ON -p COM3 flash monitor`, then
 `-DCB_RUN_STRESS=OFF` afterwards.
@@ -48,12 +48,12 @@ Before you start: `python tools/test-server/net_test_server.py` on the PC (10.1.
 - [ ] Their `lua:` lines: errors 0, allocs refused 0, heap peak well under 256 KB.
 - [ ] Note the internal RAM free after init (`log_heap`) for the RAM item in Open Items.
 
-**B. Script config:** normal build flashed, then `node cli.js examples/script-test.mjs --upload` from `tools/bake`.
+**B. Script config:** normal build flashed, then `node cli/cli.js upload examples/script-test.mjs` from the repo root.
 Home keys, by row:
 - [ ] Row 1, `GET reply`: `lua: get: 200 ok`. `GET 404`: `404: 404 not found` (the server shows `X-Test: lua`).
 - [ ] `GET big`: `big: 200 16384`.
 - [ ] `Mute toggle`: the server's mute flips each tap; the log shows the old and new state.
-- [ ] `GET hang`: after ~10 s `hang: nil timeout`. Tap it again, and within the 10 s run `node tools/test-server/takeover.mjs 3`:
+- [ ] `GET hang`: after ~10 s `hang: nil timeout`. Tap it again, and within the 10 s run `node examples/test-server/takeover.mjs 3`:
   no `hang:` line, no crash, and after the release `GET reply` still works.
 - [ ] Row 2, `Latency op+script`: the server's two `latency:` lines are close together (the gap is the script's
   cost; tap twice, since the first run includes the compile). Note the touch-to-packet feel.
@@ -77,5 +77,6 @@ Home keys, by row:
   `tools/test-server/`.
 - `net_test_server.py` and `takeover.mjs` moved from `scratch/` (gitignored) to `tools/test-server/` (tracked).
   `takeover.mjs` now imports `../../host/index.js`. Run them from the repo root as
-  `python tools/test-server/net_test_server.py` and `node tools/test-server/takeover.mjs 3`.
+  `python tools/test-server/net_test_server.py` and `node tools/test-server/takeover.mjs 3`. (The project reorg has since
+  moved them to `examples/test-server/`, with the configs in `examples/`; the checklist above uses the new paths.)
   `wip/complete-activity-device-management.md` still names the old paths (left as written).

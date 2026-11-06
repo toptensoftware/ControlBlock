@@ -1,4 +1,4 @@
-// A script's hid.key("ctrl+shift+esc") chord: same names and rules as the bake (tools/bake/src/hid.js).
+// A script's hid.key("ctrl+shift+esc") chord: same names and rules as the bake (host/src/bake/hid.js).
 
 #include <string.h>
 #include "UnitTesting.h"

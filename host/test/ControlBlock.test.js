@@ -438,6 +438,33 @@ test("wifiStatus reports the connection", async () => {
     await cb.close();
 });
 
+const wifiAt = state => ({ state, reason: 0, rssi: -50, ip: [10, 0, 0, 2], mac: [1, 2, 3, 4, 5, 6] });
+
+test("waitWifiConnected: true once connected, onStatus once per change", async () => {
+    const { dev, cb } = await connected({ wifi: { ssid: "Home", status: wifiAt(WifiState.CONNECTING) } });
+    setTimeout(() => { dev.wifi.status = wifiAt(WifiState.CONNECTED); }, 40);
+    const seen = [];
+    assert.equal(await cb.waitWifiConnected({ timeoutMs: 2000, intervalMs: 5, onStatus: st => seen.push(st.stateName) }), true);
+    assert.deepEqual(seen, ["CONNECTING", "CONNECTED"]);
+    await cb.close();
+});
+
+test("waitWifiConnected: false straight away with no credentials", async () => {
+    const { cb } = await connected({ wifi: {} });
+    const seen = [];
+    assert.equal(await cb.waitWifiConnected({ timeoutMs: 2000, onStatus: st => seen.push(st.stateName) }), false);
+    assert.deepEqual(seen, ["NO_CREDENTIALS"]);
+    await cb.close();
+});
+
+test("waitWifiConnected: false at the deadline", async () => {
+    const { cb } = await connected({ wifi: { ssid: "Home", status: wifiAt(WifiState.RETRYING) } });
+    const start = Date.now();
+    assert.equal(await cb.waitWifiConnected({ timeoutMs: 60, intervalMs: 10 }), false);
+    assert.ok(Date.now() - start >= 60);
+    await cb.close();
+});
+
 test("wifiState events are emitted", async () => {
     const { dev, cb } = await connected();
     const got = new Promise(resolve => cb.on("wifiState", resolve));

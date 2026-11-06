@@ -1,7 +1,7 @@
 // The standalone owner (docs/standalone.md milestone step 2): router key events
 // go through the gestures and bindings to the op queue, and the host's
 // take-over / release switches it off and re-arms it. The config is the
-// sample baked by tools/bake (longPressMs 650). Home: touch[0,0] tap (hidKey),
+// sample baked by host/src/bake (longPressMs 650). Home: touch[0,0] tap (hidKey),
 // touch[1,0] tap (hidKey) + long (delay), touch[2,0] tap (switchActivity).
 
 #include "UnitTesting.h"

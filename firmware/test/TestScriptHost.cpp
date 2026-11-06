@@ -1,7 +1,7 @@
 // The Lua runtime behind the `script` op (script_host.cpp, script_api.cpp): the run
 // model, the sandbox and limits, and the API that mirrors the ops. Scripts are run
 // through the op registry like any op, against a fake clock, HID sink and net host.
-// The config is the sample baked by tools/bake (activities "Watch" = 0, "Listen" = 1).
+// The config is the sample baked by host/src/bake (activities "Watch" = 0, "Listen" = 1).
 
 #include <string.h>
 #include "UnitTesting.h"

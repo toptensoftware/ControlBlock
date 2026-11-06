@@ -2,14 +2,14 @@
 
 The file a user writes (by hand now, from a web front end later) to define a standalone-mode device: Home, activities, pages, buttons, devices and their actions. The bake pipeline turns it into the binpack blob that is uploaded to the device. This document specifies the **input** of that pipeline. The packed blob's structs, the loader, the op queue and the runtime are in [`standalone.md`](standalone.md); that document stays the source of truth for them.
 
-**Status:** the proposals below are confirmed and the bake tool in [`tools/bake/`](../tools/bake/) implements this format (`npm test`; `node cli.js config.json -o out.bin`, and `--upload` sends it to the device: [`config-upload-plan.md`](config-upload-plan.md)). A sample is `tools/bake/examples/upload-test.json`. Where the tool differs from, or settles, something in this document:
+**Status:** the proposals below are confirmed and the bake code in the host library ([`host/src/bake/`](../host/src/bake/)) implements this format. Bake a config with `node cli/cli.js bake config.json -o out.bin` from the repo root; `node cli/cli.js upload config.json` sends it to the device ([`cli/README.md`](../cli/README.md), [`protocol.md`](protocol.md#configuration-upload)). A sample is `examples/upload-test.json`. Where the tool differs from, or settles, something in this document:
 
 - `image` layers accept `.svg` paths and settings objects only (no `.png` yet).
 - A built-in icon name (`#name`) that node-buttonImage doesn't have is an error. The built-in names are kebab-case (`#play`, `#apple-tv`, `#volume-mute`), not Material names.
 - A `hidKey` chord is modifiers plus **one** key (the packed op has `mode`, `modifiers`, `key`); `hold` is accepted under `press`/`release` only, and in a hook or device list it's an error.
 - Not checked yet (deliberately): device limits (pages, images, blob size, op list length) and the "icon larger than the icon area" warning.
 - The default pressed look is the normal face with a 35% black overlay, unless `pressed` sets its own `color` or `face`.
-- The packed structs are in `tools/bake/src/schema.js`; `--header types.h` writes the C declarations.
+- The packed structs are in `host/src/bake/schema.js`; `node tools/codegen/gen-types.js` writes their C declarations (`firmware/main/config_types.gen.h`).
 
 ## Goals
 
@@ -401,7 +401,7 @@ In "Watch TV"'s first page, `Mute` is at index 4 (column 4, row 0), so on the pa
 
 ## Testing
 
-Unit tested like `tools/bake/` (Node's test runner; stage 1 needs no device, no `sharp`):
+Unit tested in `host/test/bake/` (`npm test` in `host/`; Node's test runner; stage 1 needs no device, no `sharp`):
 
 - Valid configs: the example above, a minimal one (`version` + empty `home`), and a maximal one (15 keys on every page).
 - Resolution: the defaults chain (each level overrides, recursive merge, `null` clears, gestures and labels don't inherit); name → index; `use` expansion (nested, cycle error); touch control names across the page strip (Home columns 0..4, page 1 from 5); `action` → `tap`; generated binding order.

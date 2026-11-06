@@ -4,7 +4,7 @@ Written by a planning sub-agent (read-only; it did not read the binpack source o
 - **Superseded, D6 (number width):** Lua uses its default 64-bit integers and doubles (user decision), not `LUA_32BITS` (Lua 5.4's `luaconf.h` hard-codes it off anyway). This matches the bake's wasmoon check. Text below that says `LUA_32BITS` is obsolete.
 - **Superseded, per-activity script compile and release:** scripts compile on first run and stay cached until the next takeover or release (see "Actions" in [`standalone.md`](standalone.md)). The step text below is the original plan: where it disagrees with the code, the code and [`standalone.md`](standalone.md) win. In particular:
 
-- **Superseded, steps 1 and 2 (offset codegen):** the plan to generate `op_spec.gen.h` field offsets, write offsets by hand with a sentinel test, and make `config_blob.cpp` walk the blob by offsets through `config_layout.h` / `ConfigView` was not followed. binpack now generates the C structs (`config_types.gen.h`, via `node gen-types.js` in `tools/bake`), `config_types.h` adds the limits and `CONFIG_ACTIVITY_NONE`, and the validator reads the blob through those structs. `config_layout.h` and `config_view.h` are gone; the host tests are built 32-bit (`platform: "x86"`) so the structs match the device. `op_registry.cpp` holds the executor table and `op_exec.h` the executor protocol.
+- **Superseded, steps 1 and 2 (offset codegen):** the plan to generate `op_spec.gen.h` field offsets, write offsets by hand with a sentinel test, and make `config_blob.cpp` walk the blob by offsets through `config_layout.h` / `ConfigView` was not followed. binpack now generates the C structs (`config_types.gen.h`, via `node tools/codegen/gen-types.js`), `config_types.h` adds the limits and `CONFIG_ACTIVITY_NONE`, and the validator reads the blob through those structs. `config_layout.h` and `config_view.h` are gone; the host tests are built 32-bit (`platform: "x86"`) so the structs match the device. `op_registry.cpp` holds the executor table and `op_exec.h` the executor protocol.
 - **Superseded, section G and step 3 (queue entries):** the queue holds list references (`{ops, count, param slot, release}`, ring of 40, `PushLists` all or nothing), not expanded `{op, param slot}` entries; see "Actions" in [`standalone.md`](standalone.md). The param pool is `param_pool.h`.
 - **Activities are no longer out of scope:** `switchActivity` has an executor, with a "none" target (`null`), and the switch is planned, queued and applied as described under "Devices and activity switching" in [`standalone.md`](standalone.md). `switchActivity` from a script (section F) still enqueues at the tail, as the executor does. A refused switch (ring full) returns an error string and changes nothing; the script call would return `nil, err`.
 - **Dropped:** per-key `longPressMs` for activity pages (the one global setting is enough).
@@ -50,7 +50,7 @@ Op codes today, in `consts.js` OP and `config_layout.h`: 1 delay, 2 switchActivi
 
 Three things need the same facts about each op: the bake validator (JS), the C++ blob validator and executors, and the Lua binder. The JS and C++ divide cannot be removed, so: one **op spec** that generates everything mechanical, plus **shared conformance vectors** for logic that can't be declarative.
 
-### A. One op spec, `tools/bake/src/op-spec.js`
+### A. One op spec, `host/src/bake/op-spec.js`
 
 Per op: name and code; Lua name and signature; an ordered field list (name, kind, range and limits, optional, byte offset in the packed op); flags (`holdAllowed`, `replyCapable`).
 
@@ -58,14 +58,14 @@ Field kinds: `int` (range), `str`, `bytes`, `enum`, `httpUrl`, `mac`, `hexOrStr`
 
 Consumers:
 - **`ops.js`** builds its OP_TABLE (props, checkers, packed form) from the spec. Custom `build` hooks stay for kinds that need context (`switchActivity` name to index, `script` file read and Lua check). `consts.js` OP and `schema.js` op types derive from it. Behaviour-preserving: the existing bake tests must pass unchanged.
-- **A codegen script** (`tools/bake/gen-op-spec.js`) writes the checked-in `firmware/main/op_spec.gen.h`: op codes, field enums, offsets, limits and Lua names as `constexpr` data. A bake test fails if the committed header differs from the generator's output (same safety net as `sample_config.bin`).
+- **A codegen script** (`tools/codegen/gen-op-spec.js`) writes the checked-in `firmware/main/op_spec.gen.h`: op codes, field enums, offsets, limits and Lua names as `constexpr` data. A bake test fails if the committed header differs from the generator's output (same safety net as `sample_config.bin`).
 - **The HID key table** (`hid.js`) is also generated into `hid_keys.gen.h`, so the device's `hid()` chord parser uses the same table as the bake.
 
 ### B. Offsets
 
 Offsets in the spec come from binpack's own layout if it exposes one (step 1 starts by checking). If not, they are written explicitly in the spec and a bake **sentinel test** packs each op with unique field values and asserts the bytes sit at the spec's offsets.
 
-### C. Conformance vectors, `tools/bake/test/op-vectors.json`
+### C. Conformance vectors, `host/test/bake/op-vectors.json`
 
 Valid and invalid values per kind (URLs, MACs, hex payloads, chords, ports, delays). Both the bake's JS tests and a new C++ host test (`TestOpVectors.cpp`) read it, so adding a vector fails whichever side is wrong.
 
@@ -180,7 +180,7 @@ Named-table forms are also accepted, e.g. `http.post{url=..., body=...}`. `http.
 
 **Step 1. Op spec and codegen (bake side; refactor only)**
 - Tests first: the spec round-trips to the current OP codes, field offsets (sentinel test) and packed bytes; `op-vectors.json` passes the JS validators; the generated-header drift test.
-- Files: new `tools/bake/src/op-spec.js`, `tools/bake/gen-op-spec.js`, `tools/bake/test/op-vectors.json`, `firmware/main/op_spec.gen.h`, `hid_keys.gen.h`; edit `ops.js`, `consts.js`, `schema.js`, `hid.js`.
+- Files: new `host/src/bake/op-spec.js`, `tools/codegen/gen-op-spec.js`, `host/test/bake/op-vectors.json`, `firmware/main/op_spec.gen.h`, `hid_keys.gen.h`; edit `ops.js`, `consts.js`, `schema.js`, `hid.js`.
 - Risks: binpack layout access. Keep existing bake tests green throughout.
 
 **Step 2. C++ descriptor table, decoder and validator**
@@ -226,7 +226,7 @@ Named-table forms are also accepted, e.g. `http.post{url=..., body=...}`. `http.
 **Step 11. Docs** (propose, don't apply without OK)
 - standalone.md: the executor protocol, the script API table, lazy compile.
 - config-format.md: the script API and the generated op table.
-- CLAUDE.md: the new modules, `lua/`, `tools/bake` spec and codegen workflow, new Open Items.
+- CLAUDE.md: the new modules, `lua/`, the bake spec (`host/src/bake/`) and codegen workflow (`tools/codegen/`), new Open Items.
 
 ## 5. Decisions
 
@@ -296,6 +296,6 @@ Named-table forms are also accepted, e.g. `http.post{url=..., body=...}`. `http.
 
 - `firmware/main/op_queue.h` (and `.cpp`)
 - `firmware/main/config_blob.cpp`
-- `tools/bake/src/ops.js`
-- `tools/bake/src/schema.js`
+- `host/src/bake/ops.js`
+- `host/src/bake/schema.js`
 - `firmware/main/trigger_dispatch.cpp`

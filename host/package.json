@@ -5,17 +5,24 @@
   "description": "Host library for ControlBlock: talks to the device over USB (vendor bulk, mode 1)",
   "type": "module",
   "main": "index.js",
+  "exports": {
+    ".": {
+      "browser": "./browser.js",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\"",
-    "demo": "node demo/demo.js"
+    "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
     "@toptensoftware/node-buttonImage": "file:../node-buttonImage",
     "rle565": "file:../rle565/encoder",
     "sharp": "^0.34.5",
-    "usb": "^3.2.1"
+    "usb": "^3.2.1",
+    "wasmoon": "^1.16.0"
   }
 }

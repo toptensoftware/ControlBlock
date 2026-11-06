@@ -1,8 +1,8 @@
 #pragma once
 
 // The packed config structs, as the firmware sees them. They are generated from
-// the binpack schema (tools/bake/src/schema.js -> config_types.gen.h, run
-// `node gen-types.js` in tools/bake) so nothing here calculates a layout.
+// the binpack schema (host/src/bake/schema.js -> config_types.gen.h, run
+// `node tools/codegen/gen-types.js`) so nothing here calculates a layout.
 //
 // The generated header declares generic global names (key, page, op, ...), so
 // it is wrapped in the namespace `cfgdata`. Its OP_* and HID_MODE_* macros are
@@ -30,7 +30,7 @@ static_assert(sizeof(cfgdata::page) == sizeof(cfgdata::key) * COMP_KEYS, "COMP_K
 #define HID_MODE_MAX    HID_MODE_UP
 
 // switchActivityOp's index for "no activity" (config file: `"activity": null`).
-// Keep in step with ACTIVITY_NONE in tools/bake/src/consts.js.
+// Keep in step with ACTIVITY_NONE in host/src/bake/consts.js.
 #define CONFIG_ACTIVITY_NONE    0xFFFFFFFFu
 
 // The key's four (count, pointer) image pairs, in KEY_SLOT_* order

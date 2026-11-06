@@ -1,7 +1,7 @@
 #pragma once
 
 // The standalone config in flash, and its upload (docs/protocol.md
-// "Configuration upload", docs/config-upload-plan.md). Platform independent:
+// "Configuration upload"; partition layout in docs/standalone.md). Platform independent:
 // the device supplies the flash partition through ConfigFlash.
 //
 // Partition layout: sector 0 is a header; the blob starts at

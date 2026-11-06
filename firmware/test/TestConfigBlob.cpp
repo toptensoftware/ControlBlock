@@ -1,5 +1,5 @@
 // Config blob loader: validation and relocation of the BPAK blob that
-// tools/bake writes (docs/standalone.md "Loading"). The sample is baked from
+// host/src/bake writes (docs/standalone.md "Loading"). The sample is baked from
 // data/sample_config.json, so these tests also check that the loader's idea
 // of the layout matches the real packer.
 

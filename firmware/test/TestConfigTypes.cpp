@@ -1,4 +1,4 @@
-// The C structs generated from the binpack schema (tools/bake/gen-types.js ->
+// The C structs generated from the binpack schema (tools/codegen/gen-types.js ->
 // main/config_types.gen.h, wrapped by config_types.h). Checks that they read the
 // sample blob the real packer wrote, both as baked (pointers are file offsets)
 // and relocated (pointers are addresses). The host tests are 32-bit so the

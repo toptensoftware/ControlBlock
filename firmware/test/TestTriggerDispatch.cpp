@@ -1,5 +1,5 @@
 // The trigger dispatcher and the global op queue (docs/standalone.md "Triggers
-// and bindings", "Actions"). The config is the sample baked by tools/bake,
+// and bindings", "Actions"). The config is the sample baked by host/src/bake,
 // relocated in place and read through the generated structs. Home's bindings:
 // touch[0,0] tap, touch[1,0] tap + long, touch[2,0] tap (switchActivity).
 // Activity 0 ("Watch"): touch[5,0] tap (script), macro1 tap (hidKey).

@@ -30,7 +30,7 @@ side. (Decided: the C3 firmware lives in this repo, in `pad/`.)
 - **Nothing is committed.** Untracked/new: `pad/`, `tools/pad-sim/`, this file. Also uncommitted from earlier in this
   session (not this job): the `PacketEncoder` submodule add (`.gitmodules`), `firmware/main/crc32.h` ->
   `crc32_table.h` rename (+ includes in `config_store.cpp`, `TestConfigStore.cpp`, `TestProtocol.cpp`, comment in
-  `host/src/protocol.js`, `docs/config-upload-plan.md`), pixel clock default 20 MHz
+  `host/src/protocol.js`, the config upload plan doc, since deleted), pixel clock default 20 MHz
   (`waveshare_rgb_lcd_port.h`, `main/CMakeLists.txt`), `wip/complete-wifi-latency.md` (renamed, staged), and doc edits to
   `CLAUDE.md`, `docs/wifi.md`, `docs/screen-buffers.md`. The user decides when to commit.
 - **Decisions so far (all in the sections below; the short list):** UART1 RX on S3 **GPIO 6** (`aclock` uses it as TX),
@@ -259,7 +259,7 @@ only if the hardware shows an encoder feeling dead.
 
 ## Decisions, round 2 (user, 2026-11-06; these answer the questions below)
 1. **crc32 clash:** our header renamed to `firmware/main/crc32_table.h` (done: includes in `config_store.cpp`,
-   `TestConfigStore.cpp`, `TestProtocol.cpp`, the comment in `host/src/protocol.js`, `docs/config-upload-plan.md` and
+   `TestConfigStore.cpp`, `TestProtocol.cpp`, the comment in `host/src/protocol.js`, the config upload plan doc (since deleted) and
    CLAUDE.md updated; host tests: 552 pass). `PacketEncoder/crc32.h` is now free to use as is.
 2. **Control names: `keyN` and `encN`** (`key1`..`key32`, `enc1`..`enc4`), replacing the `macro1..6` / `volEnc`
    proposals in `config-format.md` (update when documenting).
@@ -550,11 +550,11 @@ anything without telling the user.
   by a golden-bytes test shared with step 1): `sim` (play scripted key presses/spins, with timing and optional line
   noise, onto a serial port, for testing the S3 without the C3) and `dump` (decode a serial stream and print it, for
   debugging the C3). `npm test` with no hardware.
-- [ ] 10. **Bake/config side.** Tests first (`tools/bake/test`): a binding `control` must be `key1..key32` or
+- [ ] 10. **Bake/config side.** Tests first (`host/test/bake`): a binding `control` must be `key1..key32` or
   `enc1..enc4` (touch keys stay an error); events: `key*` accept `press/release/tap/long`, `enc*` accept `turn`;
-  anything else is an error with a path. Then `resolve.js` and `docs/config-format.md` (replaces `macro1..6` /
+  anything else is an error with a path. Then `host/src/bake/resolve.js` and `docs/config-format.md` (replaces `macro1..6` /
   `volEnc`/`turnLeft`/`turnRight`). Rebake the sample config if the schema is unchanged only the strings.
-- [ ] 11. **Example script.** `tools/bake/examples/` Lua port of `volume.js` (parse `delta` and `interval` from
+- [ ] 11. **Example script.** `examples/` Lua port of `volume.js` (parse `delta` and `interval` from
   `param`, `interval < 8000` -> step 5, `< 20000` -> 3, else 1; `http.post`), checked by the bake's Lua checker and
   by a `TestScript*` case that feeds it a param through the script host and checks the op it issues.
 - [ ] 12. **Docs** (propose the edits to the user first, Rule 4): new `docs/macro-pad.md` (the wire protocol, the C3

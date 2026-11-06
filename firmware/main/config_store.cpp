@@ -1,4 +1,4 @@
-// The standalone config in flash. Spec: docs/protocol.md, docs/config-upload-plan.md.
+// The standalone config in flash. Spec: docs/protocol.md, docs/standalone.md.
 
 #include <string.h>
 #include "config_store.h"

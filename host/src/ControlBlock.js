@@ -15,7 +15,7 @@ import { Emitter } from "./Emitter.js";
 import {
     USB_VID, USB_PID, INTERFACE, ENDPOINT, USB_PACKET_SIZE, PROTOCOL_VERSION, REQ_RESET_STREAM,
     PUT_IMAGE_PREFIX, CONFIG_DATA_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
-    encodeWifiSet, decodeWifiCredentials, decodeWifiStatus,
+    encodeWifiSet, decodeWifiCredentials, decodeWifiStatus, WifiState,
     encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeConfigBegin, encodeConfigData, crc32,
     decodeInfo, decodeQuery, decodeEvent, statusName, HEARTBEAT_INTERVAL_MS,
 } from "./protocol.js";
@@ -261,6 +261,27 @@ export class ControlBlock extends Emitter
         return decodeWifiStatus(await this.call(Msg.WIFI_STATUS));
     }
 
+    // Poll wifiStatus() every `intervalMs` until connected (true), or until no
+    // network is stored or `timeoutMs` has passed (false). `onStatus(st)` gets
+    // the first status and each one that differs from the last.
+    async waitWifiConnected({ timeoutMs = 30000, intervalMs = 500, onStatus } = {})
+    {
+        const deadline = Date.now() + timeoutMs;
+        let last = "";
+        while (true) {
+            const st = await this.wifiStatus();
+            const key = JSON.stringify(st);
+            if (key !== last)
+                onStatus?.(st);
+            last = key;
+            if (st.state === WifiState.CONNECTED)
+                return true;
+            if (st.state === WifiState.NO_CREDENTIALS || Date.now() >= deadline)
+                return false;
+            await new Promise(resolve => setTimeout(resolve, intervalMs));
+        }
+    }
+
     // Upload (or replace) an rle565 image under `id`, in pipelined chunks
     async putImage(id, data)
     {
@@ -273,7 +294,7 @@ export class ControlBlock extends Emitter
         await Promise.all(sends);
     }
 
-    // Save a standalone config (a BPAK blob from tools/bake) in the device's
+    // Save a standalone config (a BPAK blob from src/bake) in the device's
     // flash. Skipped (resolves { uploaded: false }) if the device already has
     // exactly this blob, unless `force`. onProgress(sent, total) after each
     // chunk. The device blanks its screen while it writes, and restarts when

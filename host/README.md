@@ -1,13 +1,38 @@
 # ControlBlock host library
 
-Talks to a ControlBlock over its USB vendor interface (mode 1, [`docs/protocol.md`](../docs/protocol.md)).
+One library for everything a host does with a ControlBlock:
+
+- **Device API:** talks to the device over its USB vendor interface (mode 1, [`docs/protocol.md`](../docs/protocol.md)).
+- **Config bake:** turns a standalone config ([`docs/config-format.md`](../docs/config-format.md)) into the blob the device loads, and uploads it.
+
+The command line ([`cli/`](../cli/README.md)) and the scripts in [`examples/`](../examples/README.md) are thin users of it.
 
 ```sh
 npm install
-npm test            # library tests, no device needed
-npm run demo        # on a device: pages, toggles, an in-place clock, a freed image
-node demo/bench.js  # latency, throughput and upload speed
+npm test                    # library and bake tests, no device needed
+node ../examples/demo.js    # on a device: pages, toggles, an in-place clock, a freed image
+node ../examples/bench.js   # latency, throughput and upload speed
 ```
+
+- **Windows:** no driver to install, because the device asks for WinUSB itself (MS OS 2.0 descriptors).
+- **Linux:** needs a udev rule for `303a:4020`.
+
+## Entry points
+
+- **`index.js`** (Node, the package's default): everything below.
+- **`browser.js`** (the package's `browser` entry): the device API only (`ControlBlock`, `ControlBlockError`, `Emitter`, `src/protocol.js`: constants, encoders, `crc32`). It imports nothing Node-only, so it works on any WebUSB `USBDevice` (`navigator.usb`'s) and in Node.
+- **Node only:** the key image helpers (`src/images.js`: sharp and the rle565 encoder) and the bake (`src/bake/`: it uses Node's `Buffer`, the file system and node-buttonImage). A browser bake needs a `Buffer` shim and a browser renderer first.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `src/ControlBlock.js`, `src/protocol.js`, `src/Emitter.js` | the device API |
+| `src/images.js` | `imageId`, `encodeImage`, `keyImage`, `keyImageFromSvg`, `renderButtonImage`, `buttonKeyImage` |
+| `src/bake/` | the bake: `resolve.js` (stage 1), `render.js` (stage 2), `pack.js`/`schema.js` (stage 3, BPAK through binpack), `bake.js` (all three), `files.js` (`loadConfigFile`, `bakeFile`), `upload.js` (`uploadBlob`), `headers.js` (the firmware headers `tools/codegen` writes) |
+| `test/` | device API tests against `test/FakeDevice.js` (a fake WebUSB device); `test/bake/` the bake tests |
+
+binpack is imported by relative path (`../../../binpack/`), not installed, so edits to it apply at once. The other `file:` dependencies (node-buttonImage, the rle565 encoder) are copied in by `npm install` (`install-links=true`): after changing one, bump its version, delete its folder under `node_modules` and `npm install` again.
 
 - **Windows:** no driver to install, because the device asks for WinUSB itself (MS OS 2.0 descriptors).
 - **Linux:** needs a udev rule for `303a:4020`.
@@ -47,7 +72,7 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: Ke
   - Each is at most 47 bytes of UTF-8 (the font is ASCII only for now). A longer or invalid text throws before anything is sent.
   - The device has no clock: send the time yourself, e.g. `setStatusText({ right: "12:35" })`.
 - **`uploadConfig(blob, { force, onProgress })`:**
-  - It saves a standalone config (the BPAK blob from `tools/bake`) in the device's flash ([`docs/protocol.md`](../docs/protocol.md#configuration-upload)).
+  - It saves a standalone config (the BPAK blob from the bake, below) in the device's flash ([`docs/protocol.md`](../docs/protocol.md#configuration-upload)).
   - The device's screen goes dark while it writes, and the device **restarts** when it's done: the connection closes by itself (no `error` event). `reconnect()` waits for the same device (by serial) to come back and resolves to a new `ControlBlock`; its `info.configSize` and `info.configCrc` show what the device kept.
   - It resolves `{ uploaded: false }` and sends nothing if the device already has exactly this blob (`force: true` sends it anyway).
   - A failure (`ControlBlockError`: `NO_SPACE`, `BAD_CRC`, `IO_ERROR`…) leaves the device with no config until the next good upload.
@@ -56,6 +81,20 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: Ke
   - `setWifi(ssid, password)` stores a network and connects in the background; `clearWifi()` forgets it and turns Wi-Fi off. A missing password is an open network. A bad length or a NUL throws before anything is sent (ssid 32 bytes, password 8 to 63).
   - `getWifi()` returns `{ ssid, password, ssidBytes }` (the password in clear text). `info.wifiCredentials` says whether any are stored.
   - `wifiStatus()` returns `{ state, stateName, reason, rssi, ip, mac }` (`ip` is null unless connected), and a `"wifiState"` event ({ state, stateName, lost, ip }) fires when it changes.
-  - `node demo/wifi.js set <ssid> [password] | get | clear | status | wait [seconds]`
+  - `waitWifiConnected({ timeoutMs, intervalMs, onStatus })` polls `wifiStatus()` until connected (`true`), or no network is stored or time runs out (`false`); `onStatus` gets each new status.
+  - From the command line: `node cli/cli.js wifi set <ssid> [password] | get | clear | status | wait [seconds]` ([`cli/README.md`](../cli/README.md)).
 - **`freeImages(ids)`:** the ID goes at once, and the memory once no key uses it.
-- **Browsers:** `ControlBlock` and `src/protocol.js` work on any WebUSB `USBDevice`, so you can pass `navigator.usb`'s. `src/images.js` is Node only (it uses sharp and the rle565 encoder).
+
+## Bake
+
+```js
+import { bakeFile, uploadBlob, formatEntries } from "./index.js";
+
+const { blob, warnings } = await bakeFile("examples/upload-test.json");   // throws a BakeError listing every problem
+if (warnings.length) console.warn(formatEntries(warnings));
+await uploadBlob(blob, { log: console.log });   // send, wait for the restart, check what the device kept
+```
+
+- `loadConfigFile(file)` reads a `.json` config, or the default export of a `.js`/`.mjs` module. `bakeFile(file)` loads and bakes it, with asset and script paths relative to the config's folder, and resolves `{ blob, tree, warnings }`.
+- `bake(config, host, render)` is the bake itself, with file access (`createNodeHost(dir)`) and the key renderer (`createRenderer()`) passed in.
+- `uploadBlob(blob, { serial, force, log })` is the whole upload: `uploadConfig()`, `reconnect()`, then a check of `configSize`/`configCrc`.

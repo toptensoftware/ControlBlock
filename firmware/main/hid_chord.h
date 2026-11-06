@@ -1,7 +1,7 @@
 #pragma once
 
 // Key chord text ("ctrl+shift+esc", "f5") to a HID modifier mask and key code, with the
-// bake's names (hid_keys.gen.h, generated from tools/bake/src/hid.js) and the same rules:
+// bake's names (hid_keys.gen.h, generated from host/src/bake/hid.js) and the same rules:
 // modifiers plus at most one key, case and spaces around names ignored.
 // Platform independent.
 

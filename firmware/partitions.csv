@@ -1,6 +1,6 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
 # The app has 2 MB (it is ~0.4 MB now; Wi-Fi and Lua will add to it). `config`
-# holds the standalone config blob (docs/config-upload-plan.md): a raw partition,
+# holds the standalone config blob (docs/standalone.md, "Config storage"): a raw partition,
 # no filesystem, subtype 0x40 (custom data). 8 MB of the 16 MB flash is left over
 # for a second config partition (A/B) or OTA later.
 nvs,      data, nvs,     0x9000,   0x6000,

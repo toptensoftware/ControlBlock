@@ -1,6 +1,6 @@
 #pragma once
 
-// The standalone config blob (BPAK, written by tools/bake): validation and
+// The standalone config blob (BPAK, written by host/src/bake): validation and
 // relocation. Platform independent and pure: bytes in, a summary out. Spec:
 // docs/standalone.md ("Loading", "Schema").
 //
@@ -31,7 +31,7 @@
 #define BPAK_SIGNATURE      0x4B415042u     // "BPAK" as bytes 42 50 41 4B
 #define BPAK_FORMAT_VERSION 1
 #define BPAK_HEADER_SIZE    32
-#define CONFIG_BLOB_VERSION 1               // the root's `version`; tools/bake BLOB_VERSION
+#define CONFIG_BLOB_VERSION 1               // the root's `version`; BLOB_VERSION in host/src/bake/consts.js
 
 // Limits (a config over them is rejected)
 #define CONFIG_MAX_DEVICES      32
@@ -40,7 +40,7 @@
 #define CONFIG_MAX_OPS          64          // per op list
 #define CONFIG_MAX_ACTIVITY_PAGES (SCREEN_MAX_PAGES - 1)    // Home is page 0
 #define CONFIG_MAX_OP_DATA      4096        // bytes of an http body or a UDP payload
-#define CONFIG_MAX_SCRIPT       16384       // bytes of a script's source (MAX_SCRIPT_BYTES in tools/bake/src/consts.js)
+#define CONFIG_MAX_SCRIPT       16384       // bytes of a script's source (MAX_SCRIPT_BYTES in host/src/bake/consts.js)
 
 // An image in the blob: its file offset (the image store ID) and byte size.
 // offset 0 = no image.

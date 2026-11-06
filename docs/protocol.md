@@ -344,7 +344,7 @@ Each `KeyDef`:
 
 ## Configuration upload
 
-Saves the standalone-mode config (a BPAK blob from `tools/bake`, see [`standalone.md`](standalone.md)) in the device's `config` flash partition. The device doesn't look inside the blob here: it checks the size and a CRC-32 and stores the bytes. The CRC-32 is the usual zlib one (polynomial `0xEDB88320`, initial and final XOR `0xFFFFFFFF`; the CRC of `"123456789"` is `0xCBF43926`).
+Saves the standalone-mode config (a BPAK blob from the bake in `host/src/bake/`, see [`standalone.md`](standalone.md)) in the device's `config` flash partition. The device doesn't look inside the blob here: it checks the size and a CRC-32 and stores the bytes. The CRC-32 is the usual zlib one (polynomial `0xEDB88320`, initial and final XOR `0xFFFFFFFF`; the CRC of `"123456789"` is `0xCBF43926`).
 
 ```
 CONFIG_BEGIN(size, crc)  →  CONFIG_DATA(0, …) … CONFIG_DATA(n, …)  →  CONFIG_COMMIT  →  device restarts
