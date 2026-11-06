@@ -9,6 +9,10 @@
 
 #include <stdint.h>
 #include "esp_err.h"
+#include "script_host.h"
+
+// The Lua heap (PSRAM) and log for a ScriptHost: the op task's, and the stress run's
+ScriptPlatform standalone_script_platform(void);
 
 // Arm from the loaded config (config_blob(): relocated, NULL if none) and
 // start the op task. Standalone to begin with.

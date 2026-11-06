@@ -107,6 +107,10 @@ static const char *net_counts(void)
 #if RUN_STRESS
 
 #include "test_keys.h"
+#include "config_types.h"
+#include "op_exec.h"
+#include "script_host.h"
+#include "standalone_task.h"
 
 #define NUM_PAGES 3
 
@@ -204,13 +208,83 @@ typedef struct {
     float          busy_percent;
     screen_stats_t st;
     comp_stats_t   cs;
+    uint32_t       script_runs;     // STRESS_SCRIPT: runs in the case, and the host's totals after it
+    uint32_t       script_errors;
+    size_t         script_peak;
+    unsigned       script_refused;
 } stress_result_t;
 
 typedef enum {
     STRESS_KEYS    = 0x01,      // change every key in view each round
     STRESS_STATUS  = 0x02,      // redraw the status bar each round
     STRESS_REPLACE = 0x04,      // replace an icon on screen at ~USB speed
+    STRESS_SCRIPT  = 0x08,      // Lua churning its PSRAM heap on core 0, as a busy script op does
 } stress_what_t;
+
+// ---------------------------------------------------------------------------
+// Lua churn: a script that allocates and frees a lot of its (PSRAM) heap, run back to back
+// for STRESS_SCRIPT_BUSY_US, then a tick's rest, on its own core 0 task like the op task
+// (app_main's stack is too small for Lua). Real scripts are far shorter; if the fill keeps
+// up with this, it keeps up with them.
+
+#define STRESS_SCRIPT_BUSY_US  18000
+#define STRESS_SCRIPT_STACK    12288       // as the op task's (standalone_task.cpp)
+#define STRESS_SCRIPT_PRIO     3
+
+static const char STRESS_LUA[] =
+    "local t = {}\n"
+    "for i = 1, 800 do t[i] = string.rep('x', 40) .. i end\n"
+    "local s = table.concat(t, ',')\n"
+    "local u = {}\n"
+    "for w in s:gmatch('[^,]+') do u[#u + 1] = #w end\n"
+    "total = (total or 0) + #s + #u\n";
+
+static ScriptHost        s_stress_script;
+static volatile bool     s_script_on;
+static volatile uint32_t s_script_runs;
+static TaskHandle_t      s_script_task;
+
+static uint32_t stress_clock_ms(void *)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+static void script_churn_task(void *)
+{
+    ExecCtx exec = {};
+    exec.now_ms = stress_clock_ms;
+    exec.script = &s_stress_script;
+    cfgdata::scriptOp op = {};
+    op.base.op      = OP_SCRIPT;
+    op.source       = STRESS_LUA;
+    op.source_count = sizeof(STRESS_LUA) - 1;
+    while (1) {
+        if (!s_script_on) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            continue;
+        }
+        int64_t t0 = esp_timer_get_time();
+        while (s_script_on && esp_timer_get_time() - t0 < STRESS_SCRIPT_BUSY_US) {
+            OpTask task = {};
+            task.param = "";
+            s_stress_script.Start(exec, &op, task);     // runs to the end: the script never waits
+            s_script_runs = s_script_runs + 1;          // only this task writes it
+        }
+        vTaskDelay(1);
+    }
+}
+
+static void stress_script(bool on)
+{
+    if (on && !s_script_task) {
+        s_stress_script.Init(standalone_script_platform(), nullptr);
+        xTaskCreatePinnedToCore(script_churn_task, "stress_lua", STRESS_SCRIPT_STACK, nullptr,
+                                STRESS_SCRIPT_PRIO, &s_script_task, 0);
+    }
+    s_script_on = on;
+    if (on && s_script_task)
+        xTaskNotifyGive(s_script_task);
+}
 
 // Replace the icon shown on every key in view with another icon's pixels:
 // writes the image to PSRAM, checks it, and redraws the keys using it
@@ -245,6 +319,9 @@ static void stress_run(stress_result_t *r, const char *label, bool opaque, int s
     screen_get_stats(&r->st);
     comp_get_stats(&r->cs);
     uint32_t frames0 = r->st.frames;
+    uint32_t runs0 = s_script_runs;
+    if (what & STRESS_SCRIPT)
+        stress_script(true);
 
     int first = scroll / SCREEN_PAGE_W;
     int last  = (scroll + SCREEN_PAGE_W - 1) / SCREEN_PAGE_W;
@@ -267,12 +344,20 @@ static void stress_run(stress_result_t *r, const char *label, bool opaque, int s
         }
     }
     int64_t elapsed = esp_timer_get_time() - t0;
+    stress_script(false);
 
     screen_get_stats(&r->st);
     comp_get_stats(&r->cs);
     r->label        = label;
     r->frames       = r->st.frames - frames0;
     r->busy_percent = r->cs.busy_us * 100.0f / elapsed;
+    r->script_runs  = s_script_runs - runs0;
+    if (r->script_runs) {
+        vTaskDelay(pdMS_TO_TICKS(30));          // the churn task's last run is over: its stats are settled
+        r->script_errors  = s_stress_script.Errors();
+        r->script_peak    = s_stress_script.HeapPeak();
+        r->script_refused = s_stress_script.HeapRefused();
+    }
 }
 
 static void stress_log(const stress_result_t *r)
@@ -281,11 +366,15 @@ static void stress_log(const stress_result_t *r)
              r->label, (unsigned long)r->st.max_fill_us, (unsigned long)r->st.overruns,
              (unsigned long)r->cs.keys, (unsigned long)r->cs.max_key_us, r->busy_percent,
              late_fills(&r->st));
+    if (r->script_runs)
+        ESP_LOGI(TAG, "       lua: %lu runs, %lu errors, heap peak %u KB, %u allocs refused (totals so far)",
+                 (unsigned long)r->script_runs, (unsigned long)r->script_errors,
+                 (unsigned)(r->script_peak / 1024), r->script_refused);
 }
 
 static void run_stress(void)
 {
-    static stress_result_t results[12];
+    static stress_result_t results[16];
     int n = 0;
     for (int opaque = 0; opaque < 2; opaque++) {
         const char *rest  = opaque ? "opaque, at rest, incremental" : "at rest, incremental";
@@ -307,6 +396,13 @@ static void run_stress(void)
     // Image uploads (replaces) writing PSRAM while the keys using them redraw
     stress_run(&results[n++], "image replaces, at rest", true, 0, 0, STRESS_REPLACE);
     stress_run(&results[n++], "image replaces, mid-swipe", true, SCREEN_PAGE_W / 2, 0, STRESS_REPLACE);
+
+    // Lua writing PSRAM from core 0: alone, then with the compositor's worst case
+    stress_run(&results[n++], "lua churn, at rest", true, 0, 0, STRESS_SCRIPT);
+    stress_run(&results[n++], "lua churn, mid-swipe", true, SCREEN_PAGE_W / 2, 0, STRESS_SCRIPT);
+    stress_run(&results[n++], "lua + keys, mid, flush", true, SCREEN_PAGE_W / 2, COMP_FLUSH,
+               STRESS_KEYS | STRESS_SCRIPT);
+    s_stress_script.Close();                    // give the Lua heap back
 
     screen_set_scroll(0);
     vTaskDelay(pdMS_TO_TICKS(100));

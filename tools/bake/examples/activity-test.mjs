@@ -1,17 +1,13 @@
 // Hardware test config for activity switching and devices
 // (wip/wip-activity-device-management.md, step 9). Every hook and device op sends a short
-// UDP message (or an HTTP GET) to scratch/net_test_server.py, so its console shows what ran
+// UDP message (or an HTTP GET) to tools/test-server/net_test_server.py, so its console shows what ran
 // and in what order. Bake and upload from tools/bake:
 //     node cli.js examples/activity-test.mjs --upload
 
-const SERVER = "10.1.1.126";
+import { udp, get, flatten } from "./test-common.mjs";
 
-// Plain key faces instead of the default gradient shade, which bands visibly in RGB565
-// on the dark faces. `color` alone draws a top-to-bottom shade; a face whose top and
-// bottom are the same colour is flat.
+// Plain key faces instead of the default gradient shade (see flatten)
 const FLAT = true;
-const udp = data => ({ op: "udpPacket", host: SERVER, port: 9999, data });
-const get = query => ({ op: "httpGet", url: `http://${SERVER}:8000/get?${query}` });
 
 // All four hooks of an activity, each announcing itself
 const hooks = name => ({
@@ -51,24 +47,6 @@ function page(tag, p, color, overrides = {})
 }
 
 const ping = (name) => ({ label: `Ping\n${name}`, color: "#264653", tap: udp(`ping from ${name}`) });
-
-// Every look's `color` (keys, defaults, pressed) becomes a flat face
-function flatten(v)
-{
-    if (Array.isArray(v))
-        return v.map(flatten);
-    if (v === null || typeof v !== "object")
-        return v;
-    const out = {};
-    for (const [k, x] of Object.entries(v))
-    {
-        if (k === "color" && typeof x === "string")
-            out.face = { top: x, bottom: x };
-        else
-            out[k] = flatten(x);
-    }
-    return out;
-}
 
 const config = {
     version: 1,

@@ -88,6 +88,17 @@ static void script_log(const char *line, void *)
     ESP_LOGI("lua", "%s", line);
 }
 
+ScriptPlatform standalone_script_platform(void)
+{
+    ScriptPlatform p = {};
+    p.realloc = script_realloc;
+    p.log     = script_log;
+    return p;
+}
+
+// Script stats for the "op queue empty" line (op task only)
+static uint32_t s_logged_runs;
+
 // A HID report for the PC. A failure (not mounted, or the last report never
 // finished) is logged after the fact, as it can't be told to the caller.
 static void hid_send(const uint8_t *report, void *)
@@ -122,6 +133,10 @@ static void op_task(void *)
         uint32_t errors = s_sa.Errors();
         const char *why = s_sa.LastError();     // a string literal in the executors: safe after the unlock
         int activity = s_sa.Activity();
+        const ScriptHost &scripts = s_sa.Scripts();
+        uint32_t runs = scripts.Runs(), script_errors = scripts.Errors();
+        size_t heap_peak = scripts.HeapPeak();
+        unsigned heap_refused = scripts.HeapRefused();
         xSemaphoreGive(s_lock);
 
         uint32_t now = clock_ms(nullptr);
@@ -139,8 +154,17 @@ static void op_task(void *)
             ESP_LOGE(TAG, "op failed: %s (%lu so far)", why ? why : "?", (unsigned long)errors);
         }
         s_logged_errors = errors;               // (takeover and release start the count again from 0)
-        if (!busy && s_was_busy)
+        if (!busy && s_was_busy) {
             ESP_LOGI(TAG, "op queue empty (busy %lu ms)", (unsigned long)(now - s_busy_since_ms));
+            if (runs != s_logged_runs) {
+                // The Lua checks: heap use and the op task's stack headroom (the high-water mark is
+                // in bytes on ESP-IDF, the least ever free)
+                ESP_LOGI(TAG, "scripts: %lu runs, %lu errors, heap peak %u KB, %u allocs refused, op stack %u bytes free",
+                         (unsigned long)runs, (unsigned long)script_errors, (unsigned)(heap_peak / 1024),
+                         heap_refused, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+            }
+        }
+        s_logged_runs = runs;                   // (a re-arm closes the host and starts it again from 0)
         s_was_busy = busy;
         // Busy: an op started (the next may follow at once) or a delay is running
         wait = !busy ? portMAX_DELAY : code ? 0 : OP_BUSY_POLL_TICKS;
@@ -159,8 +183,7 @@ esp_err_t standalone_init(const uint8_t *blob)
     h.run    = run_op;
     h.net    = net_worker_host();
     h.hid.send = hid_send;
-    h.script.realloc = script_realloc;
-    h.script.log     = script_log;
+    h.script = standalone_script_platform();
     const cfgdata::configRoot *root = blob ? ConfigRoot(blob) : nullptr;    // the device's blob is relocated already
     s_root = root;
     if (root) {
