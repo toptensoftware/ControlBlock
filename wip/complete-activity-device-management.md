@@ -1,6 +1,6 @@
 # Activity and device management
 
-Status: Implement (steps 1-8 done; step 9 hardware checklist is the user's)
+Status: Complete
 
 ## Description
 Add the standalone-mode "activity" and "device" layers: the device holds a Home page plus
@@ -383,6 +383,36 @@ against real equipment, Wi-Fi-dependent turnOn ops.
   (historical).
 - Host tests re-run: 493 passed.
 
+### 17. Step 9 hardware run (2026-11-06)
+- **Config over the device limit:** the first `activity-test.mjs` had 34 devices; the device said "config rejected
+  (over a limit): empty Home" (`CONFIG_MAX_DEVICES` 32). The bake doesn't check device limits yet (config-format.md
+  says so), so it baked without complaint. Fixed in the config (28 dummy devices). Offered: bake checks for the
+  device/activity/page/op-list limits (tests first).
+- **OPEN, come back to it: slow pings with the rejected config.** While the over-limit config was stored (empty
+  Home), pings to the device were often very slow, up to ~1 s. No code path found: a rejected config frees the blob
+  and returns, the op task sleeps on `portMAX_DELAY`, and Wi-Fi doesn't depend on the config. Not yet known whether it
+  was the config or a coincidence (shortly after the upload restart, router, RF). Next: ping with the good config; if
+  fine, re-upload a deliberately rejected blob to try to reproduce it; if it comes back, a `-DCB_WIFI_DIAG=ON` build.
+- **FIXED (verified on the hardware: the step 9 checklist passed with it): watchdog during a `delay`.** `Watch Listen Lights` tripped the task watchdog
+  (IDLE0 starved, the `ops` task running `delay_poll`) during the projector's 6 s warm-up. Cause: the tick is 100 Hz,
+  so `pdMS_TO_TICKS(OP_BUSY_POLL_MS = 5)` is 0 and the op task spun through every `delay` without blocking.
+  `standalone_task.cpp` now waits at least one tick (`OP_BUSY_POLL_TICKS`). Device layer only: not host testable.
+  Every other `pdMS_TO_TICKS` in `main/` is 10 ms or more.
+- **OPEN: lasting corruption after the watchdog.** After the watchdog fired, the left ~1/8 of the screen had
+  corrupted pixels from then on (the screen also jumped). Likely the watchdog ISR's backtrace print on core 0 stalled
+  the bounce fill, and the RGB/DMA stream didn't resync (`LCD_RGB_RESTART_IN_VSYNC` should limit a late fill to one bad
+  frame). With the spin fixed this shouldn't recur, but a long ISR stall leaving the panel shifted for good is worth
+  checking separately.
+- **Logging added for the run:** `standalone_task.cpp` logs `activity: <old> -> <new>` when a switch commits (or a
+  takeover/release drops it) and `op queue empty (busy N ms)` when the queue drains; the touch (`main.cpp`) and
+  `swipe: page a -> b` lines are now `ESP_LOGD` (compiled out at `CONFIG_LOG_MAXIMUM_LEVEL=3`).
+- **Result (2026-11-07, user): every check a-j passed** with the watchdog fix. Fill times (release, stats log): ~137 µs
+  typical, under 200 µs during a switch, 200-250 µs during a swipe (budget 615), so the `check_image` cost under the
+  model lock is fine and no timing log is needed. Not tested: real equipment (g3); the user marked the job complete.
+- Follow-ups outside this job: a busy indicator on the device while the op queue runs (the user's idea, after the
+  slow switches); bake checks for device limits; the two OPEN items above; possible banding on gradient keys
+  (`wip/wip-display-drive-strength.md`).
+
 ## CLAUDE.md proposals (propose only; CLAUDE.md NOT edited, awaiting the user's confirmation)
 1. **Firmware module list**, add entries for: `activity_switch.cpp/.h` (pure switch plan: list refs in spec
    order + new device mask), `activity_host.cpp/.h` (`ActivityApplier`: layout swap under the model lock,
@@ -624,7 +654,7 @@ the agent flags it but carries on. No commits unless asked. Only PROPOSE CLAUDE.
   not edit CLAUDE.md): new modules (`activity_switch`, the `ActivityHost`), the queue now holding
   list references, Open Items for the hardware checks below, the "Next" order in
   `docs/standalone.md` changes. Build unaffected; run host tests once more.
-- [ ] 9. **Final hardware test checklist for the user. [HW] (not automatable, flagged per Rule 3).**
+- [x] 9. **Final hardware test checklist for the user. [HW] (not automatable, flagged per Rule 3).**
   Write the checklist into this document (agent does not run it) and ask the user to run it:
   (a) boot to Home, press an activity key: pages 1..n appear, glide to page 1 with no stale or
   blank keys, status text shows the name, pager pills match; (b) swipe back to Home and select a
@@ -638,3 +668,75 @@ the agent flags it but carries on. No commits unless asked. Only PROPOSE CLAUDE.
   activity, mask kept; (i) swipe task and op task lock-order soak (no deadlock, no watchdog) with
   repeated rapid switches; (j) `RUN_STRESS` with a stored config containing activities. Results
   go in Notes; failures become new steps or a 1-3-1.
+
+### Step 9 checklist (for the user to run)
+
+**Setup.**
+- Config: `tools/bake/examples/activity-test.mjs` (bakes to ~290 KB). Upload from `tools/bake`:
+  `node cli.js examples/activity-test.mjs --upload`. Change `SERVER` at its top if the PC's IP isn't 10.1.1.126.
+- Run `python scratch/net_test_server.py` on the PC. Every hook and device op prints a line: UDP messages
+  (`UDP :9999 ... b'tv on'`) or a GET (`/get?avr=on`).
+- Watch the UART log (COM3). A release build with `-DCB_STATS_LOG=ON` gives the once-a-second late-fill counts for (d).
+- Activities: **Watch** (3 pages, devices tv + avr, status "Watch TV"), **Listen** (1 page, avr + light),
+  **Lights** (2 pages, light + projector; the projector's turnOn holds the queue for 6 s), **Big** (1 page, 28
+  dummy devices). Each activity's keys are labelled `W p1 k0` and so on, so a stale or blank key shows up.
+  Row 3 of every activity's page 1 is the switch row: Watch, Listen, Lights, None, Big.
+- Home: row 1 = the switch row; row 2 = `Watch Listen Lights` (three switches in one tap), `Hold a (no
+  switch)`, `Hold a long: Listen`, `Big in 5 s`, `Noop`; row 3 = `Ping Home`.
+
+**Expected server lines per switch** (all four hooks print, in this order):
+
+| Switch | Lines |
+|---|---|
+| none -> Watch | Watch willActivate, tv on, avr=on, Watch didActivate |
+| Watch -> Listen | Watch willDeactivate, Listen willActivate, light on, tv off, Listen didActivate, Watch didDeactivate (no avr: shared) |
+| Listen -> Lights | Listen willDeactivate, Lights willActivate, projector on, (6 s), projector warm, avr=off, Lights didActivate, Listen didDeactivate (no light: shared) |
+| Lights -> none | Lights willDeactivate, light off, projector off, Lights didDeactivate |
+
+**Checks.**
+- [x] a. Boot to Home, tap **Watch**: the screen glides to page 1 with all 15 `W p1` keys right (none blank or
+  left over from Home). Status "Watch TV", 4 pager pills. Swipe through `W p2` and `W p3`. Server: row 1 of the table.
+- [x] b. Swipe back to Home, tap **Lights** (3 pages to 2), then **Listen** (2 to 1), then **Watch** (1 to 3),
+  then **None** (Home only, 1 pill, status text empty). Keys and pills right each time. The server lines follow the
+  table's pattern: old willDeactivate, new willActivate, turnOns, turnOffs, new didActivate, old didDeactivate.
+- [x] c. Tap **Watch** twice: the second tap only glides to page 1. Swipe to `W p3` and tap the Watch key in the
+  switch row: glide back to page 1, and no new server lines.
+- [x] d. Release build with stats: count late fills during the switches in a and b (expect 0). Watch for a stutter
+  in the glide. The `check_image` cost under the model lock isn't measured anywhere: if the glide stutters or fills go
+  late, a timing log around `ConfigApplyActivity` is the next step.  (Results: 137 typical, <200 during activity 
+  switch 200-250 during swipe, budget 615)
+- [x] e. Held HID key. Open Notepad on the PC.
+  1. Home `Hold a (no switch)`: hold it for 2 s. `aaaa` repeats until you lift. This is the control.
+  2. Home `Hold a long: Listen`: hold it. `a` repeats; at 1.5 s the switch to Listen happens and the repeat stops
+     (`ReleaseAll`). Lift: nothing more is typed.
+  3. In Watch, page 1 key 9 `Hold a long: Lights`: hold it. At 1.5 s Lights' page appears under your finger with
+     `Must not fire` there. The repeat stops; lifting must not print `Lights k9 tapped`.
+  4. While holding `Hold a (no switch)`, swipe away: the repeat stops (release on swipe).
+- [x] f. Rapid switches and a full queue.
+  1. From Home with none selected, tap `Watch Listen Lights`: Lights ends up selected (2 pages, status "Lights").
+     Server: the three table rows (none -> Watch, then Watch -> Listen, then Listen -> Lights), complete and in
+     order. (All three switches run before any of their device ops. That is by design, so the lines come after.)
+  2. On an activity's page 1, tap Watch, Listen, Lights in the switch row as fast as you can: same result and order.
+  3. Queue full: tap None, then `Big in 5 s`, then tap `Noop` 12 or more times inside the 5 s. The UART log shows
+     `op failed: activity switch refused: op queue full`, and the screen and status don't change. (From no activity
+     the switch needs 30 entries, 2 hooks + 28 devices; 11 or more queued Noops leave too few of the 40.)
+  4. Then tap `Big` with nothing queued: it switches (1 page `B p1`), so 30 lists fit an idle queue. Tap None after.
+- [x] g. Devices and warm-up.
+  1. Shared devices aren't power cycled (avr on Watch -> Listen, light on Listen -> Lights: see the table).
+  2. Switch to Lights, then tap `Ping Lights` 3 times during the 6 s warm-up. The pings print only after
+     `projector warm`, and only then `avr=off` etc. Touch feedback (pressed look, swipes) still works during the wait.
+  3. Optional: real equipment instead of the test server. (not tested yet)
+- [x] h. Takeover in the middle of a switch.
+  1. From None, tap Lights, and while the projector warms up run `node scratch/takeover.mjs 3` (from the repo
+     root). Server: `Lights willActivate`, `light on`, `projector on`, then nothing more: `projector warm` and
+     `Lights didActivate` are dropped with the queue.
+  2. After the release: Home only, no activity selected (1 pill, status empty).
+  3. Tap Lights again: only `Lights willActivate` and `Lights didActivate` print, with no `light on`/`projector on`.
+     The device mask was kept, so light and projector count as already on.
+  4. The narrow race (a switch on the op task writing the layout while the host takes over) can't be hit by hand.
+     Look out for odd keys straight after a takeover.
+- [x] i. Soak: for a minute or two, mix rapid switch-row taps, `Watch Listen Lights` taps, swipes and pings
+  (`Ping Watch` etc.). No hang, no watchdog reset or panic in the log, and the screen keeps up. Some
+  `op queue full` refusals are fine.
+- [x] j. `RUN_STRESS` (`-DCB_RUN_STRESS=ON`, release) with this config stored: 0 late fills, as before. Afterwards
+  the device is empty: reboot to get the config back.

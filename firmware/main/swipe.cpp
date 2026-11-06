@@ -180,7 +180,7 @@ static int clamp_page(int page)
 static void glide_to(int page, float velocity, int64_t now)
 {
     if (page != s_page)
-        ESP_LOGI(TAG, "page %d -> %d", s_page, page);
+        ESP_LOGD(TAG, "page %d -> %d", s_page, page);
     s_page = page;
 
     s_glide_from     = s_pos;

@@ -37,6 +37,9 @@ static const char *TAG = "standalone";
 #define OP_TASK_PRIO    3
 #define OP_TASK_STACK   12288       // internal RAM: Lua's C recursion (script_host.h) and the executors
 #define OP_BUSY_POLL_MS 5           // while a delay holds the queue
+// At least one tick: at 100 Hz, pdMS_TO_TICKS(5) is 0, and a zero wait spins the op
+// task through a whole delay (starving IDLE0 until the task watchdog fires)
+#define OP_BUSY_POLL_TICKS (pdMS_TO_TICKS(OP_BUSY_POLL_MS) > 0 ? pdMS_TO_TICKS(OP_BUSY_POLL_MS) : 1)
 
 static Standalone        s_sa;
 static SemaphoreHandle_t s_lock;    // a mutex (priority inheritance): every s_sa call is under it
@@ -45,6 +48,17 @@ static TaskHandle_t      s_op_task;
 // Set by `run` under the lock, logged after it is released (the UART is slow)
 static uint32_t s_started_code;
 static uint32_t s_logged_errors;    // ops that ended in an error, as of the last log (op task only)
+
+// For the busy/idle and activity log lines (op task only)
+static const cfgdata::configRoot *s_root;
+static int      s_logged_activity = -1;
+static bool     s_was_busy;
+static uint32_t s_busy_since_ms;
+
+static const char *activity_name(int index)
+{
+    return index < 0 || !s_root ? "none" : s_root->activities[index].name;
+}
 
 static uint32_t clock_ms(void *)
 {
@@ -107,8 +121,17 @@ static void op_task(void *)
         uint32_t code = s_started_code;
         uint32_t errors = s_sa.Errors();
         const char *why = s_sa.LastError();     // a string literal in the executors: safe after the unlock
+        int activity = s_sa.Activity();
         xSemaphoreGive(s_lock);
 
+        uint32_t now = clock_ms(nullptr);
+        if (busy && !s_was_busy)
+            s_busy_since_ms = now;
+        if (activity != s_logged_activity) {
+            // The switch has been committed and its hook and device ops queued (or a takeover dropped it)
+            ESP_LOGI(TAG, "activity: %s -> %s", activity_name(s_logged_activity), activity_name(activity));
+            s_logged_activity = activity;
+        }
         if (code)
             ESP_LOGD(TAG, "op %u", (unsigned)code);
         if (errors > s_logged_errors) {
@@ -116,8 +139,11 @@ static void op_task(void *)
             ESP_LOGE(TAG, "op failed: %s (%lu so far)", why ? why : "?", (unsigned long)errors);
         }
         s_logged_errors = errors;               // (takeover and release start the count again from 0)
+        if (!busy && s_was_busy)
+            ESP_LOGI(TAG, "op queue empty (busy %lu ms)", (unsigned long)(now - s_busy_since_ms));
+        s_was_busy = busy;
         // Busy: an op started (the next may follow at once) or a delay is running
-        wait = !busy ? portMAX_DELAY : code ? 0 : pdMS_TO_TICKS(OP_BUSY_POLL_MS);
+        wait = !busy ? portMAX_DELAY : code ? 0 : OP_BUSY_POLL_TICKS;
     }
 }
 
@@ -136,6 +162,7 @@ esp_err_t standalone_init(const uint8_t *blob)
     h.script.realloc = script_realloc;
     h.script.log     = script_log;
     const cfgdata::configRoot *root = blob ? ConfigRoot(blob) : nullptr;    // the device's blob is relocated already
+    s_root = root;
     if (root) {
         ActivityScreen screen = {};
         screen.lock            = as_lock;
@@ -178,4 +205,6 @@ void standalone_set_hosted(bool hosted)
     s_sa.SetHosted(hosted);
     s_activity.Reset();             // the protocol reset the store before this: no activity's pages are on the layout
     xSemaphoreGive(s_lock);
+    wake_op_task();                 // so it logs the dropped selection now, not at the next key
+
 }

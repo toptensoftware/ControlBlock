@@ -362,7 +362,7 @@ static void init_nvs(void)
 static void on_touched(uint8_t id, TOUCH_EVENT_TYPE type, uint16_t x, uint16_t y)
 {
     if (type != TOUCH_MOVE)
-        ESP_LOGI(TAG, "touch id=%d %s x=%3d y=%3d", id, type == TOUCH_DOWN ? "DOWN" : "UP", x, y);
+        ESP_LOGD(TAG, "touch id=%d %s x=%3d y=%3d", id, type == TOUCH_DOWN ? "DOWN" : "UP", x, y);
     swipe_touch(id, type, x, y);
 }
 
