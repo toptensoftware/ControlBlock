@@ -1,7 +1,7 @@
-// Shared by the hardware test configs (activity-test.mjs, script-test.mjs): the PC running
-// examples/test-server/net_test_server.py, ops that announce themselves to it, and flat key faces.
+// Shared by the hardware test layouts (activity-test.mjs, script-test.mjs): the PC running
+// examples/test-server/test-server.mjs, ops that announce themselves to it, and flat key faces.
 
-// The PC running examples/test-server/net_test_server.py (HTTP :8000, UDP :9999)
+// The PC running examples/test-server/test-server.mjs (HTTP :8000, UDP :9999)
 export const SERVER = "10.1.1.126";
 export const HTTP = `http://${SERVER}:8000`;
 

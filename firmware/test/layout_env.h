@@ -1,7 +1,7 @@
 #pragma once
 
-// Test environment for the config blob: the sample blob baked by host/src/bake
-// (data/sample_config.json -> data/sample_config.bin), helpers to read and
+// Test environment for the layout blob: the sample blob baked by host/src/bake
+// (data/sample_layout.json -> data/sample_layout.bin), helpers to read and
 // rebuild it, and a buffer that faults on any read past its end.
 
 #include <stdint.h>
@@ -9,28 +9,28 @@
 #include <stdlib.h>
 #include <string.h>
 #include "Core.h"
-#include "config_blob.h"
+#include "layout_blob.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
 
-// File offsets in the sample, from the generated structs (config_types.h)
-#define CB_OFF(type, field) ((uint32_t)offsetof(cfgdata::type, field))      // within a struct
+// File offsets in the sample, from the generated structs (layout_types.h)
+#define CB_OFF(type, field) ((uint32_t)offsetof(layoutdata::type, field))      // within a struct
 #define CB_ROOT             BPAK_HEADER_SIZE
-#define CB_ROOT_LONGPRESS   (CB_ROOT + CB_OFF(configRoot, longPressMs))
-#define CB_HOME_KEY(i)      (CB_ROOT + CB_OFF(configRoot, homePage) + CB_OFF(home, keys) + (i) * (uint32_t)sizeof(cfgdata::key))
-#define CB_KEY_COUNT(k, s)  ((k) + ConfigKeyImageOffset(s))             // the image's (count, ptr) pair
-#define CB_KEY_PTR(k, s)    ((k) + ConfigKeyImagePtrOffset(s))
-#define CB_HOME_BINDINGS    (CB_ROOT + CB_OFF(configRoot, homePage) + CB_OFF(home, bindings_count))     // count
-#define CB_HOME_BINDINGS_PTR (CB_ROOT + CB_OFF(configRoot, homePage) + CB_OFF(home, bindings))
-#define CB_ROOT_DEVICES     (CB_ROOT + CB_OFF(configRoot, devices_count))
-#define CB_ROOT_DEVICES_PTR (CB_ROOT + CB_OFF(configRoot, devices))
-#define CB_ROOT_ACTIVITIES  (CB_ROOT + CB_OFF(configRoot, activities_count))
-#define CB_ROOT_ACTIVITIES_PTR (CB_ROOT + CB_OFF(configRoot, activities))
+#define CB_ROOT_LONGPRESS   (CB_ROOT + CB_OFF(layoutRoot, longPressMs))
+#define CB_HOME_KEY(i)      (CB_ROOT + CB_OFF(layoutRoot, homePage) + CB_OFF(home, keys) + (i) * (uint32_t)sizeof(layoutdata::key))
+#define CB_KEY_COUNT(k, s)  ((k) + LayoutKeyImageOffset(s))             // the image's (count, ptr) pair
+#define CB_KEY_PTR(k, s)    ((k) + LayoutKeyImagePtrOffset(s))
+#define CB_HOME_BINDINGS    (CB_ROOT + CB_OFF(layoutRoot, homePage) + CB_OFF(home, bindings_count))     // count
+#define CB_HOME_BINDINGS_PTR (CB_ROOT + CB_OFF(layoutRoot, homePage) + CB_OFF(home, bindings))
+#define CB_ROOT_DEVICES     (CB_ROOT + CB_OFF(layoutRoot, devices_count))
+#define CB_ROOT_DEVICES_PTR (CB_ROOT + CB_OFF(layoutRoot, devices))
+#define CB_ROOT_ACTIVITIES  (CB_ROOT + CB_OFF(layoutRoot, activities_count))
+#define CB_ROOT_ACTIVITIES_PTR (CB_ROOT + CB_OFF(layoutRoot, activities))
 
-namespace config_env
+namespace layout_env
 {
     inline uint32_t U32(const SimpleLib::List<uint8_t> &b, uint32_t off)
     {
@@ -43,19 +43,19 @@ namespace config_env
         memcpy(b.GetBuffer() + off, &v, 4);
     }
 
-    // data/sample_config.bin (run from firmware/test or the repository root)
+    // data/sample_layout.bin (run from firmware/test or the repository root)
     inline SimpleLib::List<uint8_t> LoadSample()
     {
         static const char *dirs[] = { "data/", "firmware/test/data/", "../test/data/" };
         FILE *f = nullptr;
         char path[256];
         for (const char *d : dirs) {
-            snprintf(path, sizeof(path), "%ssample_config.bin", d);
+            snprintf(path, sizeof(path), "%ssample_layout.bin", d);
             if ((f = fopen(path, "rb")) != nullptr)
                 break;
         }
         if (!f) {
-            fprintf(stderr, "Can't find firmware/test/data/sample_config.bin (run from firmware/test)\n");
+            fprintf(stderr, "Can't find firmware/test/data/sample_layout.bin (run from firmware/test)\n");
             exit(2);
         }
         fseek(f, 0, SEEK_END);
@@ -71,10 +71,10 @@ namespace config_env
 
     // Relocate `b` in place to its own address, as the device does after validating:
     // the pointers in it are real (32-bit) addresses. Once per blob.
-    inline const cfgdata::configRoot *Relocate(SimpleLib::List<uint8_t> &b)
+    inline const layoutdata::layoutRoot *Relocate(SimpleLib::List<uint8_t> &b)
     {
-        ConfigRelocate(b.GetBuffer(), (uint32_t)b.GetCount(), (uint32_t)(uintptr_t)b.GetBuffer());
-        return ConfigRoot(b.GetBuffer());
+        LayoutRelocate(b.GetBuffer(), (uint32_t)b.GetCount(), (uint32_t)(uintptr_t)b.GetBuffer());
+        return LayoutRoot(b.GetBuffer());
     }
 
     inline uint32_t TableOffset(const SimpleLib::List<uint8_t> &b) { return U32(b, 12); }

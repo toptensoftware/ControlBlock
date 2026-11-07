@@ -5,7 +5,7 @@
 import { ControlBlock } from "../src/ControlBlock.js";
 import { MessageParser, encodeMessage, Writer, Reader, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION, USB_PACKET_SIZE, crc32 } from "../src/protocol.js";
 
-export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true, wifiCredentials = false, hosted = false, config } = {})
+export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true, wifiCredentials = false, hosted = false, layout } = {})
 {
     const w = new Writer(128);
     w.u16(PROTOCOL_VERSION).u16((backlight ? InfoFlags.BACKLIGHT : 0) | (wifiCredentials ? InfoFlags.WIFI_CREDENTIALS : 0) | (hosted ? InfoFlags.HOSTED : 0)).u32(maxPayload).u32(5000000).u32(1234).u32(3).u32(4000000);
@@ -15,40 +15,40 @@ export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true
         const b = new TextEncoder().encode(s);
         w.u8(b.length).raw(b);
     }
-    if (config)
-        w.u32(config.capacity).u32(config.size).u32(config.crc);
+    if (layout)
+        w.u32(layout.capacity).u32(layout.size).u32(layout.crc);
     return w.done();
 }
 
 const USB_RX_TRANSFER = 512;    // the firmware's receive transfer (CONFIG_TINYUSB_VENDOR_EPSIZE)
 
-// Requests that edit the layout, images or status bar: refused while standalone
-const LAYOUT_REQUESTS = [Msg.RESET, Msg.SET_STATUS_TEXT, Msg.PUT_IMAGE, Msg.FREE_IMAGES, Msg.SET_PAGE_COUNT, Msg.SET_KEYS, Msg.SET_PAGE];
+// Requests that edit the keys, images or status bar: refused while standalone
+const HOSTED_REQUESTS = [Msg.RESET, Msg.SET_STATUS_TEXT, Msg.PUT_IMAGE, Msg.FREE_IMAGES, Msg.SET_PAGE_COUNT, Msg.SET_KEYS, Msg.SET_PAGE];
 
 export class FakeDevice
 {
-    // config: emulate the standalone config upload (docs/protocol.md): { capacity, latencyMs, failAt }
-    //   latencyMs: how long each CONFIG_DATA takes to answer; failAt: a chunk offset that gets IO_ERROR
+    // layout: emulate the standalone layout upload (docs/protocol.md): { capacity, latencyMs, failAt }
+    //   latencyMs: how long each LAYOUT_DATA takes to answer; failAt: a chunk offset that gets IO_ERROR
     //   After a good commit the device "restarts": the connection drops, and (if
-    //   restartMs is set) it comes back after that long, with the config in GET_INFO.
+    //   restartMs is set) it comes back after that long, with the layout in GET_INFO.
     // wifi: emulate the Wi-Fi messages (docs/wifi.md): { ssid, pass } already stored (strings),
     //   and `status` ({ state, reason, rssi, ip, mac }) is what WIFI_STATUS reports (settable by tests)
     // hosted: a host has taken control (the device itself boots standalone, `hosted: false`). While
-    //   standalone, requests that edit the layout get NOT_HOSTED; TAKE_CONTROL clears `model` ("home"
+    //   standalone, requests that edit the screen get NOT_HOSTED; TAKE_CONTROL clears `model` ("home"
     //   standalone, "empty" hosted) and RELEASE_CONTROL puts Home back and the backlight on.
     //   controlStatus: if not OK, TAKE_CONTROL and RELEASE_CONTROL answer with it and change nothing.
-    constructor({ maxPayload = 8192, handler, backlight = true, config, wifi, hosted = false, controlStatus = Status.OK } = {})
+    constructor({ maxPayload = 8192, handler, backlight = true, layout, wifi, hosted = false, controlStatus = Status.OK } = {})
     {
         this.hosted = hosted;
         this.model = hosted ? "empty" : "home";
         this.controlStatus = controlStatus;
         this.wifi = wifi ? { ssid: "", pass: "", status: { state: 0, reason: 0, rssi: 0, ip: [0, 0, 0, 0], mac: [0, 0, 0, 0, 0, 0] }, ...wifi } : null;
-        this.config = config ? {
+        this.layout = layout ? {
             capacity: 1 << 20, latencyMs: 0, commitMs: 0, restartMs: 0, failAt: -1,
             stored: null,               // { size, crc } once committed
             upload: null,               // { size, crc, received, chunks: [] } in progress
             inflight: 0, maxInflight: 0,
-            ...config,
+            ...layout,
         } : null;
         this.gone = false;              // disconnected: transferIn throws
         this.maxReadTimeout = 0;        // longest timeout a transferIn asked for (ms)
@@ -105,16 +105,16 @@ export class FakeDevice
             this.requests.push(msg);
             if (msg.type === Msg.SET_BACKLIGHT && msg.payload.length >= 1)
                 this.backlight = msg.payload[0] !== 0;
-            if (this.config && msg.type >= Msg.CONFIG_BEGIN && msg.type <= Msg.CONFIG_COMMIT) {
-                this._config(msg);
+            if (this.layout && msg.type >= Msg.LAYOUT_BEGIN && msg.type <= Msg.LAYOUT_COMMIT) {
+                this._layout(msg);
                 continue;
             }
             const r = msg.type === Msg.TAKE_CONTROL || msg.type === Msg.RELEASE_CONTROL
                 ? this._control(msg)
-                : !this.hosted && LAYOUT_REQUESTS.includes(msg.type)
+                : !this.hosted && HOSTED_REQUESTS.includes(msg.type)
                     ? { status: Status.NOT_HOSTED, data: new Uint8Array(0) }
                 : msg.type === Msg.GET_INFO
-                ? { status: Status.OK, data: infoPayload({ maxPayload: this.maxPayload, backlight: this.backlight, hosted: this.hosted, wifiCredentials: !!this.wifi?.ssid, config: this.config && { capacity: this.config.capacity, size: this.config.stored?.size ?? 0, crc: this.config.stored?.crc ?? 0 } }) }
+                ? { status: Status.OK, data: infoPayload({ maxPayload: this.maxPayload, backlight: this.backlight, hosted: this.hosted, wifiCredentials: !!this.wifi?.ssid, layout: this.layout && { capacity: this.layout.capacity, size: this.layout.stored?.size ?? 0, crc: this.layout.stored?.crc ?? 0 } }) }
                 : this.wifi && msg.type >= Msg.WIFI_SET && msg.type <= Msg.WIFI_STATUS
                     ? this._wifi(msg)
                 : msg.type === Msg.PING
@@ -160,18 +160,18 @@ export class FakeDevice
         return { status: Status.OK, data: new Writer(14).u8(st.state).u8(st.reason).u8(st.rssi & 0xFF).u8(0).raw(Uint8Array.from(st.ip)).raw(Uint8Array.from(st.mac)).done() };
     }
 
-    // The config upload, as the firmware does it. Answers (possibly later) itself.
-    _config(msg)
+    // The layout upload, as the firmware does it. Answers (possibly later) itself.
+    _layout(msg)
     {
-        const c = this.config;
+        const c = this.layout;
         const r = new Reader(msg.payload);
         let status = Status.OK, delay = 0;
-        if (msg.type === Msg.CONFIG_BEGIN) {
+        if (msg.type === Msg.LAYOUT_BEGIN) {
             const size = r.u32(), crc = r.u32();
             if (size === 0) status = Status.BAD_ARG;
             else if (size > c.capacity) status = Status.NO_SPACE;
             else { c.stored = null; c.upload = { size, crc, received: 0, bytes: new Uint8Array(size) }; }
-        } else if (msg.type === Msg.CONFIG_DATA) {
+        } else if (msg.type === Msg.LAYOUT_DATA) {
             const offset = r.u32(), data = msg.payload.subarray(4);
             const u = c.upload;
             if (!data.length) status = Status.BAD_LENGTH;
@@ -188,7 +188,7 @@ export class FakeDevice
         const done = () => {
             c.inflight--;
             this.respond(msg, status);
-            if (msg.type === Msg.CONFIG_COMMIT && status === Status.OK) {
+            if (msg.type === Msg.LAYOUT_COMMIT && status === Status.OK) {
                 this.gone = true;               // restart
                 this.push(null);
                 if (c.restartMs)

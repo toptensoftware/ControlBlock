@@ -1,3 +1,4 @@
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -16,7 +17,7 @@
 #include "waveshare_rgb_lcd_port.h"
 #include "waveshare_touch_port.h"
 #include "compositor.h"
-#include "config_boot.h"
+#include "layout_boot.h"
 #include "model.h"
 #include "heap_log.h"
 #include "host_link.h"
@@ -107,10 +108,11 @@ static const char *net_counts(void)
 #if RUN_STRESS
 
 #include "test_keys.h"
-#include "config_types.h"
+#include "layout_types.h"
 #include "op_exec.h"
 #include "script_host.h"
 #include "standalone_task.h"
+#include "stress_script.h"
 
 #define NUM_PAGES 3
 
@@ -135,25 +137,82 @@ static uint32_t face_id(int i) { return DEMO_FACE_ID(i, s_opaque); }
 static uint32_t icon_id(int i) { return DEMO_ICON_ID(i % s_icon_count); }
 static int      page_face(int page) { return page % TEST_KEYS_FACE_PRESSED; }
 
+// What load_demo_images found, logged with the results: anything logged during the load used to be
+// lost when the backlight switch-on dropped the UART port
+static char     s_load_report[512];
+static int      s_load_len;
+static uint32_t s_load_store_count, s_load_blobs;
+
+static void report(const char *fmt, ...)
+{
+    if (s_load_len >= (int)sizeof(s_load_report) - 1)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    s_load_len += vsnprintf(s_load_report + s_load_len, sizeof(s_load_report) - s_load_len, fmt, ap);
+    va_end(ap);
+}
+
+// The PSRAM copy of the pack against the original embedded in the app. A backlight switch-on once
+// corrupted it (bit errors over ~1 KB; CLAUDE.md, Open Items): the early warning if that comes back.
+static void report_pack_diffs(const BLOBPACK *pack)
+{
+    const uint8_t *copy = (const uint8_t *)pack;
+    uint32_t size = test_keys_end - test_keys_start;
+    int n = 0, first = -1, last = -1;
+    for (uint32_t i = 0; i < size; i++) {
+        if (copy[i] == test_keys_start[i])
+            continue;
+        if (n++ == 0)
+            first = (int)i;
+        last = (int)i;
+    }
+    if (n == 0)
+        return;
+    report(" | PSRAM copy CORRUPT: %d bytes differ (%p..%p):", n, copy + first, copy + last);
+    for (int i = first; i < first + 8 && i < (int)size; i++)
+        report(" %02x/%02x", copy[i], test_keys_start[i]);
+}
+
 static esp_err_t load_demo_images(void)
 {
     BLOBPACK *pack = load_pack(test_keys_start, test_keys_end);
     if (!pack)
         return ESP_ERR_NO_MEM;
+    report_pack_diffs(pack);
     s_icon_count = TEST_KEYS_ICON_COUNT(pack->count);
+    uint32_t pack_count = pack->count;
 
+    // Every image is tried, and each refusal noted
     esp_err_t err = ESP_OK;
-    for (uint32_t b = 0; b + 1 < pack->count && err == ESP_OK; b++) {
+    for (uint32_t b = 0; b + 1 < pack_count; b++) {
         uint32_t id = b < TEST_KEYS_FIRST_ICON
                     ? DEMO_FACE_ID(b % TEST_KEYS_FACES, b >= TEST_KEYS_FACES)
                     : DEMO_ICON_ID(b - TEST_KEYS_FIRST_ICON);
-        if (model_put_image(id, get_blob(pack, b), get_blob_size(pack, b)) != ImageResult::Ok) {
-            ESP_LOGE(TAG, "Demo image %u was rejected", (unsigned)b);
+        ImageResult ir = model_put_image(id, get_blob(pack, b), get_blob_size(pack, b));
+        if (ir != ImageResult::Ok) {
+            report(" | blob %u (ID 0x%08lx, %lu bytes) refused (%d)", (unsigned)b, (unsigned long)id,
+                   (unsigned long)get_blob_size(pack, b), (int)ir);
             err = ESP_ERR_INVALID_STATE;
         }
     }
     heap_caps_free(pack);
+
+    ImageStoreStats is;
+    model_lock();
+    model_store()->GetStats(&is);
+    model_unlock();
+    s_load_store_count = is.count;
+    s_load_blobs = pack_count - 1;
     return err;
+}
+
+// Refusal codes: 1 bad arg, 2 no space, 3 bad image, 4 bad sequence (ImageResult)
+static void log_demo_load(void)
+{
+    ESP_LOGI(TAG, "stress: %lu demo images (%d icons), the store then had %lu images%s",
+             (unsigned long)s_load_blobs, s_icon_count, (unsigned long)s_load_store_count,
+             s_load_report[0] ? s_load_report : " | all accepted, PSRAM copy intact");
 }
 
 static KeyDef demo_key(int page, int k, int icon)
@@ -168,6 +227,31 @@ static KeyDef demo_key(int page, int k, int icon)
     return d;
 }
 
+// A refused layout change leaves the compositor with nothing to draw, which makes a case's numbers
+// meaningless: log the first refusal of each case (stress_run clears s_layout_refused)
+static bool s_layout_refused;
+
+static void check_layout(KeyLayoutResult r, const char *what, const KeyDef *defs = nullptr, int count = 0)
+{
+    if (r == KeyLayoutResult::Ok || s_layout_refused)
+        return;
+    s_layout_refused = true;
+
+    // Which image the store doesn't have, and how many it does
+    uint32_t missing = 0;
+    ImageStoreStats is;
+    model_lock();
+    for (int i = 0; i < count && !missing; i++)
+        for (int s = 0; s < KEY_SLOTS && !missing; s++)
+            if (defs[i].ids[s] && !model_store()->IsLive(defs[i].ids[s]))
+                missing = defs[i].ids[s];
+    model_store()->GetStats(&is);
+    model_unlock();
+    ESP_LOGE(TAG, "stress: %s refused (%d): first missing image 0x%08lx; the store has %lu images, %lu KB of %lu KB",
+             what, (int)r, (unsigned long)missing, (unsigned long)is.count, (unsigned long)(is.used / 1024),
+             (unsigned long)(is.capacity / 1024));
+}
+
 // Every page: its face colour, a different run of icons
 static void set_demo_layout(bool opaque)
 {
@@ -178,9 +262,11 @@ static void set_demo_layout(bool opaque)
             defs[p * COMP_KEYS + k] = demo_key(p, k, p * 5 + k);
 
     model_lock();
-    model_layout()->SetPageCount(NUM_PAGES);
-    model_layout()->SetKeys(defs, NUM_PAGES * COMP_KEYS);
+    KeyLayoutResult count = model_layout()->SetPageCount(NUM_PAGES);
+    KeyLayoutResult keys  = model_layout()->SetKeys(defs, NUM_PAGES * COMP_KEYS);
     model_unlock();
+    check_layout(count, "SetPageCount");
+    check_layout(keys, "SetKeys (layout)", defs, NUM_PAGES * COMP_KEYS);
 }
 
 // Every key on pages first..last gets icons shifted by `shift`
@@ -192,8 +278,9 @@ static void change_icons(int first, int last, int shift, uint32_t flags)
         for (int k = 0; k < COMP_KEYS; k++)
             defs[n++] = demo_key(p, k, p * 5 + k + shift);
     model_lock();
-    model_layout()->SetKeys(defs, n, flags);
+    KeyLayoutResult r = model_layout()->SetKeys(defs, n, flags);
     model_unlock();
+    check_layout(r, "SetKeys (icon change)", defs, n);
 }
 
 // ---------------------------------------------------------------------------
@@ -231,14 +318,6 @@ typedef enum {
 #define STRESS_SCRIPT_STACK    12288       // as the op task's (standalone_task.cpp)
 #define STRESS_SCRIPT_PRIO     3
 
-static const char STRESS_LUA[] =
-    "local t = {}\n"
-    "for i = 1, 800 do t[i] = string.rep('x', 40) .. i end\n"
-    "local s = table.concat(t, ',')\n"
-    "local u = {}\n"
-    "for w in s:gmatch('[^,]+') do u[#u + 1] = #w end\n"
-    "total = (total or 0) + #s + #u\n";
-
 static ScriptHost        s_stress_script;
 static volatile bool     s_script_on;
 static volatile uint32_t s_script_runs;
@@ -254,7 +333,7 @@ static void script_churn_task(void *)
     ExecCtx exec = {};
     exec.now_ms = stress_clock_ms;
     exec.script = &s_stress_script;
-    cfgdata::scriptOp op = {};
+    layoutdata::scriptOp op = {};
     op.base.op      = OP_SCRIPT;
     op.source       = STRESS_LUA;
     op.source_count = sizeof(STRESS_LUA) - 1;
@@ -303,6 +382,7 @@ static void replace_icon(int round)
 static void stress_run(stress_result_t *r, const char *label, bool opaque, int scroll, uint32_t flags,
                        uint32_t what = STRESS_KEYS)
 {
+    s_layout_refused = false;
     set_demo_layout(opaque);
     if (what & STRESS_REPLACE) {
         // Every key in view shows icon 0
@@ -310,8 +390,9 @@ static void stress_run(stress_result_t *r, const char *label, bool opaque, int s
         for (int i = 0; i < NUM_PAGES * COMP_KEYS; i++)
             defs[i] = demo_key(i / COMP_KEYS, i % COMP_KEYS, 0);
         model_lock();
-        model_layout()->SetKeys(defs, NUM_PAGES * COMP_KEYS);
+        KeyLayoutResult lr = model_layout()->SetKeys(defs, NUM_PAGES * COMP_KEYS);
         model_unlock();
+        check_layout(lr, "SetKeys (replace layout)", defs, NUM_PAGES * COMP_KEYS);
     }
     screen_set_scroll(scroll);
     vTaskDelay(pdMS_TO_TICKS(300));         // let both pages build
@@ -376,6 +457,7 @@ static void run_stress(void)
 {
     static stress_result_t results[16];
     int n = 0;
+    ESP_LOGI(TAG, "stress run starting (~35 s): touch, USB and Wi-Fi start after it, results at the end");
     for (int opaque = 0; opaque < 2; opaque++) {
         const char *rest  = opaque ? "opaque, at rest, incremental" : "at rest, incremental";
         const char *restf = opaque ? "opaque, at rest, flush"       : "at rest, flush";
@@ -409,6 +491,7 @@ static void run_stress(void)
 
     ESP_LOGI(TAG, "---- stress: every key in view changes every 20 ms for 2 s; fill budget %d us ----",
              DISPLAY_BOUNCE_BUDGET_US);
+    log_demo_load();
     for (int i = 0; i < n; i++) {
         stress_log(&results[i]);
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -476,19 +559,20 @@ extern "C" void app_main(void)
 
     ESP_ERROR_CHECK(comp_init(model_get_page, model_is_retired, NULL));
     log_heap(TAG, "after the compositor");
-    config_boot_load();                     // before the store sizes itself and before the display runs
-    log_heap(TAG, "after the config load");
+    layout_boot_load();                     // before the store sizes itself and before the display runs
+    log_heap(TAG, "after the layout load");
     ESP_ERROR_CHECK(model_init());
     log_heap(TAG, "after the model");
-    ESP_ERROR_CHECK(screen_init(1));        // the layout starts with one empty page
+    ESP_ERROR_CHECK(screen_init(1));        // the key layout starts with one empty page
     log_heap(TAG, "after the screen (display driver)");
-    config_boot_apply();                    // the stored config's Home, if any
-#if !NO_DISPLAY
-    ESP_ERROR_CHECK(display_enable_backlight(true));
+    layout_boot_apply();                    // the stored layout's Home, if any
+    // The backlight is already on (ch422g_init keeps it on: switching it on corrupts PSRAM)
+#if NO_DISPLAY
+    ESP_ERROR_CHECK(display_enable_backlight(false));
 #endif
 
 #if RUN_STRESS
-    ESP_ERROR_CHECK(load_demo_images());
+    load_demo_images();                     // refusals are reported with the results (log_demo_load)
     screen_set_page_count(NUM_PAGES);
     run_stress();
 #endif

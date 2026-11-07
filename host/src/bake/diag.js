@@ -1,4 +1,4 @@
-// Error and warning collector. Every entry has a JSON path into the user's config.
+// Error and warning collector. Every entry has a JSON path into the user's layout.
 
 // "a" + "b" -> "a.b"; "a" + 3 -> "a[3]"; names that aren't plain identifiers use ["..."]
 export function childPath(base, key)

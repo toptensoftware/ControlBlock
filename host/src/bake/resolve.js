@@ -1,5 +1,5 @@
-// Stage 1: the user's config -> a plain, fully specified tree shaped like the device structs
-// (docs/config-format.md "What the pipeline produces"). Synchronous and pure: everything that
+// Stage 1: the user's layout -> a plain, fully specified tree shaped like the device structs
+// (docs/layout-format.md "What the pipeline produces"). Synchronous and pure: everything that
 // touches the world comes in through `host`:
 //   exists(path) -> bool       resolvePath(rel) -> path       readText(path) -> string
 //   luaCheck(source) -> null | error message
@@ -28,16 +28,16 @@ const fileVersion = (v, p, d) =>
 // The properties of `value` that pass `spec` (errors recorded), or null if it isn't an object
 const section = (value, spec, path, diag) => checkProps(value, spec, path, diag).value;
 
-export function resolve(config, host)
+export function resolve(layout, host)
 {
     const diag = new Diagnostics();
-    const tree = build(config, host, diag);
+    const tree = build(layout, host, diag);
     return { tree, errors: diag.errors, warnings: diag.warnings };
 }
 
-function build(config, host, diag)
+function build(layout, host, diag)
 {
-    const root = section(config, {
+    const root = section(layout, {
         version: required(fileVersion),
         settings: t.any, defaults: t.any, devices: t.map(t.any), actions: t.map(t.any),
         home: required(t.any), activities: t.map(t.any),

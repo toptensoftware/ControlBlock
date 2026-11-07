@@ -1,6 +1,6 @@
 // Op lists: validation and the packed form of each op, in one table. An op list is one op
 // object, an array of them, or null; `{ use: "name" }` expands a named action inline.
-// See docs/config-format.md "Op lists" and docs/standalone.md "Actions".
+// See docs/layout-format.md "Op lists" and docs/standalone.md "Actions".
 
 import { OP, HID_MODE, ACTIVITY_NONE, MAX_SCRIPT_BYTES } from "./consts.js";
 import { childPath } from "./diag.js";

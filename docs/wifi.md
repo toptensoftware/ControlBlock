@@ -12,7 +12,7 @@
 
 ## Behaviour
 
-- **Independent of the operating mode.** The Wi-Fi messages work in standalone and in hosted mode, and neither mode starts, stops or resets Wi-Fi. `RESET`, `RESET_STREAM`, taking control and releasing leave the credentials and the connection alone, like the stored config.
+- **Independent of the operating mode.** The Wi-Fi messages work in standalone and in hosted mode, and neither mode starts, stops or resets Wi-Fi. `RESET`, `RESET_STREAM`, taking control and releasing leave the credentials and the connection alone, like the stored layout.
 - **One network.** One SSID and one password, or none.
 - **Boot:** if credentials are stored, start Wi-Fi and connect. If not, Wi-Fi is not started at all (no RAM spent, no radio).
 - **Setting credentials** stores them, then connects (or reconnects) in the background. The response does not wait for the connection: the host polls `WIFI_STATUS` or listens for the `WIFI_STATE` event.
@@ -111,7 +111,7 @@ The `nvs` partition (24 KB at `0x9000`) already exists in `partitions.csv`.
 - **Equality check before writing:** read the stored blob and skip the write if identical, so repeated sets cost no wear.
 - **Boot:** `nvs_flash_init()` early in `main`. If it returns `ESP_ERR_NVS_NO_FREE_PAGES` or `ESP_ERR_NVS_NEW_VERSION_FOUND`, erase and init again (the credentials are lost; the host can set them again). The Wi-Fi driver uses NVS too (PHY calibration data), and so does the planned standalone state; they use their own namespaces.
 - **The driver must not store credentials itself.** Call `esp_wifi_set_storage(WIFI_STORAGE_RAM)` before setting the config, so there is exactly one copy of the credentials (ours), and the driver does not write to flash on every `esp_wifi_set_config`.
-- **Flash writes and the display:** an NVS write is a flash write, and flash writes stall the bounce ISR (`CONFIG_LCD_RGB_ISR_IRAM_SAFE` is off; this is the same issue as the config upload). A credentials write is small (one flash page, plus an occasional page erase when NVS garbage-collects) and rare. Not a problem on the hardware, since credentials are very rarely written.
+- **Flash writes and the display:** an NVS write is a flash write, and flash writes stall the bounce ISR (`CONFIG_LCD_RGB_ISR_IRAM_SAFE` is off; this is the same issue as the layout upload). A credentials write is small (one flash page, plus an occasional page erase when NVS garbage-collects) and rare. Not a problem on the hardware, since credentials are very rarely written.
 - The Wi-Fi stack also writes to NVS on its own (PHY calibration data, when it changes) around `esp_wifi_start`. Check for a display glitch there on the hardware too.
 
 ## Security
@@ -185,7 +185,7 @@ Each step: write or adjust the tests first, see them fail, then implement. Steps
 Steps 1 to 7 of the plan are done. Step 6 (`wifi.cpp`) connects on the board; credentials survive a reboot and a reflash, and the NVS write doesn't glitch the display. Not yet confirmed: wrong password stopping (built, host tested) and router restart recovery. Power save is for later (battery use).
 
 - **Files:** `wifi_credentials.cpp/.h`, `wifi_state.cpp/.h` (pure, host tested), `wifi.cpp/.h` (device), `heap_log.h` (the heap log line, shared with `main.cpp`). Tests: `TestWifiCredentials.cpp`, `TestWifiState.cpp`, the Wi-Fi facts at the end of `TestProtocol.cpp`, with `wifi_env.h` (a fake storage). Host library: `setWifi`, `clearWifi`, `getWifi`, `wifiStatus`, the `wifiState` event and `waitWifiConnected`; the command line is `cli/cli.js wifi`.
-- **Set and get are not `ProtocolHost` callbacks.** `Protocol` is given the `WifiConfig` (as it is given the `ConfigStore`) and calls `Set` / `Get` / `Stored` itself, so the rules and the storage logic exist once. Only `wifi_status` is a callback (the state lives in the Wi-Fi task). The change notification is `WifiConfig::SetChangedCallback`.
+- **Set and get are not `ProtocolHost` callbacks.** `Protocol` is given the `WifiConfig` (as it is given the `LayoutStore`) and calls `Set` / `Get` / `Stored` itself, so the rules and the storage logic exist once. Only `wifi_status` is a callback (the state lives in the Wi-Fi task). The change notification is `WifiConfig::SetChangedCallback`.
 - **Equality check against the in-memory copy**, loaded from NVS at boot, rather than reading the blob back before every write. Same result without the extra flash read.
 - **`RETRYING` stays `RETRYING` across the attempts** after the first failure, until it connects. This is what makes "events on state change, not on every retry" hold; `CONNECTING` is only the very first attempt (and the one after a new `WIFI_SET`, or after the IP is lost).
 - **`STA_CONNECTED` is ignored**: it would not change the state (still waiting for an IP).

@@ -8,17 +8,17 @@ KeyLayout::~KeyLayout()
 {
     if (!m_store)
         return;
-    for (int p = 0; p < LAYOUT_MAX_PAGES; p++)
+    for (int p = 0; p < KEY_LAYOUT_MAX_PAGES; p++)
         ClearPage(p);
 }
 
-void KeyLayout::Init(ImageStore *store, layout_page_changed_t changed, void *ctx)
+void KeyLayout::Init(ImageStore *store, key_layout_page_changed_t changed, void *ctx)
 {
     m_store      = store;
     m_changed    = changed;
     m_ctx        = ctx;
     m_page_count = 1;
-    for (int p = 0; p < LAYOUT_MAX_PAGES; p++)
+    for (int p = 0; p < KEY_LAYOUT_MAX_PAGES; p++)
         for (int k = 0; k < COMP_KEYS; k++)
             m_keys[p][k].flags = KEYDEF_EMPTY;
 }
@@ -68,30 +68,30 @@ void KeyLayout::ClearPage(int page)
     }
 }
 
-LayoutResult KeyLayout::SetPageCount(int count)
+KeyLayoutResult KeyLayout::SetPageCount(int count)
 {
-    if (count < 1 || count > LAYOUT_MAX_PAGES)
-        return LayoutResult::BadArg;
+    if (count < 1 || count > KEY_LAYOUT_MAX_PAGES)
+        return KeyLayoutResult::BadArg;
     for (int p = count; p < m_page_count; p++)
         ClearPage(p);
     m_page_count = count;
-    return LayoutResult::Ok;
+    return KeyLayoutResult::Ok;
 }
 
-LayoutResult KeyLayout::SetKeys(const KeyDef *defs, int count, uint32_t change_flags)
+KeyLayoutResult KeyLayout::SetKeys(const KeyDef *defs, int count, uint32_t change_flags)
 {
     // Check everything first
     for (int i = 0; i < count; i++) {
         const KeyDef &d = defs[i];
         if (!ValidKey(d.page, d.key))
-            return LayoutResult::BadArg;
+            return KeyLayoutResult::BadArg;
         for (int s = 0; s < KEY_SLOTS; s++) {
             if (d.ids[s] == IMAGE_ID_NONE)
                 continue;
             if (d.flags & KEYDEF_EMPTY)
-                return LayoutResult::BadArg;
+                return KeyLayoutResult::BadArg;
             if (!m_store->IsLive(d.ids[s]))
-                return LayoutResult::NotFound;
+                return KeyLayoutResult::NotFound;
         }
     }
 
@@ -108,7 +108,7 @@ LayoutResult KeyLayout::SetKeys(const KeyDef *defs, int count, uint32_t change_f
     for (int p = 0; p < m_page_count; p++)
         if (changed & (1u << p))
             m_changed(p, change_flags, m_ctx);
-    return LayoutResult::Ok;
+    return KeyLayoutResult::Ok;
 }
 
 void KeyLayout::Clear()

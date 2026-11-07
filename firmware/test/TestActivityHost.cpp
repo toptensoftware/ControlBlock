@@ -1,17 +1,17 @@
 // The page swap behind switchActivity (activity_host): a real Standalone, store and
-// layout over the sample config (Watch: displayName "Watch TV", 2 pages; Listen: no
+// key layout over the sample layout (Watch: displayName "Watch TV", 2 pages; Listen: no
 // displayName, 1 page), with a recording screen. The device layer's lock and screen
 // calls are not tested here (no hardware): see wip/wip-activity-device-management.md.
 
 #include "UnitTesting.h"
 #include "Core.h"
 #include "activity_host.h"
-#include "config_env.h"
+#include "layout_env.h"
 #include "store_env.h"
 #include "touch_router.h"
 
 using namespace SimpleLib;
-using namespace config_env;
+using namespace layout_env;
 
 namespace
 {
@@ -21,8 +21,8 @@ namespace
         ImageStore    store;
         KeyLayout     layout;
         List<uint8_t> bytes = LoadSample();
-        const cfgdata::configRoot *root = nullptr;
-        ConfigSummary summary = {};
+        const layoutdata::layoutRoot *root = nullptr;
+        LayoutSummary summary = {};
         ActivityApplier applier;
         Standalone    sa;
         char          calls[16][48];            // "lock", "count 3", "page 1", "status X", "unlock"
@@ -41,9 +41,9 @@ namespace
             store.Init(env.Host(), 1u << 20, COMP_KEY_SIZE, COMP_KEY_SIZE);
             store.SetListener(&layout);
             layout.Init(&store, [](int, uint32_t, void *) {}, nullptr);
-            Assert(ConfigValidate(bytes.GetBuffer(), (uint32_t)bytes.GetCount(), &summary) == ConfigError::Ok);
+            Assert(LayoutValidate(bytes.GetBuffer(), (uint32_t)bytes.GetCount(), &summary) == LayoutError::Ok);
             root = Relocate(bytes);
-            Assert(ConfigApplyHome(summary, bytes.GetBuffer(), &store, &layout));
+            Assert(LayoutApplyHome(summary, bytes.GetBuffer(), &store, &layout));
 
             ActivityScreen s = {};
             s.ctx = this;
@@ -93,11 +93,11 @@ Fact("ActivityHost Select Swaps The Layout Then Sets Count, Glides And Names It"
 Fact("ActivityHost Status Text Is The Name When There Is No Display Name")
 {
     Rig r;
-    cfgdata::switchActivityOp *op = nullptr;
+    layoutdata::switchActivityOp *op = nullptr;
     for (uint32_t i = 0; i < r.root->homePage.bindings_count; i++) {
-        cfgdata::binding &b = r.root->homePage.bindings[i];
+        layoutdata::binding &b = r.root->homePage.bindings[i];
         if (!op && b.ops_count && b.ops[0]->op == OP_SWITCH_ACTIVITY)
-            op = (cfgdata::switchActivityOp *)b.ops[0];      // the first: key 2
+            op = (layoutdata::switchActivityOp *)b.ops[0];      // the first: key 2
     }
     Assert(op);
     op->index = 1;                                      // key 2 now selects Listen
@@ -145,7 +145,7 @@ Fact("ActivityHost Reset After The Store Was Reset Frees Nothing Twice")
     // A hosted session reset the model; release rebuilt Home
     r.layout.Clear();
     r.store.Reset();
-    Assert(ConfigApplyHome(r.summary, r.bytes.GetBuffer(), &r.store, &r.layout));
+    Assert(LayoutApplyHome(r.summary, r.bytes.GetBuffer(), &r.store, &r.layout));
     r.sa.SetHosted(true);
     r.sa.SetHosted(false);
     r.applier.Reset();

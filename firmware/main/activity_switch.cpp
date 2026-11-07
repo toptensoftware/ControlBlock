@@ -3,7 +3,7 @@
 namespace
 {
     // Append list `ops` of `count` ops (skipped if empty)
-    void Add(ActivitySwitch &out, cfgdata::op *const *ops, uint32_t count)
+    void Add(ActivitySwitch &out, layoutdata::op *const *ops, uint32_t count)
     {
         if (count == 0 || !ops)
             return;
@@ -13,14 +13,14 @@ namespace
         r.count = count;
     }
 
-    // Device `d` of the activity's list, or -1 if the entry is outside the config
-    int DeviceAt(const cfgdata::configRoot *root, const cfgdata::activity *a, uint32_t i)
+    // Device `d` of the activity's list, or -1 if the entry is outside the layout
+    int DeviceAt(const layoutdata::layoutRoot *root, const layoutdata::activity *a, uint32_t i)
     {
         int32_t d = a->devices[i];
-        return d >= 0 && (uint32_t)d < root->devices_count && d < CONFIG_MAX_DEVICES ? d : -1;
+        return d >= 0 && (uint32_t)d < root->devices_count && d < LAYOUT_MAX_DEVICES ? d : -1;
     }
 
-    bool Uses(const cfgdata::configRoot *root, const cfgdata::activity *a, int device)
+    bool Uses(const layoutdata::layoutRoot *root, const layoutdata::activity *a, int device)
     {
         for (uint32_t i = 0; a && i < a->devices_count; i++)
             if (DeviceAt(root, a, i) == device)
@@ -28,15 +28,15 @@ namespace
         return false;
     }
 
-    void TurnOff(const cfgdata::configRoot *root, ActivitySwitch &out, int device)
+    void TurnOff(const layoutdata::layoutRoot *root, ActivitySwitch &out, int device)
     {
-        const cfgdata::device &d = root->devices[device];
+        const layoutdata::device &d = root->devices[device];
         Add(out, d.turnOff, d.turnOff_count);
         out.devices_on &= ~(1u << device);
     }
 }
 
-bool ActivitySwitchPlan(const cfgdata::configRoot *root, int from, int to, uint32_t devices_on, ActivitySwitch &out)
+bool ActivitySwitchPlan(const layoutdata::layoutRoot *root, int from, int to, uint32_t devices_on, ActivitySwitch &out)
 {
     out = {};
     out.devices_on = devices_on;
@@ -45,8 +45,8 @@ bool ActivitySwitchPlan(const cfgdata::configRoot *root, int from, int to, uint3
     if (from == to)
         return true;
 
-    const cfgdata::activity *o = from >= 0 ? &root->activities[from] : nullptr;
-    const cfgdata::activity *n = to >= 0 ? &root->activities[to] : nullptr;
+    const layoutdata::activity *o = from >= 0 ? &root->activities[from] : nullptr;
+    const layoutdata::activity *n = to >= 0 ? &root->activities[to] : nullptr;
 
     if (o)
         Add(out, o->willDeactivate, o->willDeactivate_count);
@@ -68,7 +68,7 @@ bool ActivitySwitchPlan(const cfgdata::configRoot *root, int from, int to, uint3
     }
     if (!n) {
         // Everything else the mask holds goes off too
-        for (int d = 0; d < CONFIG_MAX_DEVICES && d < (int)root->devices_count; d++)
+        for (int d = 0; d < LAYOUT_MAX_DEVICES && d < (int)root->devices_count; d++)
             if (out.devices_on & (1u << d))
                 TurnOff(root, out, d);
     }

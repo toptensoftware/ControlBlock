@@ -1,14 +1,14 @@
-// Config apply: a validated blob's Home becomes the key layout, its images
+// Layout apply: a validated blob's Home becomes the key layout, its images
 // registered with the store in place (docs/standalone.md "Image IDs").
 
 #include "UnitTesting.h"
 #include "Core.h"
-#include "config_apply.h"
-#include "config_env.h"
+#include "layout_apply.h"
+#include "layout_env.h"
 #include "store_env.h"
 
 using namespace SimpleLib;
-using namespace config_env;
+using namespace layout_env;
 
 namespace
 {
@@ -21,8 +21,8 @@ namespace
         KeyLayout     layout;
         List<Change>  changes;
         List<uint8_t> blob;
-        ConfigSummary summary = {};
-        const cfgdata::configRoot *root = nullptr;      // the blob, relocated after validating (the summary's offsets still index it)
+        LayoutSummary summary = {};
+        const layoutdata::layoutRoot *root = nullptr;      // the blob, relocated after validating (the summary's offsets still index it)
 
         Fixture()
         {
@@ -30,21 +30,21 @@ namespace
             store.SetListener(&layout);
             layout.Init(&store, Changed, this);
             blob = LoadSample();
-            Assert(ConfigValidate(blob.GetBuffer(), (uint32_t)blob.GetCount(), &summary) == ConfigError::Ok);
+            Assert(LayoutValidate(blob.GetBuffer(), (uint32_t)blob.GetCount(), &summary) == LayoutError::Ok);
             root = Relocate(blob);
         }
 
         // Activity 0 is Watch (2 pages), 1 is Listen (1 page)
         bool Activity(int from, int to)
         {
-            return ConfigApplyActivity(root, blob.GetBuffer(), from, to, &store, &layout);
+            return LayoutApplyActivity(root, blob.GetBuffer(), from, to, &store, &layout);
         }
 
-        uint32_t IdOf(const cfgdata::key &k, int slot)
+        uint32_t IdOf(const layoutdata::key &k, int slot)
         {
             const uint8_t *p = (const uint8_t *)&k;
             uint32_t ptr;
-            memcpy(&ptr, p + ConfigKeyImagePtrOffset(slot), 4);
+            memcpy(&ptr, p + LayoutKeyImagePtrOffset(slot), 4);
             return ptr ? ptr - (uint32_t)(uintptr_t)blob.GetBuffer() : 0;
         }
 
@@ -100,7 +100,7 @@ namespace
             ((Fixture *)ctx)->changes.Add(Change{ page, flags });
         }
 
-        bool Apply() { return ConfigApplyHome(summary, blob.GetBuffer(), &store, &layout); }
+        bool Apply() { return LayoutApplyHome(summary, blob.GetBuffer(), &store, &layout); }
         const void *At(uint32_t offset) { return blob.GetBuffer() + offset; }
 
         comp_key_t Key(int key)
@@ -122,12 +122,12 @@ namespace
     };
 }
 
-Fact("ConfigApply Shows Home's Keys")
+Fact("LayoutApply Shows Home's Keys")
 {
     Fixture f;
     Assert(f.Apply());
 
-    const ConfigImage (*im)[KEY_SLOTS] = f.summary.home;
+    const LayoutImage (*im)[KEY_SLOTS] = f.summary.home;
     comp_key_t k0 = f.Key(0);
     Assert(k0.bg == f.At(im[0][KEY_SLOT_BG].offset));
     Assert(k0.fg == f.At(im[0][KEY_SLOT_FG].offset));
@@ -143,7 +143,7 @@ Fact("ConfigApply Shows Home's Keys")
     Assert(f.layout.PageCount() == 1);
 }
 
-Fact("ConfigApply Registers Each Image Once Under Its Offset")
+Fact("LayoutApply Registers Each Image Once Under Its Offset")
 {
     Fixture f;
     Assert(f.Apply());
@@ -166,7 +166,7 @@ Fact("ConfigApply Registers Each Image Once Under Its Offset")
     Assert(f.store.Find(face)->key_refs == 3);
 }
 
-Fact("ConfigApply Pressed Keys Show The Pressed Pair")
+Fact("LayoutApply Pressed Keys Show The Pressed Pair")
 {
     Fixture f;
     Assert(f.Apply());
@@ -176,19 +176,19 @@ Fact("ConfigApply Pressed Keys Show The Pressed Pair")
     Assert(f.Key(0).bg == f.At(f.summary.home[0][KEY_SLOT_BG].offset));
 }
 
-Fact("ConfigApply Reports Page 0 Changed With A Flush")
+Fact("LayoutApply Reports Page 0 Changed With A Flush")
 {
     Fixture f;
     Assert(f.Apply());
     Assert(f.changes.GetCount() == 1 && f.changes[0].page == 0 && f.changes[0].flags == COMP_FLUSH);
 }
 
-Fact("ConfigApply Failure Leaves The Store And Layout Empty")
+Fact("LayoutApply Failure Leaves The Store And Layout Empty")
 {
     Fixture f;
     // An image that fails the store check, after earlier images went in
     f.summary.home[7][KEY_SLOT_BG] = f.summary.home[0][KEY_SLOT_BG];
-    f.summary.home[7][KEY_SLOT_FG] = ConfigImage{ 700, 64 };
+    f.summary.home[7][KEY_SLOT_FG] = LayoutImage{ 700, 64 };
     Assert(!f.Apply());
 
     ImageStoreStats st;
@@ -199,7 +199,7 @@ Fact("ConfigApply Failure Leaves The Store And Layout Empty")
         Assert(!f.layout.IsActive(0, k) && !f.Key(k).bg);
 }
 
-Fact("ConfigApply Can Rebuild After A Reset")
+Fact("LayoutApply Can Rebuild After A Reset")
 {
     Fixture f;
     Assert(f.Apply());
@@ -213,7 +213,7 @@ Fact("ConfigApply Can Rebuild After A Reset")
     Assert(st.count == (uint32_t)f.DistinctImages());
 }
 
-Fact("ConfigApply Copes With An Empty Home")
+Fact("LayoutApply Copes With An Empty Home")
 {
     Fixture f;
     f.summary = {};
@@ -224,7 +224,7 @@ Fact("ConfigApply Copes With An Empty Home")
 
 // --- Activity pages (strip pages 1..n) ---
 
-Fact("ConfigApplyActivity Shows The Activity's Pages After Home")
+Fact("LayoutApplyActivity Shows The Activity's Pages After Home")
 {
     Fixture f;
     Assert(f.Apply());
@@ -232,7 +232,7 @@ Fact("ConfigApplyActivity Shows The Activity's Pages After Home")
     Assert(f.Activity(-1, 0));                                  // Watch: 2 pages
     Assert(f.layout.PageCount() == 3);
     for (int p = 0; p < 2; p++) {
-        const cfgdata::key &src = f.root->activities[0].pages[p].keys[0];
+        const layoutdata::key &src = f.root->activities[0].pages[p].keys[0];
         comp_key_t k = f.PageKey(1 + p, 0);
         Assert(k.bg == f.At(f.IdOf(src, KEY_SLOT_BG)) && k.fg == f.At(f.IdOf(src, KEY_SLOT_FG)));
         Assert(f.layout.IsActive(1 + p, 0));
@@ -246,7 +246,7 @@ Fact("ConfigApplyActivity Shows The Activity's Pages After Home")
     Assert(f.Stored() == f.Expected(0));
 }
 
-Fact("ConfigApplyActivity Shares Images With Home Without Registering Twice")
+Fact("LayoutApplyActivity Shares Images With Home Without Registering Twice")
 {
     Fixture f;
     Assert(f.Apply());
@@ -260,7 +260,7 @@ Fact("ConfigApplyActivity Shares Images With Home Without Registering Twice")
     Assert(f.Stored() == f.Expected(1));
 }
 
-Fact("ConfigApplyActivity Shrinks And Grows The Page Count Without Leaking Keys")
+Fact("LayoutApplyActivity Shrinks And Grows The Page Count Without Leaking Keys")
 {
     Fixture f;
     Assert(f.Apply());
@@ -269,7 +269,7 @@ Fact("ConfigApplyActivity Shrinks And Grows The Page Count Without Leaking Keys"
     Assert(f.layout.PageCount() == 2);
     comp_key_t keys[COMP_KEYS];
     Assert(!f.layout.GetPage(2, keys));
-    const cfgdata::key &src = f.root->activities[1].pages[0].keys[0];
+    const layoutdata::key &src = f.root->activities[1].pages[0].keys[0];
     Assert(f.PageKey(1, 0).bg == f.At(f.IdOf(src, KEY_SLOT_BG)));
     Assert(f.Stored() == f.Expected(1));
 
@@ -278,7 +278,7 @@ Fact("ConfigApplyActivity Shrinks And Grows The Page Count Without Leaking Keys"
     Assert(f.Stored() == f.Expected(0));
 }
 
-Fact("ConfigApplyActivity None Collapses To Home And Frees The Activity's Images")
+Fact("LayoutApplyActivity None Collapses To Home And Frees The Activity's Images")
 {
     Fixture f;
     Assert(f.Apply());
@@ -291,7 +291,7 @@ Fact("ConfigApplyActivity None Collapses To Home And Frees The Activity's Images
     Assert(f.layout.PageCount() == 1);
 }
 
-Fact("ConfigApplyActivity Switching Back And Forth Does Not Leak Entries")
+Fact("LayoutApplyActivity Switching Back And Forth Does Not Leak Entries")
 {
     Fixture f;
     Assert(f.Apply());
@@ -307,7 +307,7 @@ Fact("ConfigApplyActivity Switching Back And Forth Does Not Leak Entries")
     Assert(f.Stored() == f.Expected(from));
 }
 
-Fact("ConfigApplyActivity Frees Only Unshared Images, Keys In Use Keep Theirs")
+Fact("LayoutApplyActivity Frees Only Unshared Images, Keys In Use Keep Theirs")
 {
     Fixture f;
     Assert(f.Apply());
@@ -323,7 +323,7 @@ Fact("ConfigApplyActivity Frees Only Unshared Images, Keys In Use Keep Theirs")
     Assert(f.Key(0).bg == f.At(f.summary.home[0][KEY_SLOT_BG].offset));
 }
 
-Fact("ConfigApplyActivity Refusal Leaves Store Layout And Page Count As They Were")
+Fact("LayoutApplyActivity Refusal Leaves Store Layout And Page Count As They Were")
 {
     Fixture f;
     Assert(f.Apply());
@@ -333,10 +333,10 @@ Fact("ConfigApplyActivity Refusal Leaves Store Layout And Page Count As They Wer
     f.changes.Clear();
 
     // Watch's second page gets an image the store refuses, after earlier images went in
-    cfgdata::key &bad = const_cast<cfgdata::key &>(f.root->activities[0].pages[1].keys[0]);
+    layoutdata::key &bad = const_cast<layoutdata::key &>(f.root->activities[0].pages[1].keys[0]);
     uint8_t *p = (uint8_t *)&bad;
     uint32_t junk = (uint32_t)(uintptr_t)f.blob.GetBuffer() + 700;      // not an image
-    memcpy(p + ConfigKeyImagePtrOffset(KEY_SLOT_BG), &junk, 4);
+    memcpy(p + LayoutKeyImagePtrOffset(KEY_SLOT_BG), &junk, 4);
     Assert(!f.Activity(1, 0));
 
     Assert(f.layout.PageCount() == 2);
@@ -346,7 +346,7 @@ Fact("ConfigApplyActivity Refusal Leaves Store Layout And Page Count As They Wer
     Assert(f.Activity(1, 1));                                   // and Listen still applies cleanly
 }
 
-Fact("ConfigApplyActivity Refuses An Index Outside The Config")
+Fact("LayoutApplyActivity Refuses An Index Outside The Layout")
 {
     Fixture f;
     Assert(f.Apply());
@@ -355,4 +355,26 @@ Fact("ConfigApplyActivity Refuses An Index Outside The Config")
     Assert(!f.Activity((int)f.root->activities_count, 0));
     Assert(f.layout.PageCount() == 1);
     Assert(f.Stored() == f.DistinctImages());
+}
+
+// The RUN_STRESS setup on a device with a stored layout: Home's images are external, then the host
+// (or the stress run) uploads more under its own IDs. Every upload must stay live and usable.
+Fact("LayoutApply Uploads After Home Stay Live")
+{
+    Fixture f;
+    Assert(f.Apply());
+    const TestImages &ti = TestImages::Get();
+    List<uint32_t> ids;
+    for (int i = 0; i < TEST_KEYS_FACES; i++) {
+        ids.Add(0xDE000100u + (uint32_t)i);
+        Assert(f.env.Upload(f.store, ids[ids.GetCount() - 1], ti.Face(i, false)) == ImageResult::Ok);
+        ids.Add(0xDE000110u + (uint32_t)i);
+        Assert(f.env.Upload(f.store, ids[ids.GetCount() - 1], ti.Face(i, true)) == ImageResult::Ok);
+    }
+    for (int i = 0; i < ti.IconCount(); i++) {
+        ids.Add(0xDE000200u + (uint32_t)i);
+        Assert(f.env.Upload(f.store, ids[ids.GetCount() - 1], ti.Icon(i)) == ImageResult::Ok);
+    }
+    for (int i = 0; i < ids.GetCount(); i++)
+        Assert(f.store.IsLive(ids[i]));
 }

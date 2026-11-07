@@ -1,31 +1,31 @@
-// The Node file helpers: load a config file (.json or a JS module) and bake it with its assets
+// The Node file helpers: load a layout file (.json or a JS module) and bake it with its assets
 // resolved relative to the file's directory.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfigFile, bakeFile } from "../../src/bake/files.js";
+import { loadLayoutFile, bakeFile } from "../../src/bake/files.js";
 import { BakeError } from "../../src/bake/bake.js";
 import { fakeRenderer } from "./helpers.js";
 import { example, exampleDir } from "./fixtures.js";
 
-test("loadConfigFile reads a .json config", async () => {
+test("loadLayoutFile reads a .json layout", async () => {
     const { file, cleanup } = exampleDir();
     try {
-        assert.deepEqual(await loadConfigFile(file), example());
+        assert.deepEqual(await loadLayoutFile(file), example());
     } finally {
         cleanup();
     }
 });
 
-test("loadConfigFile takes a JS module's default export", async () => {
-    const { file, cleanup } = exampleDir({ name: "config.mjs", config: `export default ${JSON.stringify(example())};` });
+test("loadLayoutFile takes a JS module's default export", async () => {
+    const { file, cleanup } = exampleDir({ name: "layout.mjs", layout: `export default ${JSON.stringify(example())};` });
     try {
-        assert.deepEqual(await loadConfigFile(file), example());
+        assert.deepEqual(await loadLayoutFile(file), example());
     } finally {
         cleanup();
     }
 });
 
-test("bakeFile finds scripts next to the config, wherever the cwd is", async () => {
+test("bakeFile finds scripts next to the layout, wherever the cwd is", async () => {
     const { file, cleanup } = exampleDir();
     try {
         const render = fakeRenderer();
@@ -39,10 +39,10 @@ test("bakeFile finds scripts next to the config, wherever the cwd is", async () 
     }
 });
 
-test("bakeFile rejects a bad config with a BakeError", async () => {
+test("bakeFile rejects a bad layout with a BakeError", async () => {
     const cfg = example();
     cfg.actions.mute.file = "scripts/missing.lua";
-    const { file, cleanup } = exampleDir({ config: cfg });
+    const { file, cleanup } = exampleDir({ layout: cfg });
     try {
         await assert.rejects(bakeFile(file, { renderer: fakeRenderer() }), err => err instanceof BakeError && /missing\.lua/.test(err.message));
     } finally {

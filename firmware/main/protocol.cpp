@@ -3,7 +3,7 @@
 #include <string.h>
 #include "protocol.h"
 
-// KeyDefs are read straight out of the payload: the wire layout is the
+// KeyDefs are read straight out of the payload: the wire format is the
 // struct's (little endian, natural alignment)
 static_assert(sizeof(KeyDef) == PROTO_KEYDEF_SIZE, "KeyDef must match the wire format");
 
@@ -94,25 +94,25 @@ namespace
         return ST_BAD_ARG;
     }
 
-    uint16_t status_of(ConfigResult r)
+    uint16_t status_of(LayoutStoreResult r)
     {
         switch (r) {
-        case ConfigResult::Ok:          return ST_OK;
-        case ConfigResult::BadArg:      return ST_BAD_ARG;
-        case ConfigResult::NoSpace:     return ST_NO_SPACE;
-        case ConfigResult::BadSequence: return ST_BAD_SEQUENCE;
-        case ConfigResult::BadCrc:      return ST_BAD_CRC;
-        case ConfigResult::IoError:     return ST_IO_ERROR;
+        case LayoutStoreResult::Ok:          return ST_OK;
+        case LayoutStoreResult::BadArg:      return ST_BAD_ARG;
+        case LayoutStoreResult::NoSpace:     return ST_NO_SPACE;
+        case LayoutStoreResult::BadSequence: return ST_BAD_SEQUENCE;
+        case LayoutStoreResult::BadCrc:      return ST_BAD_CRC;
+        case LayoutStoreResult::IoError:     return ST_IO_ERROR;
         }
         return ST_BAD_ARG;
     }
 
-    uint16_t status_of(LayoutResult r)
+    uint16_t status_of(KeyLayoutResult r)
     {
         switch (r) {
-        case LayoutResult::Ok:       return ST_OK;
-        case LayoutResult::BadArg:   return ST_BAD_ARG;
-        case LayoutResult::NotFound: return ST_NOT_FOUND;
+        case KeyLayoutResult::Ok:       return ST_OK;
+        case KeyLayoutResult::BadArg:   return ST_BAD_ARG;
+        case KeyLayoutResult::NotFound: return ST_NOT_FOUND;
         }
         return ST_BAD_ARG;
     }
@@ -132,22 +132,22 @@ namespace
     void put32(uint8_t *p, uint32_t v) { put16(p, v); put16(p + 2, v >> 16); }
 }
 
-void Protocol::Init(ImageStore *store, KeyLayout *layout, ConfigStore *config, WifiConfig *wifi, const ProtocolHost &host)
+void Protocol::Init(ImageStore *store, KeyLayout *keys, LayoutStore *layout_store, WifiConfig *wifi, const ProtocolHost &host)
 {
     m_wifi   = wifi;
     m_store  = store;
-    m_layout = layout;
-    m_config = config;
+    m_keys   = keys;
+    m_layout_store = layout_store;
     m_host   = host;
 }
 
-void Protocol::SetHome(const ConfigSummary *summary, const uint8_t *blob)
+void Protocol::SetHome(const LayoutSummary *summary, const uint8_t *blob)
 {
     m_home      = summary;
     m_home_blob = blob;
 }
 
-// The requests that edit the layout, the images or the status bar: a host's
+// The requests that edit the keys, the images or the status bar: a host's
 // to make, so a host that hasn't taken control can't half-edit Home
 bool Protocol::NeedsHost(uint8_t type) const
 {
@@ -234,7 +234,7 @@ void Protocol::Receive(const void *data, size_t len)
     }
     m_host.flush(m_host.ctx);
 
-    // A committed config: its response is out, now restart
+    // A committed layout: its response is out, now restart
     if (m_restart && !m_restarted) {
         m_restarted = true;
         m_host.restart(m_host.ctx);
@@ -318,7 +318,7 @@ void Protocol::EndMessage()
 void Protocol::ResetStream()
 {
     m_store->AbortUpload();
-    m_config->Abort();
+    m_layout_store->Abort();
     m_state   = State::Header;
     m_have    = 0;
     m_left    = 0;
@@ -379,9 +379,9 @@ void Protocol::Dispatch()
     case MSG_SET_PAGE_COUNT: OnSetPageCount(); break;
     case MSG_SET_KEYS:       OnSetKeys();      break;
     case MSG_SET_PAGE:       OnSetPage();      break;
-    case MSG_CONFIG_BEGIN:   OnConfigBegin();  break;
-    case MSG_CONFIG_DATA:    OnConfigData();   break;
-    case MSG_CONFIG_COMMIT:  OnConfigCommit(); break;
+    case MSG_LAYOUT_BEGIN:   OnLayoutBegin();  break;
+    case MSG_LAYOUT_DATA:    OnLayoutData();   break;
+    case MSG_LAYOUT_COMMIT:  OnLayoutCommit(); break;
     case MSG_WIFI_SET:       OnWifiSet();      break;
     case MSG_WIFI_GET:       OnWifiGet();      break;
     case MSG_WIFI_STATUS:    OnWifiStatus();   break;
@@ -399,7 +399,7 @@ void Protocol::OnGetInfo()
     ImageStoreStats st;
     Lock();
     m_store->GetStats(&st);
-    int pages = m_layout->PageCount();
+    int pages = m_keys->PageCount();
     Unlock();
 
     uint8_t out[64 + 2 * 256];
@@ -417,7 +417,7 @@ void Protocol::OnGetInfo()
     w.U16(SCREEN_H);
     w.U8(COMP_COLS);
     w.U8(COMP_ROWS);
-    w.U8(LAYOUT_MAX_PAGES);
+    w.U8(KEY_LAYOUT_MAX_PAGES);
     w.U8(pages);
     w.U16(COMP_KEY_SIZE);
     w.U16(COMP_KEY_SIZE);
@@ -426,28 +426,28 @@ void Protocol::OnGetInfo()
     w.U8(m_host.current_page(m_host.ctx));
     w.Str(m_host.fw_version);
     w.Str(m_host.serial);
-    ConfigInfo config = {};
-    m_config->Stored(&config);          // none: size and CRC stay 0
-    w.U32(m_config->MaxSize());
-    w.U32(config.size);
-    w.U32(config.crc);
+    LayoutInfo stored = {};
+    m_layout_store->Stored(&stored);          // none: size and CRC stay 0
+    w.U32(m_layout_store->MaxSize());
+    w.U32(stored.size);
+    w.U32(stored.crc);
     Respond(ST_OK, out, w.len);
 }
 
 // Every key and image goes (and any upload in progress, with the store). The
-// compositor is reset between clearing the layout and freeing the images, so
+// compositor is reset between clearing the keys and freeing the images, so
 // it references none of them by then. `home`: then Home goes back on (all or
-// nothing: if an image is refused, the layout stays empty).
+// nothing: if an image is refused, the key layout stays empty).
 void Protocol::ResetModel(bool home)
 {
     Lock();
-    m_layout->Clear();
+    m_keys->Clear();
     Unlock();
     m_host.reset_compositor(m_host.ctx);
     Lock();
     m_store->Reset();
     if (home && m_home)
-        ConfigApplyHome(*m_home, m_home_blob, m_store, m_layout);
+        LayoutApplyHome(*m_home, m_home_blob, m_store, m_keys);
     Unlock();
     m_host.set_page_count(1, m_host.ctx);
     m_host.set_status_text(STATUS_TEXT_LEFT, "", m_host.ctx);
@@ -582,9 +582,9 @@ void Protocol::OnSetPageCount()
         return Respond(ST_BAD_LENGTH);
     int count = (int)r.U8();
     Lock();
-    LayoutResult res = m_layout->SetPageCount(count);
+    KeyLayoutResult res = m_keys->SetPageCount(count);
     Unlock();
-    if (res == LayoutResult::Ok)
+    if (res == KeyLayoutResult::Ok)
         m_host.set_page_count(count, m_host.ctx);
     Respond(status_of(res));
 }
@@ -601,7 +601,7 @@ void Protocol::OnSetKeys()
     // m_buf + 2 is 4-byte aligned (see m_raw)
     const KeyDef *defs = (const KeyDef *)(m_buf + 2);
     Lock();
-    LayoutResult res = m_layout->SetKeys(defs, (int)count);
+    KeyLayoutResult res = m_keys->SetKeys(defs, (int)count);
     Unlock();
     Respond(status_of(res));
 }
@@ -614,7 +614,7 @@ void Protocol::OnSetPage()
     int page  = (int)r.U8();
     int flags = (int)r.U8(0);
     Lock();
-    int count = m_layout->PageCount();
+    int count = m_keys->PageCount();
     Unlock();
     if (page >= count)
         return Respond(ST_BAD_ARG);
@@ -623,33 +623,33 @@ void Protocol::OnSetPage()
 }
 
 // u32 total size, u32 CRC-32 of the blob
-void Protocol::OnConfigBegin()
+void Protocol::OnLayoutBegin()
 {
     Reader r = { m_buf, m_len, 0 };
     if (!r.Has(8))
         return Respond(ST_BAD_LENGTH);
     uint32_t size = r.U32();
     uint32_t crc  = r.U32();
-    Respond(status_of(m_config->Begin(size, crc)));
+    Respond(status_of(m_layout_store->Begin(size, crc)));
 }
 
 // u32 offset, bytes
-void Protocol::OnConfigData()
+void Protocol::OnLayoutData()
 {
     Reader r = { m_buf, m_len, 0 };
     if (m_len <= 4)
         return Respond(ST_BAD_LENGTH);
     uint32_t offset = r.U32();
-    Respond(status_of(m_config->Data(offset, m_buf + 4, m_len - 4)));
+    Respond(status_of(m_layout_store->Data(offset, m_buf + 4, m_len - 4)));
 }
 
 // Responds first: the device restarts once the response is out (Receive)
-void Protocol::OnConfigCommit()
+void Protocol::OnLayoutCommit()
 {
     // The payload is empty, so its buffer is free to read the flash back into
-    ConfigResult res = m_config->Commit(m_buf, PROTO_MAX_PAYLOAD);
+    LayoutStoreResult res = m_layout_store->Commit(m_buf, PROTO_MAX_PAYLOAD);
     Respond(status_of(res));
-    if (res == ConfigResult::Ok)
+    if (res == LayoutStoreResult::Ok)
         m_restart = true;
 }
 

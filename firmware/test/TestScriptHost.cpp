@@ -1,15 +1,16 @@
 // The Lua runtime behind the `script` op (script_host.cpp, script_api.cpp): the run
 // model, the sandbox and limits, and the API that mirrors the ops. Scripts are run
 // through the op registry like any op, against a fake clock, HID sink and net host.
-// The config is the sample baked by host/src/bake (activities "Watch" = 0, "Listen" = 1).
+// The layout is the sample baked by host/src/bake (activities "Watch" = 0, "Listen" = 1).
 
 #include <string.h>
 #include "UnitTesting.h"
 #include "Core.h"
 #include "script_env.h"
+#include "stress_script.h"
 
 using namespace SimpleLib;
-using namespace config_env;
+using namespace layout_env;
 
 using namespace script_env;
 
@@ -410,6 +411,17 @@ Fact("Script Net Calls Report A Full Net Queue")
 }
 
 // ---- state ----
+
+// The RUN_STRESS churn script (stress_script.h) must stay inside the limits it runs under, or the
+// stress run measures those instead of its PSRAM traffic
+Fact("Script Stress Churn Stays Well Inside The Heap Cap")
+{
+    Rig r;
+    for (int i = 0; i < 50; i++)
+        Assert(r.Run(STRESS_LUA) == OpStatus::Done);
+    Assert(r.host.Errors() == 0 && r.host.HeapRefused() == 0);
+    Assert(r.host.HeapPeak() < SCRIPT_HEAP_CAP / 2);       // ~82 KB: garbage the collector hasn't reached yet
+}
 
 Fact("Script Close Frees The Heap And A New Run Starts Fresh")
 {

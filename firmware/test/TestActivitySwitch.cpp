@@ -1,16 +1,16 @@
 // The activity switch sequence (activity_switch.h): from (old, new, devices on)
 // to the op lists to queue, in the spec's order, and the new device mask. Pure;
-// the config is built in memory here (real pointers: the tests build 32-bit).
+// the layout is built in memory here (real pointers: the tests build 32-bit).
 // Then the Standalone state (selected activity, device mask) around it.
 
 #include "UnitTesting.h"
 #include "Core.h"
-#include "config_env.h"
+#include "layout_env.h"
 #include "activity_switch.h"
 #include "standalone.h"
 
 using namespace SimpleLib;
-using namespace config_env;
+using namespace layout_env;
 
 namespace
 {
@@ -19,15 +19,15 @@ namespace
     // Every hook and device list is one op, so a list is told apart by its `ops` pointer.
     struct Cfg
     {
-        cfgdata::op         ops[40] = {};
-        cfgdata::op        *ptrs[40] = {};
+        layoutdata::op         ops[40] = {};
+        layoutdata::op        *ptrs[40] = {};
         int                 n = 0;
-        cfgdata::device     dev[3] = {};
-        cfgdata::activity   act[3] = {};
+        layoutdata::device     dev[3] = {};
+        layoutdata::activity   act[3] = {};
         int32_t             a_devs[2] = { 0, 1 }, b_devs[2] = { 1, 2 };
-        cfgdata::configRoot root = {};
+        layoutdata::layoutRoot root = {};
 
-        cfgdata::op **List()            // a fresh one-op list
+        layoutdata::op **List()            // a fresh one-op list
         {
             ops[n].op = OP_DELAY;
             ptrs[n]   = &ops[n];
@@ -41,7 +41,7 @@ namespace
                 dev[i].turnOff_count = 1; dev[i].turnOff = List();
             }
             for (int i = 0; i < 2; i++) {
-                cfgdata::activity &a = act[i];
+                layoutdata::activity &a = act[i];
                 a.willDeactivate_count = 1; a.willDeactivate = List();
                 a.willActivate_count   = 1; a.willActivate   = List();
                 a.didActivate_count    = 1; a.didActivate    = List();
@@ -58,7 +58,7 @@ namespace
     const uint32_t TV = 1u << 0, AVR = 1u << 1, PC = 1u << 2;
 
     // The plan's list `i` is the op list `p` of `count` ops
-    bool Is(const ActivitySwitch &s, int i, cfgdata::op *const *p, uint32_t count = 1)
+    bool Is(const ActivitySwitch &s, int i, layoutdata::op *const *p, uint32_t count = 1)
     {
         return i < s.count && s.lists[i].ops == p && s.lists[i].count == count;
     }
@@ -206,7 +206,7 @@ Fact("ActivitySwitch Lists Carry No Release Flag Or Param")
         Assert(!s.lists[i].release && s.lists[i].param == nullptr);
 }
 
-Fact("ActivitySwitch Rejects An Index Outside The Config And Leaves The Plan Empty")
+Fact("ActivitySwitch Rejects An Index Outside The Layout And Leaves The Plan Empty")
 {
     Cfg c;
     ActivitySwitch s;
@@ -217,7 +217,7 @@ Fact("ActivitySwitch Rejects An Index Outside The Config And Leaves The Plan Emp
     Assert(s.count == 0);
 }
 
-Fact("ActivitySwitch Ignores A Device Index Outside The Config")
+Fact("ActivitySwitch Ignores A Device Index Outside The Layout")
 {
     Cfg c;
     c.a_devs[1] = 7;                            // the validator prevents this; the plan must not read past devices[]
@@ -230,25 +230,25 @@ Fact("ActivitySwitch Ignores A Device Index Outside The Config")
 Fact("ActivitySwitch Fits The Most A Switch Can Need")
 {
     // 32 devices all changing, plus the four hooks
-    static_assert(ACTIVITY_SWITCH_MAX_LISTS == 4 + CONFIG_MAX_DEVICES, "four hooks and one list per device");
+    static_assert(ACTIVITY_SWITCH_MAX_LISTS == 4 + LAYOUT_MAX_DEVICES, "four hooks and one list per device");
     Cfg c;
-    cfgdata::device many[CONFIG_MAX_DEVICES] = {};
-    int32_t from[CONFIG_MAX_DEVICES], to[CONFIG_MAX_DEVICES];
-    for (int i = 0; i < CONFIG_MAX_DEVICES; i++) {
+    layoutdata::device many[LAYOUT_MAX_DEVICES] = {};
+    int32_t from[LAYOUT_MAX_DEVICES], to[LAYOUT_MAX_DEVICES];
+    for (int i = 0; i < LAYOUT_MAX_DEVICES; i++) {
         many[i] = c.dev[0];
         from[i] = i;
     }
-    c.root.devices_count = CONFIG_MAX_DEVICES;
+    c.root.devices_count = LAYOUT_MAX_DEVICES;
     c.root.devices       = many;
-    c.act[0].devices_count = CONFIG_MAX_DEVICES / 2;        // A: 0..15
+    c.act[0].devices_count = LAYOUT_MAX_DEVICES / 2;        // A: 0..15
     c.act[0].devices       = from;
-    for (int i = 0; i < CONFIG_MAX_DEVICES / 2; i++)
-        to[i] = CONFIG_MAX_DEVICES / 2 + i;                 // B: 16..31
-    c.act[1].devices_count = CONFIG_MAX_DEVICES / 2;
+    for (int i = 0; i < LAYOUT_MAX_DEVICES / 2; i++)
+        to[i] = LAYOUT_MAX_DEVICES / 2 + i;                 // B: 16..31
+    c.act[1].devices_count = LAYOUT_MAX_DEVICES / 2;
     c.act[1].devices       = to;
     ActivitySwitch s;
     Assert(ActivitySwitchPlan(&c.root, A, B, 0xFFFFu, s));
-    Assert(s.count == 4 + CONFIG_MAX_DEVICES);
+    Assert(s.count == 4 + LAYOUT_MAX_DEVICES);
     Assert(s.devices_on == 0xFFFF0000u);
 }
 
@@ -257,7 +257,7 @@ Fact("ActivitySwitch Fits The Most A Switch Can Need")
 Fact("Standalone Starts With No Activity And No Devices On")
 {
     List<uint8_t> bytes = LoadSample();
-    const cfgdata::configRoot *root = Relocate(bytes);
+    const layoutdata::layoutRoot *root = Relocate(bytes);
     Standalone sa;
     StandaloneHost h = {};
     h.now_ms = [](void *) { return (uint32_t)0; };
@@ -268,7 +268,7 @@ Fact("Standalone Starts With No Activity And No Devices On")
 Fact("Standalone SelectActivity Tracks The Selection And Re-Arming Clears It")
 {
     List<uint8_t> bytes = LoadSample();
-    const cfgdata::configRoot *root = Relocate(bytes);
+    const layoutdata::layoutRoot *root = Relocate(bytes);
     Standalone sa;
     StandaloneHost h = {};
     h.now_ms = [](void *) { return (uint32_t)0; };

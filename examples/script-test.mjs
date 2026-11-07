@@ -1,5 +1,5 @@
-// Hardware test config for the Lua `script` op (wip/wip-lua-hardware-checks.md has the
-// checklist). Scripts log through ESP_LOGI("lua") and talk to examples/test-server/net_test_server.py.
+// Hardware test layout for the Lua `script` op (wip/wip-lua-hardware-checks.md has the
+// checklist). Scripts log through ESP_LOGI("lua") and talk to examples/test-server/test-server.mjs.
 // After each run of the op queue the device logs a "scripts:" line with the heap peak and the
 // op task's free stack. Bake and upload from the repo root:
 //     node cli/cli.js upload examples/script-test.mjs
@@ -14,7 +14,7 @@ const busy = ms => `local t0 = millis() while millis() - t0 < ${ms} do end`;
 
 const ping = { label: "Ping\n(op)", color: "#264653", tap: udp("ping") };
 
-const config = {
+const layout = {
     version: 1,
     defaults: { color: "#22262e", pressed: { color: "#3a86ff" } },
 
@@ -98,4 +98,4 @@ const config = {
     },
 };
 
-export default flatten(config);
+export default flatten(layout);

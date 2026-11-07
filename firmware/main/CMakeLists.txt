@@ -35,11 +35,11 @@ idf_component_register(
         "wifi_credentials.cpp"
         "wifi_state.cpp"
         "wifi.cpp"
-        "config_store.cpp"
-        "config_flash.cpp"
-        "config_blob.cpp"
-        "config_apply.cpp"
-        "config_boot.cpp"
+        "layout_store.cpp"
+        "layout_flash.cpp"
+        "layout_blob.cpp"
+        "layout_apply.cpp"
+        "layout_boot.cpp"
         "host_link.cpp"
         "usb.cpp"
         "swipe.cpp"
@@ -132,8 +132,15 @@ if(CB_STATS_LOG)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE STATS_LOG=1)
 endif()
 
-# Backlight cycle (main.cpp BACKLIGHT_CYCLE_S): toggles the backlight every N seconds.
+# Backlight switching (waveshare_rgb_lcd_port.cpp BACKLIGHT_SWITCH): off by default, the light
+# stays on (a switch-on corrupts PSRAM, CLAUDE.md Open Items). For supply experiments.
+#   idf.py --preset debug -DCB_BACKLIGHT_SWITCH=ON build   (OFF turns it off again)
+# Backlight cycle (main.cpp BACKLIGHT_CYCLE_S): toggles the backlight every N seconds; turns
+# switching on too.
 #   idf.py --preset debug -DCB_BACKLIGHT_CYCLE_S=5 build   (0 turns it off again)
+if(CB_BACKLIGHT_SWITCH OR CB_BACKLIGHT_CYCLE_S)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE BACKLIGHT_SWITCH=1)
+endif()
 if(CB_BACKLIGHT_CYCLE_S)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE BACKLIGHT_CYCLE_S=${CB_BACKLIGHT_CYCLE_S})
 endif()

@@ -8,8 +8,8 @@ export default async function ()
     await this.use("c-cpp");
 
     this.set({
-        // 32-bit: the config blob holds 32-bit pointers, so the structs generated from the
-        // binpack schema (main/config_types.gen.h) have the device's layout only in a 32-bit build.
+        // 32-bit: the layout blob holds 32-bit pointers, so the structs generated from the
+        // binpack schema (main/layout_types.gen.h) match the device's struct offsets only in a 32-bit build.
         platform: "x86",
         sourceFiles: (base) => [...base, ...this.otherSourceFiles],
         otherSourceFiles: [
@@ -19,9 +19,9 @@ export default async function ()
             "../main/image_store.cpp",
             "../main/key_layout.cpp",
             "../main/protocol.cpp",
-            "../main/config_store.cpp",
-            "../main/config_blob.cpp",
-            "../main/config_apply.cpp",
+            "../main/layout_store.cpp",
+            "../main/layout_blob.cpp",
+            "../main/layout_apply.cpp",
             "../main/wifi_credentials.cpp",
             "../main/wifi_state.cpp",            "../main/touch_router.cpp",
             "../main/touch_gate.cpp",

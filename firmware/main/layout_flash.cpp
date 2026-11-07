@@ -1,10 +1,10 @@
-// The `config` flash partition as a ConfigFlash (config_store.h).
+// The `layout` flash partition as a LayoutFlash (layout_store.h).
 
 #include "esp_log.h"
 #include "esp_partition.h"
-#include "config_flash.h"
+#include "layout_flash.h"
 
-static const char *TAG = "config";
+static const char *TAG = "layout";
 
 static const esp_partition_t *part(void *ctx)
 {
@@ -35,17 +35,17 @@ static bool cf_read(uint32_t offset, void *data, uint32_t len, void *ctx)
     return err == ESP_OK;
 }
 
-void config_flash_open(ConfigFlash *flash)
+void layout_flash_open(LayoutFlash *flash)
 {
     const esp_partition_t *p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
-                                                        (esp_partition_subtype_t)CONFIG_PARTITION_SUBTYPE,
-                                                        CONFIG_PARTITION_NAME);
+                                                        (esp_partition_subtype_t)LAYOUT_PARTITION_SUBTYPE,
+                                                        LAYOUT_PARTITION_NAME);
     if (!p) {
-        ESP_LOGW(TAG, "no '%s' partition: config upload is off (flash the partition table)", CONFIG_PARTITION_NAME);
+        ESP_LOGW(TAG, "no '%s' partition: layout upload is off (flash the partition table)", LAYOUT_PARTITION_NAME);
         flash->capacity = 0;
         return;
     }
-    ESP_LOGI(TAG, "partition '%s': %u bytes at 0x%x", CONFIG_PARTITION_NAME, (unsigned)p->size, (unsigned)p->address);
+    ESP_LOGI(TAG, "partition '%s': %u bytes at 0x%x", LAYOUT_PARTITION_NAME, (unsigned)p->size, (unsigned)p->address);
     flash->capacity = p->size;
     flash->erase    = cf_erase;
     flash->write    = cf_write;

@@ -10,7 +10,7 @@ Status: **implemented and host tested**, not yet run on the hardware.
 | Key layout (four slots per key, the compositor's client) | `key_layout.cpp/.h` (`TestKeyLayout.cpp`) |
 | Sweep | `PageCompositor::RequestSweep()` (`TestCompositor.cpp`, fuzzed in `TestCompositorFuzz.cpp`) |
 | Messages | `protocol.cpp/.h` (`TestProtocol.cpp`) |
-| Device wiring | `model.cpp` (store + layout + lock), `host_link.cpp` (protocol task), `usb.cpp` |
+| Device wiring | `model.cpp` (store + key layout + lock), `host_link.cpp` (protocol task), `usb.cpp` |
 | Host side | `host/src/images.js` (encode, IDs), `host/src/ControlBlock.js` |
 
 ## Summary
@@ -83,7 +83,7 @@ struct ImageEntry
 - **Entries** are kept in a SimpleLib `Map<uint32_t, ImageEntry *>` for live images and a `List<ImageEntry *>` for dying ones. Retired pixels go in a `List<ImageData *>`. Entries are small (~16 B), so whether they go in internal RAM or PSRAM is up to the allocator setup.
 - **Capacity:** PSRAM free after init, less a reserve for everything else (`IMAGE_RESERVE`, e.g. 512 KB). That's ~5 MB with three page buffers, or ~250–1,000 icons at 5–20 KB each. Faces shared across keys cost one image, not one per key. `GET_INFO` reports capacity, bytes used (including retired pixels and a replace in progress, since that memory isn't back yet), the image count and the largest free block.
 - **Fragmentation:** images are all similar sizes, so the PSRAM heap should cope. If `NO_SPACE` comes back while the free total says there's room, the largest free block shows why, and `RESET` gets the memory back.
-- **Not saved to flash** in v1, the same as the rest of the layout. Modes 2 and 3 will want images in flash; the IDs and format here are meant to carry over.
+- **Not saved to flash** in v1, the same as the rest of the hosted keys (only the standalone layout is saved: [`protocol.md`](protocol.md#layout-upload)). Modes 2 and 3 will want images in flash; the IDs and format here are meant to carry over.
 
 ## Key definitions and references
 
@@ -165,7 +165,7 @@ Rejected alternatives:
 
 ## Uploading
 
-Images are the only large traffic: ~5–20 KB per image, so 100 KB–1 MB for a full layout. At USB full speed that's ~1 MB/s at best.
+Images are the only large traffic: ~5–20 KB per image, so 100 KB–1 MB for a full set of keys. At USB full speed that's ~1 MB/s at best.
 
 **Flow** (`PUT_IMAGE`, see [protocol.md](protocol.md#0x10-put_image)):
 - **Start** (`offset = 0`): allocates `total_size` (`NO_SPACE` if it can't). Starting a new upload abandons any upload already in progress.
@@ -188,7 +188,7 @@ Images are the only large traffic: ~5–20 KB per image, so 100 KB–1 MB for a 
 2. Calls `comp_reset()`, which blocks until no key is being drawn and no pixels are referenced.
 3. Abandons any upload in progress and frees every image: live, dying and retired.
 
-The old layout stays on screen until the new page 0 has been built (blank until the host defines keys), as described in [page-compositor.md, Reload](page-compositor.md#reload).
+The old keys stay on screen until the new page 0 has been built (blank until the host defines keys), as described in [page-compositor.md, Reload](page-compositor.md#reload).
 
 ## Concurrency
 

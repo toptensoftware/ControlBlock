@@ -7,7 +7,7 @@
 // blocks on the network and never resolves a name: DNS happens in the worker.
 //
 // Platform independent. Request strings and bodies point into the resident
-// config blob (never copied, never freed), so a request is cheap to queue.
+// layout blob (never copied, never freed), so a request is cheap to queue.
 
 #include <stdint.h>
 #include <stdio.h>

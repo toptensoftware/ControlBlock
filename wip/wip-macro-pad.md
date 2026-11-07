@@ -14,7 +14,7 @@ RS485). Goals:
 3. Standalone mode: feed the triggers to the existing bindings (`Trigger(control, event, param)`), with `tap`/`long`
    synthesised by the gesture engine for the buttons.
 4. Hosted mode: report the pad and encoder to the host instead (new protocol events), and run no actions.
-5. Fill in the bake/config side (control and event names) and the host library.
+5. Fill in the bake/layout side (control and event names) and the host library.
 
 The C3 firmware is a separate project/repo as far as this job goes; this job defines the protocol and builds the S3
 side. (Decided: the C3 firmware lives in this repo, in `pad/`.)
@@ -29,8 +29,8 @@ side. (Decided: the C3 firmware lives in this repo, in `pad/`.)
   pass; `pad/build/pad.bin` exists (esp32c3 build, 0 errors). Nothing in `pad/main` has run on a board.
 - **Nothing is committed.** Untracked/new: `pad/`, `tools/pad-sim/`, this file. Also uncommitted from earlier in this
   session (not this job): the `PacketEncoder` submodule add (`.gitmodules`), `firmware/main/crc32.h` ->
-  `crc32_table.h` rename (+ includes in `config_store.cpp`, `TestConfigStore.cpp`, `TestProtocol.cpp`, comment in
-  `host/src/protocol.js`, the config upload plan doc, since deleted), pixel clock default 20 MHz
+  `crc32_table.h` rename (+ includes in `layout_store.cpp`, `TestLayoutStore.cpp`, `TestProtocol.cpp`, comment in
+  `host/src/protocol.js`, the layout upload plan doc, since deleted), pixel clock default 20 MHz
   (`waveshare_rgb_lcd_port.h`, `main/CMakeLists.txt`), `wip/complete-wifi-latency.md` (renamed, staged), and doc edits to
   `CLAUDE.md`, `docs/wifi.md`, `docs/screen-buffers.md`. The user decides when to commit.
 - **Decisions so far (all in the sections below; the short list):** UART1 RX on S3 **GPIO 6** (`aclock` uses it as TX),
@@ -50,7 +50,7 @@ side. (Decided: the C3 firmware lives in this repo, in `pad/`.)
   source, behaviour.
 - **Docs not yet updated (Rule 4: propose to the user first, step 12):** `CLAUDE.md` (the `pad/` project, `pad/common`,
   `pad/test`, `tools/pad-sim`, the PacketEncoder submodule in the layout, GPIO 6, the control names, Open items),
-  `docs/standalone.md` (Still open items closed; trigger names), `docs/config-format.md` (replace `macro1..6` /
+  `docs/standalone.md` (Still open items closed; trigger names), `docs/layout-format.md` (replace `macro1..6` /
   `volEnc` / `turnLeft`/`turnRight` by `keyN` / `encN` / `turn`), `docs/protocol.md` (events `0x85`/`0x86`), a new
   `docs/macro-pad.md` (wire protocol). Also `.gitmodules` lists `PacketEncoder` with an SSH URL.
 - **Other jobs, for context:** `wip/complete-wifi-latency.md` is closed (cause: RGB panel pin drive strength; default
@@ -72,12 +72,12 @@ side. (Decided: the C3 firmware lives in this repo, in `pad/`.)
   returns at once.
 - Hosted mode: the pad and encoder are **reported to the host** (like `PostKey` for touch keys) and never run activity
   actions. `protocol.md` needs pad-key and encoder events "when this is built". The host detects long/double press.
-- `docs/config-format.md` "Bindings": `control` is free-form and matched exactly (`macro1`..`macro6`, `volEnc` are
+- `docs/layout-format.md` "Bindings": `control` is free-form and matched exactly (`macro1`..`macro6`, `volEnc` are
   *proposed* names); `event` is `press`/`release`/`tap`/`long` or the control's own events (`turnLeft`, `turnRight`:
   *undecided*). A `control` that looks like `touch[...]` is a bake error.
 - Open items that this job closes: "the serial line format from the second MCU, and the exact event names for the
   encoder" (`standalone.md` Still open), and "Control and event names for the pad and encoder wait on the second MCU's
-  serial format" (`config-format.md`).
+  serial format" (`layout-format.md`).
 
 ### Code that this plugs into
 - `TriggerDispatcher::Trigger(control, event, param)` and `HasBinding` (`trigger_dispatch.h`): exact string match over
@@ -113,7 +113,7 @@ side. (Decided: the C3 firmware lives in this repo, in `pad/`.)
 - The C3 side has its own constraints: it has no native "one wire, read-only" concerns, it just transmits. Baud rate,
   idle level at boot (the C3 prints boot logs on its UART0 at 115200 unless its console is moved, which would feed
   garbage to the S3 as the C3 boots) and power-up ordering (S3 up before the C3, or after) all matter.
-- The C3 can be reset or brown out independently of the S3, and the S3 can restart (config upload restarts it) while
+- The C3 can be reset or brown out independently of the S3, and the S3 can restart (layout upload restarts it) while
   the C3 keeps sending.
 
 ### Protocol design considerations (to be turned into a decision, not yet decided)
@@ -140,7 +140,7 @@ These are the robustness requirements a one-way line forces; the design should a
    accounting for what's dropped).
 9. **Debounce** belongs on the C3, not in the protocol. The S3 trusts that edges are clean.
 10. **Names:** the wire should carry a small numeric control id; the S3 maps ids to the strings used by bindings
-    (`macro1`..`macro6`, `volEnc`, knob). Where that mapping lives (firmware constants vs the config blob) is a
+    (`macro1`..`macro6`, `volEnc`, knob). Where that mapping lives (firmware constants vs the layout blob) is a
     decision.
 11. **Hosted mode:** the same stream, mapped to a protocol event for the host (raw press/release/turn). In hosted mode
     the host owns detection of long/double press.
@@ -190,7 +190,7 @@ These are the robustness requirements a one-way line forces; the design should a
 - Not yet checked: that `packenc.c` and `crc32.c` build clean with the project's flags on the S3 (`-Werror`,
   gnu++26 for C++; these are C files, like `rle565.c`) and under MSVC x86 for the host tests; the 1 KB CRC table is
   built on first use (RAM; not thread-safe if two tasks first-use it at once. The S3 would have it used by one task
-  only, but the config upload's own CRC is separate code, so no clash at run time).
+  only, but the layout upload's own CRC is separate code, so no clash at run time).
 
 ### Proposed protocol (a draft for the Plan phase to confirm; nothing here is built)
 One `cmd` does nearly everything, so there is a single code path to get right:
@@ -225,7 +225,7 @@ One `cmd` does nearly everything, so there is a single code path to get right:
 - **`seq`:** a free-running u32 per packet from the C3. The S3 uses it only for statistics (gaps = lost or corrupted
   packets, counted in the stats line), never for logic.
 - **Control names:** generated on the S3 from the index: buttons `pad1`..`pad32`, encoders `enc1`..`enc4`
-  (assumption; replaces the config-format proposals `macro1`..`macro6` / `volEnc`, which would be updated with the
+  (assumption; replaces the layout-format proposals `macro1`..`macro6` / `volEnc`, which would be updated with the
   docs). `GestureBank` gives `press`/`release`/`tap`/`long` for the buttons. (Names are 4-5 characters; the gesture
   limit is 23.) `GESTURE_SLOTS` is 8 held at once: more simultaneously held pad buttons are ignored, which is
   acceptable (a 32-key chord isn't a use case) but worth a log counter.
@@ -258,11 +258,11 @@ only if the hardware shows an encoder feeling dead.
   `host/` or tools script that plays STATE packets for testing and reads them, using `packenc.js`).
 
 ## Decisions, round 2 (user, 2026-11-06; these answer the questions below)
-1. **crc32 clash:** our header renamed to `firmware/main/crc32_table.h` (done: includes in `config_store.cpp`,
-   `TestConfigStore.cpp`, `TestProtocol.cpp`, the comment in `host/src/protocol.js`, the config upload plan doc (since deleted) and
+1. **crc32 clash:** our header renamed to `firmware/main/crc32_table.h` (done: includes in `layout_store.cpp`,
+   `TestLayoutStore.cpp`, `TestProtocol.cpp`, the comment in `host/src/protocol.js`, the layout upload plan doc (since deleted) and
    CLAUDE.md updated; host tests: 552 pass). `PacketEncoder/crc32.h` is now free to use as is.
 2. **Control names: `keyN` and `encN`** (`key1`..`key32`, `enc1`..`enc4`), replacing the `macro1..6` / `volEnc`
-   proposals in `config-format.md` (update when documenting).
+   proposals in `layout-format.md` (update when documenting).
 3. **Timings accepted as the starting point:** 100 ms STATE repeat, 300 ms offline timeout, 5 ms encoder rate cap;
    tune on the hardware.
 4. **Encoders are quadrature** (the user will confirm the part). Speed in ticks per second; whether a tick is a detent
@@ -316,7 +316,7 @@ Facts from the code (Raspberry Pi, `pigpio`):
 5. **Button `repeat` is missing from ControlBlock.** `GestureBank` has press/release/tap/long only. urem's activities
    use `repeat: 100` heavily (the Apple TV arrows). Needs a decision, probably a new gesture event or a per-binding
    repeat on the pad (and on touch keys), in the S3 (not the C3). That is a separate piece of work (gesture engine,
-   config-format and bake), maybe its own job; the pad job should not depend on it. See Open question B.
+   layout-format and bake), maybe its own job; the pad job should not depend on it. See Open question B.
 6. **Release after long:** urem suppresses the `release` after a `longPress` fires; ControlBlock still fires
    `release` after `long` (it matters for HID `hold`). Not a conflict for the pad protocol; note for the authoring
    layer. Not changing.
@@ -332,8 +332,8 @@ B. **Button repeat**: do you want it as part of this job, as a separate job, or 
    `packenc.c`/`crc32.c` with a tiny wrapper header? That is fragile. The robust options are renaming in the submodule
    (your repo) or my `crc32.h` moving to a non-colliding name (e.g. `crc32_table.h`, a small change in firmware and the
    tests). Which do you prefer?
-2. **Names:** `pad1`..`pad32` and `enc1`..`enc4` on the wire-to-binding side (the config's `control` strings), or do
-   you want per-device naming in the config (the config maps `pad3` to your own label)? The device only matches exact
+2. **Names:** `pad1`..`pad32` and `enc1`..`enc4` on the wire-to-binding side (the layout's `control` strings), or do
+   you want per-device naming in the layout (the layout maps `pad3` to your own label)? The device only matches exact
    strings, so the authoring layer can alias.
 3. **Heartbeat/timeout numbers:** 100 ms repeat and 300 ms offline timeout, and the 5 ms encoder rate cap. OK to start
    there and tune on the hardware?
@@ -511,7 +511,7 @@ anything without telling the user.
   (packets, decode errors, seq gaps). Injected `PadHost` callbacks (`key(index, down)`, `turn(encoder, delta,
   interval_us)`, `offline()`) and an injected clock. Then `pad_input.cpp/.h`.
 - [ ] 3. **Standalone wiring.** Tests first (`TestPadStandalone.cpp`, with the sample blob extended by `key1`/`enc1`
-  bindings and re-baked; also bump `sample_config.bin`): `key{N}` press/release/tap/long reach the activity's
+  bindings and re-baked; also bump `sample_layout.bin`): `key{N}` press/release/tap/long reach the activity's
   bindings (and not before an activity is selected, and not Home's), `enc{N}` `turn` pushes the list with the param
   `delta=-3 interval=6500`, an activity switch/takeover drops held pad keys silently (decision 7) and rebaselines,
   offline cancels held keys (release fires), a full queue/param pool drops and counts. Then: `PadControlName`,
@@ -550,16 +550,16 @@ anything without telling the user.
   by a golden-bytes test shared with step 1): `sim` (play scripted key presses/spins, with timing and optional line
   noise, onto a serial port, for testing the S3 without the C3) and `dump` (decode a serial stream and print it, for
   debugging the C3). `npm test` with no hardware.
-- [ ] 10. **Bake/config side.** Tests first (`host/test/bake`): a binding `control` must be `key1..key32` or
+- [ ] 10. **Bake/layout side.** Tests first (`host/test/bake`): a binding `control` must be `key1..key32` or
   `enc1..enc4` (touch keys stay an error); events: `key*` accept `press/release/tap/long`, `enc*` accept `turn`;
-  anything else is an error with a path. Then `host/src/bake/resolve.js` and `docs/config-format.md` (replaces `macro1..6` /
-  `volEnc`/`turnLeft`/`turnRight`). Rebake the sample config if the schema is unchanged only the strings.
+  anything else is an error with a path. Then `host/src/bake/resolve.js` and `docs/layout-format.md` (replaces `macro1..6` /
+  `volEnc`/`turnLeft`/`turnRight`). Rebake the sample layout if the schema is unchanged only the strings.
 - [ ] 11. **Example script.** `examples/` Lua port of `volume.js` (parse `delta` and `interval` from
   `param`, `interval < 8000` -> step 5, `< 20000` -> 3, else 1; `http.post`), checked by the bake's Lua checker and
   by a `TestScript*` case that feeds it a param through the script host and checks the op it issues.
 - [ ] 12. **Docs** (propose the edits to the user first, Rule 4): new `docs/macro-pad.md` (the wire protocol, the C3
   behaviour, reference to urem), `standalone.md` (close the "Still open" items, trigger names, the new `turn`
-  event), `config-format.md` (done in 10), `protocol.md` (done in 4), CLAUDE.md (the modules, GPIO 6, the
+  event), `layout-format.md` (done in 10), `protocol.md` (done in 4), CLAUDE.md (the modules, GPIO 6, the
   PacketEncoder submodule, `crc32_table.h`, the `pad/` project and how to build it, Open items for the hardware
   checks).
 - [ ] 13. **Hardware checklist for the user (not automatable).** C3 flashed and wired to GPIO 6 (3.3 V, 100 mm); S3 stats

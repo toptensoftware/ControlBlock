@@ -1,6 +1,6 @@
 #pragma once
 
-// A fake NOR flash for the config store and what sits on it (protocol):
+// A fake NOR flash for the layout store and what sits on it (protocol):
 // erase sets bytes to 0xFF in whole sectors, a write may only go to erased
 // bytes (a rule the real chip enforces silently, so a bug here would
 // corrupt data on the device), and failures can be injected.
@@ -8,13 +8,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include "config_store.h"
+#include "layout_store.h"
 #include "harness.h"
 
 class FakeFlash
 {
 public:
-    explicit FakeFlash(uint32_t capacity = 6 * CONFIG_SECTOR)
+    explicit FakeFlash(uint32_t capacity = 6 * LAYOUT_SECTOR)
         : m_size(capacity)
     {
         mem = (uint8_t *)malloc(capacity);
@@ -36,9 +36,9 @@ public:
     int  fail_erase_in = 0, fail_write_in = 0, fail_read_in = 0;
     bool corrupt_next_write = false;        // reports success but stores one flipped bit
 
-    ConfigFlash Host()
+    LayoutFlash Host()
     {
-        ConfigFlash h = {};
+        LayoutFlash h = {};
         h.capacity = m_size;
         h.erase = [](uint32_t off, uint32_t len, void *c) { return ((FakeFlash *)c)->Erase(off, len); };
         h.write = [](uint32_t off, const void *p, uint32_t len, void *c) { return ((FakeFlash *)c)->Write(off, p, len); };
@@ -59,7 +59,7 @@ private:
     bool Erase(uint32_t off, uint32_t len)
     {
         erase_calls++;
-        Check(off % CONFIG_SECTOR == 0 && len % CONFIG_SECTOR == 0 && len > 0);
+        Check(off % LAYOUT_SECTOR == 0 && len % LAYOUT_SECTOR == 0 && len > 0);
         Check((uint64_t)off + len <= m_size);
         if (Fails(&fail_erase_in))
             return false;

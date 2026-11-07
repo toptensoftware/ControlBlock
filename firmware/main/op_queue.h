@@ -1,7 +1,7 @@
 #pragma once
 
 // The global op queue (docs/standalone.md "Actions"): a small ring of list
-// references (a pointer to a binding's or hook's op array in the config blob, its
+// references (a pointer to a binding's or hook's op array in the layout blob, its
 // count, whether a release event queued it, its param slot) with one active op.
 // The ops are never copied: the queue walks the current list op by op.
 // Platform independent and single threaded: the device layer serialises Push
@@ -16,7 +16,7 @@
 // for it and handed to each as OpTask::param.
 
 #include <stdint.h>
-#include "config_types.h"
+#include "layout_types.h"
 #include "op_exec.h"
 #include "param_pool.h"
 
@@ -25,16 +25,16 @@
 struct OpHost
 {
     void *ctx;
-    OpStatus (*start)(const cfgdata::op *op, OpTask &task, void *ctx);
-    OpStatus (*poll)(const cfgdata::op *op, OpTask &task, void *ctx);       // may be null: never Pending
-    void     (*cancel)(const cfgdata::op *op, OpTask &task, void *ctx);     // may be null
+    OpStatus (*start)(const layoutdata::op *op, OpTask &task, void *ctx);
+    OpStatus (*poll)(const layoutdata::op *op, OpTask &task, void *ctx);       // may be null: never Pending
+    void     (*cancel)(const layoutdata::op *op, OpTask &task, void *ctx);     // may be null
 };
 
 // One list to queue: ops in the relocated blob (must stay valid until run), how
 // many, whether a `release` event queued it, and the trigger param it shares
 struct OpListRef
 {
-    cfgdata::op *const *ops = nullptr;
+    layoutdata::op *const *ops = nullptr;
     uint32_t            count = 0;
     bool                release = false;
     const char         *param = nullptr;
@@ -51,7 +51,7 @@ public:
     // or a list whose non-empty `param` finds the pool full, is dropped and
     // counted. An empty list succeeds and takes nothing.
     // `release`: the list was triggered by a `release` event (OpTask::releasing).
-    bool PushList(uint32_t count, cfgdata::op *const *ops, bool release = false, const char *param = nullptr);
+    bool PushList(uint32_t count, layoutdata::op *const *ops, bool release = false, const char *param = nullptr);
 
     // Add `n` lists in order, all or nothing: if the ring lacks room for every
     // non-empty one, or the param pool for their params, nothing is added (and
@@ -81,7 +81,7 @@ public:
 private:
     struct Entry
     {
-        cfgdata::op *const *ops;
+        layoutdata::op *const *ops;
         uint32_t            count;
         int8_t              slot;       // ParamPool slot, or PARAM_NONE
         bool                release;
@@ -99,7 +99,7 @@ private:
     ParamPool         m_params;
 
     bool              m_active = false;
-    const cfgdata::op *m_active_op = nullptr;
+    const layoutdata::op *m_active_op = nullptr;
     int               m_active_slot = PARAM_NONE;
     OpTask            m_task = {};
     uint32_t          m_generation = 0;

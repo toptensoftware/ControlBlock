@@ -13,7 +13,7 @@
 // block: anything that waits returns Pending.
 
 #include <stdint.h>
-#include "config_types.h"
+#include "layout_types.h"
 
 class OpQueue;
 class HidKeyboard;
@@ -41,12 +41,12 @@ struct ExecCtx
 {
     void *ctx;                                                  // for now_ms and started
     uint32_t (*now_ms)(void *ctx);                              // wrapping millisecond clock
-    void (*started)(const cfgdata::op *op, void *ctx);          // every op that starts, after its executor's start (may be null)
+    void (*started)(const layoutdata::op *op, void *ctx);          // every op that starts, after its executor's start (may be null)
     HidKeyboard *hid;                                           // null: hidKey does nothing
     NetHost     *net;                                           // null: network ops do nothing
     OpQueue     *queue;                                         // for ops that push more (script)
     ScriptHost  *script;                                        // null: `script` ops do nothing
-    const cfgdata::configRoot *root;                            // the config (a script looks up activities by name)
+    const layoutdata::layoutRoot *root;                            // the layout (a script looks up activities by name)
     // switchActivity: select activity `index` (-1 none). Null on success, else
     // why not (the op then ends in Error). Null function: the op does nothing.
     const char *(*switch_activity)(int index, void *ctx);
@@ -57,9 +57,9 @@ struct ExecCtx
 // Wrapping clock: has `deadline` been reached?
 inline bool OpReached(uint32_t now, uint32_t deadline) { return (int32_t)(now - deadline) >= 0; }
 
-typedef OpStatus (*OpStartFn)(ExecCtx &exec, const cfgdata::op *op, OpTask &task);
-typedef OpStatus (*OpPollFn)(ExecCtx &exec, const cfgdata::op *op, OpTask &task);
-typedef void     (*OpCancelFn)(ExecCtx &exec, const cfgdata::op *op, OpTask &task);
+typedef OpStatus (*OpStartFn)(ExecCtx &exec, const layoutdata::op *op, OpTask &task);
+typedef OpStatus (*OpPollFn)(ExecCtx &exec, const layoutdata::op *op, OpTask &task);
+typedef void     (*OpCancelFn)(ExecCtx &exec, const layoutdata::op *op, OpTask &task);
 
 struct OpDesc
 {

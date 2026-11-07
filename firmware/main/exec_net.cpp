@@ -29,9 +29,9 @@ namespace
     }
 }
 
-OpStatus ExecHttpGet(ExecCtx &exec, const cfgdata::op *op, OpTask &task)
+OpStatus ExecHttpGet(ExecCtx &exec, const layoutdata::op *op, OpTask &task)
 {
-    const cfgdata::httpGetOp *g = (const cfgdata::httpGetOp *)op;
+    const layoutdata::httpGetOp *g = (const layoutdata::httpGetOp *)op;
     NetRequest req = {};
     req.kind    = NetKind::HttpGet;
     req.url     = g->url;
@@ -39,9 +39,9 @@ OpStatus ExecHttpGet(ExecCtx &exec, const cfgdata::op *op, OpTask &task)
     return Send(exec, req, task);
 }
 
-OpStatus ExecHttpPost(ExecCtx &exec, const cfgdata::op *op, OpTask &task)
+OpStatus ExecHttpPost(ExecCtx &exec, const layoutdata::op *op, OpTask &task)
 {
-    const cfgdata::httpPostOp *p = (const cfgdata::httpPostOp *)op;
+    const layoutdata::httpPostOp *p = (const layoutdata::httpPostOp *)op;
     NetRequest req = {};
     req.kind         = NetKind::HttpPost;
     req.url          = p->url;
@@ -52,9 +52,9 @@ OpStatus ExecHttpPost(ExecCtx &exec, const cfgdata::op *op, OpTask &task)
     return Send(exec, req, task);
 }
 
-OpStatus ExecUdpPacket(ExecCtx &exec, const cfgdata::op *op, OpTask &task)
+OpStatus ExecUdpPacket(ExecCtx &exec, const layoutdata::op *op, OpTask &task)
 {
-    const cfgdata::udpPacketOp *u = (const cfgdata::udpPacketOp *)op;
+    const layoutdata::udpPacketOp *u = (const layoutdata::udpPacketOp *)op;
     if (u->port == 0) {
         task.error = "udp port 0";
         return OpStatus::Error;
@@ -68,9 +68,9 @@ OpStatus ExecUdpPacket(ExecCtx &exec, const cfgdata::op *op, OpTask &task)
     return Send(exec, req, task);
 }
 
-OpStatus ExecSendWol(ExecCtx &exec, const cfgdata::op *op, OpTask &task)
+OpStatus ExecSendWol(ExecCtx &exec, const layoutdata::op *op, OpTask &task)
 {
-    const cfgdata::sendWolOp *w = (const cfgdata::sendWolOp *)op;
+    const layoutdata::sendWolOp *w = (const layoutdata::sendWolOp *)op;
     NetRequest req = {};
     req.kind = NetKind::Wol;
     req.port = NET_WOL_PORT;

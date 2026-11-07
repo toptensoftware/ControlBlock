@@ -17,7 +17,7 @@ void OpQueue::Init(const OpHost &host)
     m_params.Init();
 }
 
-bool OpQueue::PushList(uint32_t count, cfgdata::op *const *ops, bool release, const char *param)
+bool OpQueue::PushList(uint32_t count, layoutdata::op *const *ops, bool release, const char *param)
 {
     OpListRef ref;
     ref.ops = ops; ref.count = count; ref.release = release; ref.param = param;
@@ -88,7 +88,7 @@ void OpQueue::StartNext()
         m_head     = (m_head + 1) % OP_QUEUE_SIZE;
         m_count--;
     }
-    const cfgdata::op *op = m_cur.ops[m_cur_next++];
+    const layoutdata::op *op = m_cur.ops[m_cur_next++];
     m_waiting--;
 
     m_active_op   = op;

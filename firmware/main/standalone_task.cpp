@@ -21,7 +21,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "activity_host.h"
-#include "config_blob.h"
+#include "layout_blob.h"
 #include "model.h"
 #include "net_worker.h"
 #include "standalone.h"
@@ -50,7 +50,7 @@ static uint32_t s_started_code;
 static uint32_t s_logged_errors;    // ops that ended in an error, as of the last log (op task only)
 
 // For the busy/idle and activity log lines (op task only)
-static const cfgdata::configRoot *s_root;
+static const layoutdata::layoutRoot *s_root;
 static int      s_logged_activity = -1;
 static bool     s_was_busy;
 static uint32_t s_busy_since_ms;
@@ -67,7 +67,7 @@ static uint32_t clock_ms(void *)
 
 // Called after the executors built into Standalone (hidKey, delay) have run
 // the op: it only tells the op task that one started
-static void run_op(const cfgdata::op *, uint32_t code, void *)
+static void run_op(const layoutdata::op *, uint32_t code, void *)
 {
     s_started_code = code;
 }
@@ -184,7 +184,7 @@ esp_err_t standalone_init(const uint8_t *blob)
     h.net    = net_worker_host();
     h.hid.send = hid_send;
     h.script = standalone_script_platform();
-    const cfgdata::configRoot *root = blob ? ConfigRoot(blob) : nullptr;    // the device's blob is relocated already
+    const layoutdata::layoutRoot *root = blob ? LayoutRoot(blob) : nullptr;    // the device's blob is relocated already
     s_root = root;
     if (root) {
         ActivityScreen screen = {};

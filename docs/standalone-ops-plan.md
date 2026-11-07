@@ -1,10 +1,10 @@
 # Plan: remaining standalone ops and the Lua runtime
 
-Written by a planning sub-agent (read-only; it did not read the binpack source or irtx's `activities.cpp`), then revised with the user's decisions. The first milestone (take/release control, `hidKey` with a HID sink, `delay`) has landed. **Status (updated):** phase A (the net ops, executors, net worker, `param` through the queue, the op registry) and activity/device management have since been built and host tested; the net ops and activity switching work on the hardware. Phase B (Lua, job `wip/complete-lua-scripts.md`) is built and host tested, not yet run on the hardware; the script API as built is in [`config-format.md`](config-format.md#script-api).
+Written by a planning sub-agent (read-only; it did not read the binpack source or irtx's `activities.cpp`), then revised with the user's decisions. The first milestone (take/release control, `hidKey` with a HID sink, `delay`) has landed. **Status (updated):** phase A (the net ops, executors, net worker, `param` through the queue, the op registry) and activity/device management have since been built and host tested; the net ops and activity switching work on the hardware. Phase B (Lua, job `wip/complete-lua-scripts.md`) is built and host tested, not yet run on the hardware; the script API as built is in [`layout-format.md`](layout-format.md#script-api).
 - **Superseded, D6 (number width):** Lua uses its default 64-bit integers and doubles (user decision), not `LUA_32BITS` (Lua 5.4's `luaconf.h` hard-codes it off anyway). This matches the bake's wasmoon check. Text below that says `LUA_32BITS` is obsolete.
 - **Superseded, per-activity script compile and release:** scripts compile on first run and stay cached until the next takeover or release (see "Actions" in [`standalone.md`](standalone.md)). The step text below is the original plan: where it disagrees with the code, the code and [`standalone.md`](standalone.md) win. In particular:
 
-- **Superseded, steps 1 and 2 (offset codegen):** the plan to generate `op_spec.gen.h` field offsets, write offsets by hand with a sentinel test, and make `config_blob.cpp` walk the blob by offsets through `config_layout.h` / `ConfigView` was not followed. binpack now generates the C structs (`config_types.gen.h`, via `node tools/codegen/gen-types.js`), `config_types.h` adds the limits and `CONFIG_ACTIVITY_NONE`, and the validator reads the blob through those structs. `config_layout.h` and `config_view.h` are gone; the host tests are built 32-bit (`platform: "x86"`) so the structs match the device. `op_registry.cpp` holds the executor table and `op_exec.h` the executor protocol.
+- **Superseded, steps 1 and 2 (offset codegen):** the plan to generate `op_spec.gen.h` field offsets, write offsets by hand with a sentinel test, and make `layout_blob.cpp` walk the blob by offsets through a hand-written struct header and view class was not followed. binpack now generates the C structs (`layout_types.gen.h`, via `node tools/codegen/gen-types.js`), `layout_types.h` adds the limits and `LAYOUT_ACTIVITY_NONE`, and the validator reads the blob through those structs. the hand-written header and view class are gone; the host tests are built 32-bit (`platform: "x86"`) so the structs match the device. `op_registry.cpp` holds the executor table and `op_exec.h` the executor protocol.
 - **Superseded, section G and step 3 (queue entries):** the queue holds list references (`{ops, count, param slot, release}`, ring of 40, `PushLists` all or nothing), not expanded `{op, param slot}` entries; see "Actions" in [`standalone.md`](standalone.md). The param pool is `param_pool.h`.
 - **Activities are no longer out of scope:** `switchActivity` has an executor, with a "none" target (`null`), and the switch is planned, queued and applied as described under "Devices and activity switching" in [`standalone.md`](standalone.md). `switchActivity` from a script (section F) still enqueues at the tail, as the executor does. A refused switch (ring full) returns an error string and changes nothing; the script call would return `nil, err`.
 - **Dropped:** per-key `longPressMs` for activity pages (the one global setting is enough).
@@ -19,7 +19,7 @@ Written by a planning sub-agent (read-only; it did not read the binpack source o
 
 ## 0. What the docs define
 
-Op codes today, in `consts.js` OP and `config_layout.h`: 1 delay, 2 switchActivity, 3 hidKey, 4 httpGet, 5 httpPost, 6 udpPacket, 7 sendWol, 8 script. The milestone covers 1 to 3.
+Op codes today, in `consts.js` OP and `layout_types.gen.h`: 1 delay, 2 switchActivity, 3 hidKey, 4 httpGet, 5 httpPost, 6 udpPacket, 7 sendWol, 8 script. The milestone covers 1 to 3.
 
 **Scope:**
 - httpGet, httpPost, udpPacket and sendWol, with their executors and the net worker.
@@ -36,11 +36,11 @@ Op codes today, in `consts.js` OP and `config_layout.h`: 1 delay, 2 switchActivi
 **Ambiguous or missing in the docs:**
 1. **MIDI** is in CLAUDE.md ("HID first, then MIDI, HTTP and UDP") but has no op, code, schema or API anywhere. Out of scope. The design makes it one spec entry plus an executor.
 2. **HID gaps** the milestone will hit: consumer/media keys are unnamed; a chord is modifiers plus one key; `hold` is only legal under `press`/`release`, so it makes no sense from a script.
-3. **Script API names:** config-format.md lists `http.get/post, udp, hid, delay, switchActivity` and omits WoL. "A script can do everything an op can" requires a `wol` function. standalone.md also says "script API surface: built as we go".
-4. **httpGet as an op** is "fire and forget, response discarded", but the docs don't say whether it holds the queue. They also don't set the HTTP timeout, a response size cap, redirect handling, or header and body size limits (`CONFIG_MAX_OP_DATA` is 4096 for bodies and UDP data only).
+3. **Script API names:** layout-format.md lists `http.get/post, udp, hid, delay, switchActivity` and omits WoL. "A script can do everything an op can" requires a `wol` function. standalone.md also says "script API surface: built as we go".
+4. **httpGet as an op** is "fire and forget, response discarded", but the docs don't say whether it holds the queue. They also don't set the HTTP timeout, a response size cap, redirect handling, or header and body size limits (`LAYOUT_MAX_OP_DATA` is 4096 for bodies and UDP data only).
 5. **sendWol:** no port field (standard WoL uses UDP 9, some use 7). A null `broadcast` has no stated default (255.255.255.255, or a subnet broadcast derived from the netif).
 6. **udpPacket** `host` may be a hostname, so a DNS lookup must happen in the net worker, never in the op task.
-7. **`param`:** a string, but the docs don't say whether it is empty or `nil` when absent. config-format.md says it is a global; standalone.md's earlier text is looser.
+7. **`param`:** a string, but the docs don't say whether it is empty or `nil` when absent. layout-format.md says it is a global; standalone.md's earlier text is looser.
 8. **Script lifetime and state:** standalone.md says compile when the activity activates. Whether identical sources share state is not stated. Scripts in a device `turnOn`/`turnOff` list or a hook have no gesture, so gesture-dependent behaviour is undefined for them.
 9. **Docs inconsistency:** "fire-and-forget calls (`http.post`, `udp`) don't yield", but a HID `tap` is down, gap, up, so `hid()` must be able to yield.
 10. **Lua details:** the Lua version must match bake's wasmoon check (wasmoon 1.16.0 bundles Lua 5.4.x; believed 5.4.7, not verified). Integer and float width on the S3 is undecided: the S3 has a single-precision FPU only, so 64-bit integers and doubles use software floating point. Fine at button rates.
@@ -58,12 +58,12 @@ Field kinds: `int` (range), `str`, `bytes`, `enum`, `httpUrl`, `mac`, `hexOrStr`
 
 Consumers:
 - **`ops.js`** builds its OP_TABLE (props, checkers, packed form) from the spec. Custom `build` hooks stay for kinds that need context (`switchActivity` name to index, `script` file read and Lua check). `consts.js` OP and `schema.js` op types derive from it. Behaviour-preserving: the existing bake tests must pass unchanged.
-- **A codegen script** (`tools/codegen/gen-op-spec.js`) writes the checked-in `firmware/main/op_spec.gen.h`: op codes, field enums, offsets, limits and Lua names as `constexpr` data. A bake test fails if the committed header differs from the generator's output (same safety net as `sample_config.bin`).
+- **A codegen script** (`tools/codegen/gen-op-spec.js`) writes the checked-in `firmware/main/op_spec.gen.h`: op codes, field enums, offsets, limits and Lua names as `constexpr` data. A bake test fails if the committed header differs from the generator's output (same safety net as `sample_layout.bin`).
 - **The HID key table** (`hid.js`) is also generated into `hid_keys.gen.h`, so the device's `hid()` chord parser uses the same table as the bake.
 
 ### B. Offsets
 
-Offsets in the spec come from binpack's own layout if it exposes one (step 1 starts by checking). If not, they are written explicitly in the spec and a bake **sentinel test** packs each op with unique field values and asserts the bytes sit at the spec's offsets.
+Offsets in the spec come from binpack's own struct offsets if it exposes them (step 1 starts by checking). If not, they are written explicitly in the spec and a bake **sentinel test** packs each op with unique field values and asserts the bytes sit at the spec's offsets.
 
 ### C. Conformance vectors, `host/test/bake/op-vectors.json`
 
@@ -81,7 +81,7 @@ Executors read values by generated field enums, e.g. `args.str(HttpGet::URL)`.
 Three front ends produce `OpArgs` and run the same `start`:
 1. The blob decoder reads an op record by the spec's offsets.
 2. The Lua binder reads Lua arguments by the same field list: positional, or a single named-field table.
-3. The blob validator in `config_blob.cpp` replaces its hand-written `sizes[]` and `switch` with a walk over the descriptors, keeping the structural checks (pointers, NULs, relocations).
+3. The blob validator in `layout_blob.cpp` replaces its hand-written `sizes[]` and `switch` with a walk over the descriptors, keeping the structural checks (pointers, NULs, relocations).
 
 `ValidateKind` exists once in C++ and once in JS, tied by the vectors. Limits on both sides come from the spec.
 
@@ -181,11 +181,11 @@ Named-table forms are also accepted, e.g. `http.post{url=..., body=...}`. `http.
 **Step 1. Op spec and codegen (bake side; refactor only)**
 - Tests first: the spec round-trips to the current OP codes, field offsets (sentinel test) and packed bytes; `op-vectors.json` passes the JS validators; the generated-header drift test.
 - Files: new `host/src/bake/op-spec.js`, `tools/codegen/gen-op-spec.js`, `host/test/bake/op-vectors.json`, `firmware/main/op_spec.gen.h`, `hid_keys.gen.h`; edit `ops.js`, `consts.js`, `schema.js`, `hid.js`.
-- Risks: binpack layout access. Keep existing bake tests green throughout.
+- Risks: binpack offset access. Keep existing bake tests green throughout.
 
 **Step 2. C++ descriptor table, decoder and validator**
-- Tests first: `TestOpVectors.cpp`; decoder tests with the sample blob plus a new all-ops sample; existing `TestConfigBlob` (corrupt and truncated blobs) passes unchanged.
-- Files: new `op_registry.h/.cpp`, `op_decode.*`; edit `config_blob.cpp` (replace `sizes[]` and the switch), `config_layout.h`, `test.mk.js`; re-bake `sample_config.json`/`.bin`.
+- Tests first: `TestOpVectors.cpp`; decoder tests with the sample blob plus a new all-ops sample; existing `TestLayoutBlob` (corrupt and truncated blobs) passes unchanged.
+- Files: new `op_registry.h/.cpp`, `op_decode.*`; edit `layout_blob.cpp` (replace `sizes[]` and the switch), `layout_types.gen.h`, `test.mk.js`; re-bake `sample_layout.json`/`.bin`.
 - Risk: refactoring a validator the loader depends on. Land it behind the existing tests.
 
 **Step 3. Executor protocol and the op queue**
@@ -225,7 +225,7 @@ Named-table forms are also accepted, e.g. `http.post{url=..., body=...}`. `http.
 
 **Step 11. Docs** (propose, don't apply without OK)
 - standalone.md: the executor protocol, the script API table, lazy compile.
-- config-format.md: the script API and the generated op table.
+- layout-format.md: the script API and the generated op table.
 - CLAUDE.md: the new modules, `lua/`, the bake spec (`host/src/bake/`) and codegen workflow (`tools/codegen/`), new Open Items.
 
 ## 5. Decisions
@@ -276,7 +276,7 @@ Named-table forms are also accepted, e.g. `http.post{url=..., body=...}`. `http.
 
 **D7. Default WoL broadcast address?**
 - Problem: a null `broadcast` has no default.
-- Options: (a) 255.255.255.255, UDP port 9; (b) the subnet-directed broadcast derived from the netif; (c) require `broadcast` in the config.
+- Options: (a) 255.255.255.255, UDP port 9; (b) the subnet-directed broadcast derived from the netif; (c) require `broadcast` in the layout.
 - Recommendation: (b), falling back to (a). Some routers drop limited broadcasts.
 
 **D8. How should MIDI be handled?**
@@ -289,13 +289,13 @@ Named-table forms are also accepted, e.g. `http.post{url=..., body=...}`. `http.
 - The bake refactor (step 1) and validator refactor (step 2) touch working, tested code. Both are gated on the existing suites staying green.
 - Step 3 changes the queue API the milestone agent has just written against; sequence it after their step 3.
 - Lua in PSRAM and Wi-Fi traffic on core 0 are untested against the bounce fill; both need a `RUN_STRESS` pass on the hardware.
-- Lua string-pattern CPU abuse can't be interrupted by the instruction hook. Accepted, since the config is the device owner's own.
+- Lua string-pattern CPU abuse can't be interrupted by the instruction hook. Accepted, since the layout is the device owner's own.
 - Host build time grows with Lua (about 30 C files).
 
 ## Critical files
 
 - `firmware/main/op_queue.h` (and `.cpp`)
-- `firmware/main/config_blob.cpp`
+- `firmware/main/layout_blob.cpp`
 - `host/src/bake/ops.js`
 - `host/src/bake/schema.js`
 - `firmware/main/trigger_dispatch.cpp`

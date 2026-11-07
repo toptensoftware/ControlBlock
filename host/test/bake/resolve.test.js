@@ -7,7 +7,7 @@ import { OP, BLOB_VERSION } from "../../src/bake/consts.js";
 const delay = ms => ({ op: "delay", ms });
 const act = (extra = {}) => ({ pages: [{ keys: [] }], ...extra });
 
-test("a minimal config resolves to an empty Home", () => {
+test("a minimal layout resolves to an empty Home", () => {
     const t = ok({ version: 1, home: {} });
     assert.equal(t.version, BLOB_VERSION);
     assert.equal(t.longPressMs, 0);

@@ -5,11 +5,11 @@
 export const WIFI_WAIT_S = 30;
 
 export const USAGE = `usage: node cli/cli.js <command> ...
-  bake <config.json|.js|.mjs> [-o out.bin] [--upload [--serial S] [--force]]
-      bake a config; writes <config name>.bin next to it, unless -o names the file
+  bake <layout.json|.js|.mjs> [-o out.bin] [--upload [--serial S] [--force]]
+      bake a layout; writes <layout name>.bin next to it, unless -o names the file
       or --upload is given without -o
-  upload <config.json|.js|.mjs|baked.bin> [--serial S] [--force]
-      upload to the device (a config is baked in memory first); --force sends it
+  upload <layout.json|.js|.mjs|baked.bin> [--serial S] [--force]
+      upload to the device (a layout is baked in memory first); --force sends it
       even if the device already has it
   wifi set <ssid> [password] | get | clear | status | wait [seconds]  [--serial S]
       the device's Wi-Fi network: set stores one (no password: an open network) and
@@ -71,7 +71,7 @@ const isBlob = file => /\.bin$/i.test(file);
 function parseBake(argv)
 {
     const { opts, pos } = scan(argv, { values: { "-o": "out", "--out": "out", ...SERIAL }, flags: { "--upload": "upload", ...FORCE } });
-    const input = single(pos, "bake needs one config file");
+    const input = single(pos, "bake needs one layout file");
     if (isBlob(input))
         throw new UsageError(`${input} is already baked: use upload`);
     if (!opts.upload && (opts.serial !== undefined || opts.force))
@@ -82,7 +82,7 @@ function parseBake(argv)
 function parseUpload(argv)
 {
     const { opts, pos } = scan(argv, { values: SERIAL, flags: FORCE });
-    const input = single(pos, "upload needs one config or .bin file");
+    const input = single(pos, "upload needs one layout or .bin file");
     return { command: "upload", input, binary: isBlob(input), serial: opts.serial, force: !!opts.force };
 }
 

@@ -25,7 +25,7 @@ async function run(argv, io = {})
 
 const fast = { timeoutMs: 3000, intervalMs: 10 };
 
-test("cli: bakes a config file with real images to a .bin", { timeout: 120000 }, () => {
+test("cli: bakes a layout file with real images to a .bin", { timeout: 120000 }, () => {
     const { dir, file, cleanup } = exampleDir();
     try {
         const out = path.join(dir, "out.bin");
@@ -42,14 +42,14 @@ test("cli: bakes a config file with real images to a .bin", { timeout: 120000 },
     }
 });
 
-test("cli: a bad config prints every error with its path and exits 1", () => {
-    const { dir, file, cleanup } = exampleDir({ config: { version: 1, home: { keys: [{ iconScale: "x" }] }, oops: 1 } });
+test("cli: a bad layout prints every error with its path and exits 1", () => {
+    const { dir, file, cleanup } = exampleDir({ layout: { version: 1, home: { keys: [{ iconScale: "x" }] }, oops: 1 } });
     try {
         const r = spawnSync(process.execPath, [cliPath, "bake", file], { cwd: dir, encoding: "utf8" });
         assert.equal(r.status, 1);
         assert.match(r.stderr, /home\.keys\[0\]\.iconScale/);
         assert.match(r.stderr, /oops: unknown property/);
-        assert.equal(fs.existsSync(path.join(dir, "config.bin")), false);
+        assert.equal(fs.existsSync(path.join(dir, "layout.bin")), false);
     } finally {
         cleanup();
     }
@@ -61,7 +61,7 @@ test("cli: usage on no args, exit 2", () => {
     assert.match(r.stderr, /usage/i);
 });
 
-test("cli: bake writes <config name>.bin next to the config by default", { timeout: 120000 }, async () => {
+test("cli: bake writes <layout name>.bin next to the layout by default", { timeout: 120000 }, async () => {
     const { dir, file, cleanup } = exampleDir({ name: "living-room.json" });
     try {
         const r = await run(["bake", file]);
@@ -79,12 +79,12 @@ test("cli: upload sends a baked .bin as it is and verifies it", async () => {
         const blob = new Uint8Array(3000).map((_, i) => (i * 2654435761) >>> 24);
         const file = path.join(dir, "baked.bin");
         fs.writeFileSync(file, blob);
-        const dev = new FakeDevice({ maxPayload: 1000, config: { restartMs: 30 } });
+        const dev = new FakeDevice({ maxPayload: 1000, layout: { restartMs: 30 } });
         const opened = [];
         const r = await run(["upload", file, "--serial", "SERIAL1"], { open: fakeOpener(dev, { opened }), reconnect: fast });
         assert.equal(r.code, 0, r.err.join("\n"));
-        assert.deepEqual([...dev.config.stored.bytes], [...blob]);
-        assert.equal(dev.config.stored.crc, crc32(blob));
+        assert.deepEqual([...dev.layout.stored.bytes], [...blob]);
+        assert.equal(dev.layout.stored.crc, crc32(blob));
         assert.equal(opened[0].serial, "SERIAL1");
         assert.match(r.out.at(-1), /verified/);
     } finally {
@@ -92,16 +92,16 @@ test("cli: upload sends a baked .bin as it is and verifies it", async () => {
     }
 });
 
-test("cli: upload bakes a config in memory and sends it; a failure exits 1", { timeout: 120000 }, async () => {
+test("cli: upload bakes a layout in memory and sends it; a failure exits 1", { timeout: 120000 }, async () => {
     const { dir, file, cleanup } = exampleDir();
     try {
-        const dev = new FakeDevice({ config: { restartMs: 30 } });
+        const dev = new FakeDevice({ layout: { restartMs: 30 } });
         const r = await run(["upload", file], { open: fakeOpener(dev), reconnect: fast });
         assert.equal(r.code, 0, r.err.join("\n"));
-        assert.equal(r.out[0], `${file}: ${dev.config.stored.size} bytes`);
+        assert.equal(r.out[0], `${file}: ${dev.layout.stored.size} bytes`);
         assert.deepEqual(fs.readdirSync(dir).filter(f => f.endsWith(".bin")), []);     // nothing written
 
-        dev.config.capacity = 100;
+        dev.layout.capacity = 100;
         const bad = await run(["upload", file, "--force"], { open: fakeOpener(dev), reconnect: fast });
         assert.equal(bad.code, 1);
         assert.match(bad.err.at(-1), /^error: .*at most 100/);

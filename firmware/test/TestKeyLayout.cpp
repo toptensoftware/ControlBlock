@@ -73,7 +73,7 @@ Fact("KeyLayout SetKeys Gives The Compositor The Pixels")
 {
     Fixture f;
     KeyDef defs[] = { Def(0, 0, 1, 10), Def(0, 14, 2, 11) };
-    Assert(f.layout.SetKeys(defs, 2) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(defs, 2) == KeyLayoutResult::Ok);
 
     comp_key_t k0 = f.Key(0, 0), k14 = f.Key(0, 14);
     Assert(k0.bg == f.Px(1) && k0.fg == f.Px(10) && k0.flags == 0);
@@ -87,26 +87,26 @@ Fact("KeyLayout SetKeys Gives The Compositor The Pixels")
 
     // Or incremental, for the device's own test changes
     KeyDef again = Def(0, 1, 1, 12);
-    Assert(f.layout.SetKeys(&again, 1, 0) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(&again, 1, 0) == KeyLayoutResult::Ok);
     Assert(f.changes.GetCount() == 2 && f.changes[1].flags == 0);
 }
 
 Fact("KeyLayout SetKeys Is All Or Nothing")
 {
     Fixture f;
-    Assert(f.layout.SetPageCount(2) == LayoutResult::Ok);
+    Assert(f.layout.SetPageCount(2) == KeyLayoutResult::Ok);
     KeyDef ok = Def(0, 0, 1, 10);
-    Assert(f.layout.SetKeys(&ok, 1) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(&ok, 1) == KeyLayoutResult::Ok);
     f.changes.Clear();
 
     KeyDef missing[] = { Def(0, 0, 4, 11), Def(1, 3, 1, 99) };
-    Assert(f.layout.SetKeys(missing, 2) == LayoutResult::NotFound);
+    Assert(f.layout.SetKeys(missing, 2) == KeyLayoutResult::NotFound);
     KeyDef bad_page[] = { Def(0, 0, 4, 11), Def(2, 0, 1, 10) };
-    Assert(f.layout.SetKeys(bad_page, 2) == LayoutResult::BadArg);
+    Assert(f.layout.SetKeys(bad_page, 2) == KeyLayoutResult::BadArg);
     KeyDef bad_key[] = { Def(0, 0, 4, 11), Def(0, COMP_KEYS, 1, 10) };
-    Assert(f.layout.SetKeys(bad_key, 2) == LayoutResult::BadArg);
+    Assert(f.layout.SetKeys(bad_key, 2) == KeyLayoutResult::BadArg);
     KeyDef empty_with_ids = Def(0, 1, 1, 0, 0, 0, KEYDEF_EMPTY);
-    Assert(f.layout.SetKeys(&empty_with_ids, 1) == LayoutResult::BadArg);
+    Assert(f.layout.SetKeys(&empty_with_ids, 1) == KeyLayoutResult::BadArg);
 
     // Nothing changed
     Assert(f.Key(0, 0).bg == f.Px(1) && f.Key(0, 0).fg == f.Px(10));
@@ -117,7 +117,7 @@ Fact("KeyLayout SetKeys Is All Or Nothing")
 Fact("KeyLayout Ref Counts Follow Every Slot")
 {
     Fixture f;
-    Assert(f.layout.SetPageCount(3) == LayoutResult::Ok);
+    Assert(f.layout.SetPageCount(3) == KeyLayoutResult::Ok);
 
     // Face 1 on many keys and pages, and in both slots of one key
     List<KeyDef> defs;
@@ -125,24 +125,24 @@ Fact("KeyLayout Ref Counts Follow Every Slot")
         for (int k = 0; k < 5; k++)
             defs.Add(Def(p, k, 1, 10 + k, 3, 10 + k));
     defs.Add(Def(2, 14, 1, 1));
-    Assert(f.layout.SetKeys(defs.GetBuffer(), defs.GetCount()) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(defs.GetBuffer(), defs.GetCount()) == KeyLayoutResult::Ok);
     Assert(f.Refs(1) == 17 && f.Refs(3) == 15 && f.Refs(10) == 6);
 
     // Redefining a key with the same image keeps it; others drop
     KeyDef same = Def(0, 0, 1, 11);
-    Assert(f.layout.SetKeys(&same, 1) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(&same, 1) == KeyLayoutResult::Ok);
     Assert(f.Refs(1) == 17 && f.Refs(3) == 14 && f.Refs(10) == 4 && f.Refs(11) == 7);
 
     // Two entries for one key: the last wins
     KeyDef twice[] = { Def(0, 1, 4, 12), Def(0, 1, 2, 0) };
-    Assert(f.layout.SetKeys(twice, 2) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(twice, 2) == KeyLayoutResult::Ok);
     Assert(f.Key(0, 1).bg == f.Px(2) && !f.Key(0, 1).fg);
     Assert(f.Refs(4) == 0 && f.Refs(12) == 6 && f.Refs(2) == 1);
     Assert(f.Refs(1) == 16 && f.Refs(11) == 5);
 
     // Emptying keys releases them
     KeyDef empty = Def(2, 14, 0, 0, 0, 0, KEYDEF_EMPTY);
-    Assert(f.layout.SetKeys(&empty, 1) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(&empty, 1) == KeyLayoutResult::Ok);
     Assert(f.Refs(1) == 14);
 }
 
@@ -150,20 +150,20 @@ Fact("KeyLayout Freed Image Shows Until Its Last Key Goes")
 {
     Fixture f;
     KeyDef defs[] = { Def(0, 0, 1, 10), Def(0, 1, 4, 10) };
-    Assert(f.layout.SetKeys(defs, 2) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(defs, 2) == KeyLayoutResult::Ok);
     const void *px = f.Px(10);
 
     f.store.Free(10);
     Assert(!f.store.IsLive(10));
     Assert(f.Key(0, 0).fg == px && f.Key(0, 1).fg == px);   // still shown
     KeyDef again = Def(0, 2, 1, 10);
-    Assert(f.layout.SetKeys(&again, 1) == LayoutResult::NotFound);   // can't be used anew
+    Assert(f.layout.SetKeys(&again, 1) == KeyLayoutResult::NotFound);   // can't be used anew
 
     KeyDef k0 = Def(0, 0, 1, 11);
-    Assert(f.layout.SetKeys(&k0, 1) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(&k0, 1) == KeyLayoutResult::Ok);
     Assert(!ImageStore::IsRetired(px));
     KeyDef k1 = Def(0, 1, 4, 0);
-    Assert(f.layout.SetKeys(&k1, 1) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(&k1, 1) == KeyLayoutResult::Ok);
     Assert(ImageStore::IsRetired(px));          // waiting for the compositor's sweep
     f.env.Sweep();
     f.store.Collect();
@@ -179,7 +179,7 @@ Fact("KeyLayout Pressed Pair Shows While Held")
         Def(0, 2, 1, 10, 3, 0),         // pressed face only, no pressed icon
         Def(0, 3, 1, 10, 3, 11, KEYDEF_DISABLED),
     };
-    Assert(f.layout.SetKeys(defs, 4) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(defs, 4) == KeyLayoutResult::Ok);
     f.changes.Clear();
 
     for (int k = 0; k < 4; k++)
@@ -197,7 +197,7 @@ Fact("KeyLayout Pressed Pair Shows While Held")
 
     // Redefining a held key keeps it held
     KeyDef redo = Def(0, 0, 4, 12, 2, 13);
-    Assert(f.layout.SetKeys(&redo, 1) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(&redo, 1) == KeyLayoutResult::Ok);
     Assert(f.Key(0, 0).bg == f.Px(2) && f.Key(0, 0).flags == COMP_KEY_BG_OPAQUE);
 
     Assert(f.layout.SetPressed(0, 0, false));
@@ -209,9 +209,9 @@ Fact("KeyLayout Pressed Pair Shows While Held")
 Fact("KeyLayout Replace Updates Exactly The Keys Using It")
 {
     Fixture f;
-    Assert(f.layout.SetPageCount(3) == LayoutResult::Ok);
+    Assert(f.layout.SetPageCount(3) == KeyLayoutResult::Ok);
     KeyDef defs[] = { Def(0, 0, 1, 10), Def(2, 5, 4, 11, 3, 10), Def(1, 0, 1, 12) };
-    Assert(f.layout.SetKeys(defs, 3) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(defs, 3) == KeyLayoutResult::Ok);
     f.changes.Clear();
     const void *old = f.Px(10);
 
@@ -237,26 +237,26 @@ Fact("KeyLayout Replace Updates Exactly The Keys Using It")
 Fact("KeyLayout SetPageCount Clears Removed Pages")
 {
     Fixture f;
-    Assert(f.layout.SetPageCount(0) == LayoutResult::BadArg);
-    Assert(f.layout.SetPageCount(LAYOUT_MAX_PAGES + 1) == LayoutResult::BadArg);
-    Assert(f.layout.SetPageCount(LAYOUT_MAX_PAGES) == LayoutResult::Ok);
+    Assert(f.layout.SetPageCount(0) == KeyLayoutResult::BadArg);
+    Assert(f.layout.SetPageCount(KEY_LAYOUT_MAX_PAGES + 1) == KeyLayoutResult::BadArg);
+    Assert(f.layout.SetPageCount(KEY_LAYOUT_MAX_PAGES) == KeyLayoutResult::Ok);
 
-    KeyDef defs[] = { Def(0, 0, 1, 10), Def(LAYOUT_MAX_PAGES - 1, 0, 1, 11) };
-    Assert(f.layout.SetKeys(defs, 2) == LayoutResult::Ok);
-    Assert(f.layout.SetPageCount(2) == LayoutResult::Ok);
+    KeyDef defs[] = { Def(0, 0, 1, 10), Def(KEY_LAYOUT_MAX_PAGES - 1, 0, 1, 11) };
+    Assert(f.layout.SetKeys(defs, 2) == KeyLayoutResult::Ok);
+    Assert(f.layout.SetPageCount(2) == KeyLayoutResult::Ok);
     Assert(f.Refs(1) == 1 && f.Refs(11) == 0);
 
     // Growing again brings back empty pages
-    Assert(f.layout.SetPageCount(LAYOUT_MAX_PAGES) == LayoutResult::Ok);
-    Assert(!f.Key(LAYOUT_MAX_PAGES - 1, 0).bg);
+    Assert(f.layout.SetPageCount(KEY_LAYOUT_MAX_PAGES) == KeyLayoutResult::Ok);
+    Assert(!f.Key(KEY_LAYOUT_MAX_PAGES - 1, 0).bg);
 }
 
 Fact("KeyLayout Clear Releases Everything")
 {
     Fixture f;
-    Assert(f.layout.SetPageCount(3) == LayoutResult::Ok);
+    Assert(f.layout.SetPageCount(3) == KeyLayoutResult::Ok);
     KeyDef defs[] = { Def(0, 0, 1, 10, 3, 11), Def(2, 4, 2, 12) };
-    Assert(f.layout.SetKeys(defs, 2) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(defs, 2) == KeyLayoutResult::Ok);
     f.layout.Clear();
     Assert(f.layout.PageCount() == 1);
     Assert(f.Refs(1) == 0 && f.Refs(3) == 0 && f.Refs(12) == 0);
@@ -281,7 +281,7 @@ Fact("KeyLayout Draws External Images")
     Assert(f.store.AddExternal(1004, icon_copy, icon_size) == ImageResult::Ok);
 
     KeyDef def = Def(0, 2, 1000, 1004, 1000, 1004);
-    Assert(f.layout.SetKeys(&def, 1) == LayoutResult::Ok);
+    Assert(f.layout.SetKeys(&def, 1) == KeyLayoutResult::Ok);
     comp_key_t k = f.Key(0, 2);
     Assert(k.bg == face_copy && k.fg == icon_copy && k.flags == COMP_KEY_BG_OPAQUE);
     Assert(f.layout.IsActive(0, 2));

@@ -1,4 +1,4 @@
-// Upload a baked blob to the device (docs/protocol.md "Configuration upload"):
+// Upload a baked blob to the device (docs/protocol.md "Layout upload"):
 // send it, wait for the device to restart, and check what it kept. The
 // protocol work is ControlBlock.js's; this is the upload-and-check flow the
 // command line uses, with its messages.
@@ -23,7 +23,7 @@ export async function uploadBlob(blob, { serial, force = false, log = () => { },
         log(`device ${id} (firmware ${cb.info.firmwareVersion})`);
 
         let lastStep = -1;
-        const r = await cb.uploadConfig(blob, {
+        const r = await cb.uploadLayout(blob, {
             force,
             onProgress: (sent, total) => {
                 const step = Math.floor(sent * 100 / total / PROGRESS_STEP) * PROGRESS_STEP;
@@ -35,7 +35,7 @@ export async function uploadBlob(blob, { serial, force = false, log = () => { },
         });
         if (!r.uploaded)
         {
-            log(`device already has this config (${r.size} bytes); nothing to send (--force sends it anyway)`);
+            log(`device already has this layout (${r.size} bytes); nothing to send (--force sends it anyway)`);
             return { uploaded: false, verified: true, size: r.size, crc: r.crc };
         }
 
@@ -46,8 +46,8 @@ export async function uploadBlob(blob, { serial, force = false, log = () => { },
         // ...and the same device again (a second one on the bus doesn't count)
         if (cb.info.serial !== id)
             throw new Error(`a different device came back (${cb.info.serial}, not ${id})`);
-        if (cb.info.configSize !== r.size || cb.info.configCrc !== r.crc)
-            throw new Error(`the device restarted with a different config than was sent (${cb.info.configSize} bytes, crc ${cb.info.configCrc}; sent ${r.size} bytes, crc ${r.crc})`);
+        if (cb.info.layoutSize !== r.size || cb.info.layoutCrc !== r.crc)
+            throw new Error(`the device restarted with a different layout than was sent (${cb.info.layoutSize} bytes, crc ${cb.info.layoutCrc}; sent ${r.size} bytes, crc ${r.crc})`);
         log(`device restarted and verified: ${r.size} bytes, crc 0x${r.crc.toString(16).padStart(8, "0")}`);
         return { uploaded: true, verified: true, size: r.size, crc: r.crc };
     }

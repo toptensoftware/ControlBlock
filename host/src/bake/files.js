@@ -1,4 +1,4 @@
-// Node helpers for config files on disk: load a config (.json, or a .js/.mjs module's default
+// Node helpers for layout files on disk: load a layout (.json, or a .js/.mjs module's default
 // export) and bake it with its assets resolved relative to the file's directory.
 
 import fs from "node:fs";
@@ -8,7 +8,7 @@ import { bake } from "./bake.js";
 import { createNodeHost } from "./host-node.js";
 import { createRenderer } from "./render-node.js";
 
-export async function loadConfigFile(file)
+export async function loadLayoutFile(file)
 {
     if (path.extname(file).toLowerCase() === ".json")
         return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -20,5 +20,5 @@ export async function loadConfigFile(file)
 export async function bakeFile(file, { renderer = createRenderer() } = {})
 {
     const host = await createNodeHost(path.dirname(path.resolve(file)));
-    return bake(await loadConfigFile(file), host, renderer);
+    return bake(await loadLayoutFile(file), host, renderer);
 }

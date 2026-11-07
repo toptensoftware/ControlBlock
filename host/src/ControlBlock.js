@@ -9,14 +9,14 @@
 // the backlight is off; docs/backlight.md), "wifiState" ({ state, stateName,
 // lost, ip }: the Wi-Fi connection changed; docs/wifi.md), "error" (the read loop failed), "close".
 // takeControl() / releaseControl() switch the device between standalone and hosted mode (docs/standalone.md).
-// uploadConfig() saves a standalone config in the device's flash (docs/protocol.md).
+// uploadLayout() saves a standalone layout in the device's flash (docs/protocol.md).
 
 import { Emitter } from "./Emitter.js";
 import {
     USB_VID, USB_PID, INTERFACE, ENDPOINT, USB_PACKET_SIZE, PROTOCOL_VERSION, REQ_RESET_STREAM,
-    PUT_IMAGE_PREFIX, CONFIG_DATA_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
+    PUT_IMAGE_PREFIX, LAYOUT_DATA_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
     encodeWifiSet, decodeWifiCredentials, decodeWifiStatus, WifiState,
-    encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeConfigBegin, encodeConfigData, crc32,
+    encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeLayoutBegin, encodeLayoutData, crc32,
     decodeInfo, decodeQuery, decodeEvent, statusName, HEARTBEAT_INTERVAL_MS,
 } from "./protocol.js";
 
@@ -30,9 +30,9 @@ const READ_SIZE        = 4096;      // a multiple of the 64-byte packet size
 // exit wait for it: at most one heartbeat interval on a live device.
 const READ_TIMEOUT_MS  = 5 * HEARTBEAT_INTERVAL_MS;
 const DEFAULT_TIMEOUT  = 5000;      // per request
-const CONFIG_COMMIT_TIMEOUT = 30000; // the device checks and reads back the whole config
-const CONFIG_WINDOW    = 4;         // config chunks in flight: each takes the device a while (flash erases)
-const RESTART_TIMEOUT  = 15000;     // a device restarting after a config commit
+const LAYOUT_COMMIT_TIMEOUT = 30000; // the device checks and reads back the whole layout
+const LAYOUT_WINDOW    = 4;         // layout chunks in flight: each takes the device a while (flash erases)
+const RESTART_TIMEOUT  = 15000;     // a device restarting after a layout commit
 const RESTART_POLL     = 250;
 
 function typeName(type)
@@ -67,7 +67,7 @@ export class ControlBlock extends Emitter
         this._pending  = new Map();     // seq -> { type, resolve, reject, timer }
         this._seq      = 0;
         this._writes   = Promise.resolve();
-        this._restarting = false;       // a config was committed: the device is about to drop off the bus
+        this._restarting = false;       // a layout was committed: the device is about to drop off the bus
     }
 
     // Node: find a ControlBlock (by serial, or the first with our VID/PID),
@@ -176,8 +176,8 @@ export class ControlBlock extends Emitter
 
     // Take control of the screen (docs/standalone.md "Runtime modes"). The
     // device boots standalone, showing its own Home, and refuses every request
-    // that edits the layout (reset, setKeys, putImage...) with NOT_HOSTED until
-    // you do this. Taking control clears the layout and images like reset().
+    // that edits the screen (reset, setKeys, putImage...) with NOT_HOSTED until
+    // you do this. Taking control clears the keys and images like reset().
     // Key and page events flow while you have control.
     async takeControl()
     {
@@ -294,34 +294,34 @@ export class ControlBlock extends Emitter
         await Promise.all(sends);
     }
 
-    // Save a standalone config (a BPAK blob from src/bake) in the device's
+    // Save a standalone layout (a BPAK blob from src/bake) in the device's
     // flash. Skipped (resolves { uploaded: false }) if the device already has
     // exactly this blob, unless `force`. onProgress(sent, total) after each
     // chunk. The device blanks its screen while it writes, and restarts when
     // it's done: the connection ends, and reconnect() finds it again.
-    async uploadConfig(blob, { force = false, onProgress } = {})
+    async uploadLayout(blob, { force = false, onProgress } = {})
     {
         if (!blob.length)
-            throw new Error("Empty config");
+            throw new Error("Empty layout");
         const size = blob.length, crc = crc32(blob);
-        const capacity = this.info?.configCapacity;
+        const capacity = this.info?.layoutCapacity;
         if (capacity && size > capacity)
-            throw new RangeError(`Config is ${size} bytes; the device stores at most ${capacity}`);
-        if (!force && this.info && this.info.configSize === size && this.info.configCrc === crc)
+            throw new RangeError(`Layout is ${size} bytes; the device stores at most ${capacity}`);
+        if (!force && this.info && this.info.layoutSize === size && this.info.layoutCrc === crc)
             return { uploaded: false, size, crc };
 
-        await this.call(Msg.CONFIG_BEGIN, encodeConfigBegin(size, crc));
+        await this.call(Msg.LAYOUT_BEGIN, encodeLayoutBegin(size, crc));
 
         // A small window of chunks in flight (the device answers each once
         // it's in flash); after a failure nothing more is sent
-        const chunk = this._maxPayload() - CONFIG_DATA_PREFIX;
+        const chunk = this._maxPayload() - LAYOUT_DATA_PREFIX;
         const active = new Set();
         let offset = 0, sent = 0, failure = null;
         while (true) {
-            while (!failure && offset < size && active.size < CONFIG_WINDOW) {
+            while (!failure && offset < size && active.size < LAYOUT_WINDOW) {
                 const part = blob.subarray(offset, offset + chunk);
                 offset += part.length;
-                const p = this.call(Msg.CONFIG_DATA, encodeConfigData(offset - part.length, part))
+                const p = this.call(Msg.LAYOUT_DATA, encodeLayoutData(offset - part.length, part))
                     .then(() => { sent += part.length; onProgress?.(sent, size); },
                           err => { failure ??= err; })
                     .finally(() => active.delete(p));
@@ -336,19 +336,19 @@ export class ControlBlock extends Emitter
 
         this._restarting = true;        // expected from here: the device drops off the bus
         try {
-            await this.call(Msg.CONFIG_COMMIT, undefined, { timeoutMs: CONFIG_COMMIT_TIMEOUT });
+            await this.call(Msg.LAYOUT_COMMIT, undefined, { timeoutMs: LAYOUT_COMMIT_TIMEOUT });
         } catch (err) {
             this._restarting = false;
             throw err;
         }
         if (this.info) {
-            this.info.configSize = size;
-            this.info.configCrc = crc;
+            this.info.layoutSize = size;
+            this.info.layoutCrc = crc;
         }
         return { uploaded: true, size, crc };
     }
 
-    // After uploadConfig() (or any restart): wait for this connection to end,
+    // After uploadLayout() (or any restart): wait for this connection to end,
     // then for the same device (by serial) to come back. Resolves to a new,
     // connected ControlBlock. This one is closed.
     async reconnect({ timeoutMs = RESTART_TIMEOUT, intervalMs = RESTART_POLL, opener } = {})
@@ -483,7 +483,7 @@ export class ControlBlock extends Emitter
                 // "Cancelled" (other versions may say "timed out")
                 if (/time|cancel/i.test(String(err?.message ?? err)))
                     continue;
-                if (this._restarting) {         // the device restarted after a config commit
+                if (this._restarting) {         // the device restarted after a layout commit
                     await this.close();
                     break;
                 }

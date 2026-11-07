@@ -9,10 +9,10 @@
 #include "op_exec.h"
 #include "net_host.h"
 
-OpStatus ExecHttpGet(ExecCtx &exec, const cfgdata::op *op, OpTask &task);
-OpStatus ExecHttpPost(ExecCtx &exec, const cfgdata::op *op, OpTask &task);
-OpStatus ExecUdpPacket(ExecCtx &exec, const cfgdata::op *op, OpTask &task);
-OpStatus ExecSendWol(ExecCtx &exec, const cfgdata::op *op, OpTask &task);
+OpStatus ExecHttpGet(ExecCtx &exec, const layoutdata::op *op, OpTask &task);
+OpStatus ExecHttpPost(ExecCtx &exec, const layoutdata::op *op, OpTask &task);
+OpStatus ExecUdpPacket(ExecCtx &exec, const layoutdata::op *op, OpTask &task);
+OpStatus ExecSendWol(ExecCtx &exec, const layoutdata::op *op, OpTask &task);
 
 // Hand a request to the net host (the ops above, and the script API, which sets `wait`
 // to get an answer back): sets wait and the generation from the task. Done when handed

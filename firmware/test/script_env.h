@@ -1,13 +1,13 @@
 #pragma once
 
-// The rig the script tests share: a ScriptHost over the sample config, driven through the op
+// The rig the script tests share: a ScriptHost over the sample layout, driven through the op
 // registry like any op, against a fake clock, HID sink and net host.
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "Core.h"
-#include "config_env.h"
+#include "layout_env.h"
 #include "hid_keyboard.h"
 #include "net_env.h"
 #include "op_registry.h"
@@ -16,7 +16,7 @@
 namespace script_env
 {
     using namespace SimpleLib;
-    using namespace config_env;
+    using namespace layout_env;
 }
 
 namespace script_env
@@ -24,7 +24,7 @@ namespace script_env
     struct Rig
     {
         List<uint8_t> bytes = LoadSample();
-        const cfgdata::configRoot *root = nullptr;
+        const layoutdata::layoutRoot *root = nullptr;
         uint32_t        now = 1000;
         uint32_t        auto_tick = 0;          // added to the clock on every read (a script that never yields)
         FakeNet         net;
@@ -70,7 +70,7 @@ namespace script_env
 
             exec.ctx    = this;
             exec.now_ms = [](void *c) { Rig *g = (Rig *)c; g->now += g->auto_tick; return g->now; };
-            exec.started = [](const cfgdata::op *, void *c) { ((Rig *)c)->started++; };
+            exec.started = [](const layoutdata::op *, void *c) { ((Rig *)c)->started++; };
             exec.hid    = &hid;
             exec.net    = net_on ? &net.host : nullptr;
             exec.script = &host;
@@ -88,9 +88,9 @@ namespace script_env
         }
 
         // The op for a source (the pointer is the script's identity, so use string literals)
-        cfgdata::scriptOp Op(const char *src)
+        layoutdata::scriptOp Op(const char *src)
         {
-            cfgdata::scriptOp op = {};
+            layoutdata::scriptOp op = {};
             op.base.op       = OP_SCRIPT;
             op.source        = src;
             op.source_count  = (uint32_t)strlen(src);
@@ -100,7 +100,7 @@ namespace script_env
         // Start and drive to the end, the clock moving 1 ms per poll
         OpStatus Run(const char *src, const char *param = "", int max_polls = 100000)
         {
-            cfgdata::scriptOp op = Op(src);
+            layoutdata::scriptOp op = Op(src);
             task = {};
             task.param      = param;
             task.generation = 7;
@@ -115,7 +115,7 @@ namespace script_env
         // Start only
         OpStatus Begin(const char *src)
         {
-            cfgdata::scriptOp op = Op(src);
+            layoutdata::scriptOp op = Op(src);
             begun = op;
             task = {};
             task.param      = "";
@@ -124,7 +124,7 @@ namespace script_env
         }
         OpStatus PollIt() { return OpPoll(exec, &begun.base, task); }
         void CancelIt() { OpCancel(exec, &begun.base, task); }
-        cfgdata::scriptOp begun = {};
+        layoutdata::scriptOp begun = {};
 
         bool Logged(const char *s) const { return strstr(log, s) != nullptr; }
     };

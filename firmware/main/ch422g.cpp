@@ -13,7 +13,9 @@ static const char *TAG = "ch422g";
 
 #define SYS_IO_OUTPUT  0x01 // EXIO pins are outputs
 
-#define INITIAL_OUT  (CH422G_TP_RST | CH422G_LCD_RST | CH422G_SD_CS)
+// The backlight stays on (as it is at power-up): switching it on causes a supply transient that
+// corrupts PSRAM transfers and drops the CH343P UART port, so boot never switches it
+#define INITIAL_OUT  (CH422G_TP_RST | CH422G_LCD_RST | CH422G_SD_CS | CH422G_BACKLIGHT)
 
 static i2c_master_dev_handle_t s_sys;
 static i2c_master_dev_handle_t s_out;

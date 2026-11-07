@@ -39,7 +39,7 @@ typedef struct page page;
 typedef struct home home;
 typedef struct device device;
 typedef struct activity activity;
-typedef struct configRoot configRoot;
+typedef struct layoutRoot layoutRoot;
 
 
 #pragma pack(push, 1)
@@ -206,8 +206,8 @@ struct activity
 };
 static_assert(sizeof(activity) == 64, "Size of activity must be 64 bytes");
 
-// configRoot
-struct configRoot
+// layoutRoot
+struct layoutRoot
 {
 	/*    0 */	uint32_t version;
 	/*    4 */	uint32_t longPressMs;
@@ -217,7 +217,7 @@ struct configRoot
 	/*  564 */	uint32_t activities_count;
 	/*  568 */	activity* activities;
 };
-static_assert(sizeof(configRoot) == 572, "Size of configRoot must be 572 bytes");
+static_assert(sizeof(layoutRoot) == 572, "Size of layoutRoot must be 572 bytes");
 
 #pragma pack(pop)
 

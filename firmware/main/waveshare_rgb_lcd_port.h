@@ -87,7 +87,8 @@ typedef bool (*PFNFILLLINES)(uint16_t *dest, int y, int count, void *ctx);
 // apply in this mode.
 esp_err_t display_init_bounce(PFNFILLLINES fill_cb, void *ctx);
 
-// Backlight on/off (CH422G line, no PWM). Needs ch422g_init().
+// Backlight on/off (CH422G line, no PWM). Needs ch422g_init(). Does nothing unless built
+// with BACKLIGHT_SWITCH (the light stays on: docs/backlight.md, Hardware).
 esp_err_t display_enable_backlight(bool enable);
 
 // Return both frame buffer pointers (order matches driver allocation).

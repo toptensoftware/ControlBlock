@@ -35,7 +35,7 @@ namespace
             exec.ctx     = this;
             exec.now_ms  = [](void *c) { return ((Rig *)c)->now; };
             exec.hid     = with_hid ? &hid : nullptr;
-            exec.started = [](const cfgdata::op *op, void *c) {
+            exec.started = [](const layoutdata::op *op, void *c) {
                 Rig *r = (Rig *)c;
                 if (r->n_started < 16)
                     r->started[r->n_started++] = op->op;
@@ -45,17 +45,17 @@ namespace
         bool LastIs(uint8_t mods, uint8_t key) const { return sent && reports[sent - 1][0] == mods && reports[sent - 1][2] == key; }
     };
 
-    cfgdata::delayOp Delay(uint32_t ms)
+    layoutdata::delayOp Delay(uint32_t ms)
     {
-        cfgdata::delayOp d = {};
+        layoutdata::delayOp d = {};
         d.base.op  = OP_DELAY;
         d.duration = ms;
         return d;
     }
 
-    cfgdata::hidKeyOp Hid(uint8_t mode, uint8_t mods, uint8_t key)
+    layoutdata::hidKeyOp Hid(uint8_t mode, uint8_t mods, uint8_t key)
     {
-        cfgdata::hidKeyOp h = {};
+        layoutdata::hidKeyOp h = {};
         h.base.op   = OP_HID_KEY;
         h.mode      = mode;
         h.modifiers = mods;
@@ -80,12 +80,12 @@ Fact("OpRegistry Has An Entry For Every Op Code")
 Fact("OpRegistry Op Without An Executor Is Done At Once But Still Reported Started")
 {
     Rig r;
-    cfgdata::op script = {};
+    layoutdata::op script = {};
     script.op = OP_SCRIPT;
     Assert(OpStart(r.exec, &script, r.task) == OpStatus::Done);
     Assert(r.n_started == 1 && r.started[0] == OP_SCRIPT);
 
-    cfgdata::op unknown = {};
+    layoutdata::op unknown = {};
     unknown.op = 77;
     Assert(OpStart(r.exec, &unknown, r.task) == OpStatus::Done);
     Assert(OpPoll(r.exec, &unknown, r.task) == OpStatus::Done);
@@ -99,13 +99,13 @@ Fact("OpRegistry SwitchActivity Asks The Host And Maps The None Index")
     seen = { 99, nullptr };
     r.exec.switch_activity = [](int index, void *) { seen.index = index; return seen.fail; };
 
-    cfgdata::switchActivityOp s = {};
+    layoutdata::switchActivityOp s = {};
     s.base.op = OP_SWITCH_ACTIVITY;
     s.index   = 2;
     Assert(OpStart(r.exec, &s.base, r.task) == OpStatus::Done);
     Assert(seen.index == 2);
 
-    s.index = CONFIG_ACTIVITY_NONE;
+    s.index = LAYOUT_ACTIVITY_NONE;
     Assert(OpStart(r.exec, &s.base, r.task) == OpStatus::Done);
     Assert(seen.index == -1);
 
@@ -117,7 +117,7 @@ Fact("OpRegistry SwitchActivity Asks The Host And Maps The None Index")
 Fact("OpRegistry SwitchActivity Without A Host Is Done At Once")
 {
     Rig r;
-    cfgdata::switchActivityOp s = {};
+    layoutdata::switchActivityOp s = {};
     s.base.op = OP_SWITCH_ACTIVITY;
     Assert(OpStart(r.exec, &s.base, r.task) == OpStatus::Done);
     Assert(r.n_started == 1 && r.started[0] == OP_SWITCH_ACTIVITY);
@@ -126,7 +126,7 @@ Fact("OpRegistry SwitchActivity Without A Host Is Done At Once")
 Fact("OpRegistry Delay Is Pending Until Its Time Has Passed")
 {
     Rig r;
-    cfgdata::delayOp d = Delay(100);
+    layoutdata::delayOp d = Delay(100);
     Assert(OpStart(r.exec, &d.base, r.task) == OpStatus::Pending);
     Assert(r.n_started == 1 && r.started[0] == OP_DELAY);
     r.now += 99;
@@ -139,7 +139,7 @@ Fact("OpRegistry Delay Survives The Clock Wrapping")
 {
     Rig r;
     r.now = 0xFFFFFFF0u;
-    cfgdata::delayOp d = Delay(100);
+    layoutdata::delayOp d = Delay(100);
     OpStart(r.exec, &d.base, r.task);
     r.now += 99;                                        // wraps past zero, 1 ms short
     Assert(OpPoll(r.exec, &d.base, r.task) == OpStatus::Pending);
@@ -150,14 +150,14 @@ Fact("OpRegistry Delay Survives The Clock Wrapping")
 Fact("OpRegistry Zero Delay Is Done At Once")
 {
     Rig r;
-    cfgdata::delayOp d = Delay(0);
+    layoutdata::delayOp d = Delay(0);
     Assert(OpStart(r.exec, &d.base, r.task) == OpStatus::Done);
 }
 
 Fact("OpRegistry Hid Tap Is Pending Through The Gap And The Settle")
 {
     Rig r;
-    cfgdata::hidKeyOp h = Hid(HID_MODE_TAP, 0x01, 0x06);        // ctrl+c
+    layoutdata::hidKeyOp h = Hid(HID_MODE_TAP, 0x01, 0x06);        // ctrl+c
     Assert(OpStart(r.exec, &h.base, r.task) == OpStatus::Pending);
     Assert(r.sent == 1 && r.LastIs(0x01, 0x06));                // down
 
@@ -177,16 +177,16 @@ Fact("OpRegistry Hid Tap Is Pending Through The Gap And The Settle")
 Fact("OpRegistry Hid Down Up And Hold Are Done At Once")
 {
     Rig r;
-    cfgdata::hidKeyOp down = Hid(HID_MODE_DOWN, 0x02, 0x04);
+    layoutdata::hidKeyOp down = Hid(HID_MODE_DOWN, 0x02, 0x04);
     Assert(OpStart(r.exec, &down.base, r.task) == OpStatus::Done);
     Assert(r.sent == 1 && r.LastIs(0x02, 0x04));
 
-    cfgdata::hidKeyOp up = Hid(HID_MODE_UP, 0x02, 0x04);
+    layoutdata::hidKeyOp up = Hid(HID_MODE_UP, 0x02, 0x04);
     Assert(OpStart(r.exec, &up.base, r.task) == OpStatus::Done);
     Assert(r.sent == 2 && r.LastIs(0, 0));
 
     // hold: down for a press trigger, up for a release one (the task says which)
-    cfgdata::hidKeyOp hold = Hid(HID_MODE_HOLD, 0, 0x05);
+    layoutdata::hidKeyOp hold = Hid(HID_MODE_HOLD, 0, 0x05);
     r.task.releasing = false;
     Assert(OpStart(r.exec, &hold.base, r.task) == OpStatus::Done);
     Assert(r.sent == 3 && r.LastIs(0, 0x05));
@@ -198,7 +198,7 @@ Fact("OpRegistry Hid Down Up And Hold Are Done At Once")
 Fact("OpRegistry Hid Cancel Lets Go Of A Tap In Flight")
 {
     Rig r;
-    cfgdata::hidKeyOp h = Hid(HID_MODE_TAP, 0, 0x06);
+    layoutdata::hidKeyOp h = Hid(HID_MODE_TAP, 0, 0x06);
     OpStart(r.exec, &h.base, r.task);
     Assert(r.sent == 1);
     OpCancel(r.exec, &h.base, r.task);
@@ -211,7 +211,7 @@ Fact("OpRegistry Hid Cancel Lets Go Of A Tap In Flight")
 Fact("OpRegistry Hid Without A Keyboard Is A No-op")
 {
     Rig r(false);
-    cfgdata::hidKeyOp h = Hid(HID_MODE_TAP, 0, 0x06);
+    layoutdata::hidKeyOp h = Hid(HID_MODE_TAP, 0, 0x06);
     Assert(OpStart(r.exec, &h.base, r.task) == OpStatus::Done);
     OpCancel(r.exec, &h.base, r.task);
     Assert(r.sent == 0);
@@ -222,9 +222,9 @@ Fact("OpRegistry Host Adapter Runs The Registry Through An OpQueue")
     Rig r;
     OpQueue q;
     q.Init(OpRegistryHost(&r.exec));
-    cfgdata::delayOp d = Delay(50);
-    cfgdata::hidKeyOp h = Hid(HID_MODE_DOWN, 0, 0x04);
-    cfgdata::op *ops[2] = { &d.base, &h.base };
+    layoutdata::delayOp d = Delay(50);
+    layoutdata::hidKeyOp h = Hid(HID_MODE_DOWN, 0, 0x04);
+    layoutdata::op *ops[2] = { &d.base, &h.base };
     Assert(q.PushList(2, ops));
     Assert(q.Poll());
     Assert(r.n_started == 1 && r.sent == 0);            // the delay holds the hid op

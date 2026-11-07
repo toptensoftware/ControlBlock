@@ -1,7 +1,7 @@
 #pragma once
 
 // The standalone owner (docs/standalone.md milestone step 2): holds the
-// config root, OpQueue, TriggerDispatcher and GestureBank, and is the only
+// layout root, OpQueue, TriggerDispatcher and GestureBank, and is the only
 // thing that touches them. The router's key events come in through Key(), the
 // frame tick through Tick(), and the op task calls Poll(). While a host has
 // control (SetHosted(true)) nothing fires: held keys and queued ops are
@@ -14,7 +14,7 @@
 
 #include <stdint.h>
 #include "activity_switch.h"
-#include "config_types.h"
+#include "layout_types.h"
 #include "hid_keyboard.h"
 #include "key_gesture.h"
 #include "op_exec.h"
@@ -38,7 +38,7 @@ struct StandaloneHost
 {
     void *ctx;
     uint32_t (*now_ms)(void *ctx);                                                  // wrapping millisecond clock
-    void (*run)(const cfgdata::op *op, uint32_t code, void *ctx);   // an op started (after its executor's start; may be null)
+    void (*run)(const layoutdata::op *op, uint32_t code, void *ctx);   // an op started (after its executor's start; may be null)
     HidSink hid;                                                    // where hidKey reports go
     NetHost *net;                                                   // where the network ops go (null: they do nothing)
     const ActivityHost *activity;                                   // where the page swap goes (null: only the state changes)
@@ -48,15 +48,15 @@ struct StandaloneHost
 class Standalone
 {
 public:
-    // Standalone mode, armed from the config: a validated blob, relocated
-    // (ConfigRoot() of it). A null root (no config) leaves everything ignored.
-    void Init(const StandaloneHost &host, const cfgdata::configRoot *root);
+    // Standalone mode, armed from the layout: a validated blob, relocated
+    // (LayoutRoot() of it). A null root (no layout) leaves everything ignored.
+    void Init(const StandaloneHost &host, const layoutdata::layoutRoot *root);
 
     // true: a host took control. false: back to standalone, re-armed.
     void SetHosted(bool hosted);
     bool Hosted() const { return m_hosted; }
 
-    // The selected activity (-1 none); false for an index outside the config
+    // The selected activity (-1 none); false for an index outside the layout
     bool SelectActivity(int index);
 
     // The selected activity (-1 none) and the devices assumed on (bit = device
@@ -85,7 +85,7 @@ public:
 
 private:
     bool Active() const { return m_root && !m_hosted; }
-    void Arm();                             // gestures, queue and dispatcher fresh from the config
+    void Arm();                             // gestures, queue and dispatcher fresh from the layout
 
     // The switchActivity op (ExecCtx::switch_activity): null on success, else why not.
     // Queues the switch's op lists at the tail, all or nothing; only if that worked
@@ -97,7 +97,7 @@ private:
     static void GestureTrigger(const char *control, const char *event, void *ctx);
 
     StandaloneHost    m_host = {};
-    const cfgdata::configRoot *m_root = nullptr;
+    const layoutdata::layoutRoot *m_root = nullptr;
     ExecCtx           m_exec = {};          // the executors' hosts (clock, HID, queue)
     OpQueue           m_queue;
     TriggerDispatcher m_dispatch;

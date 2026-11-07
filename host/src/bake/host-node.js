@@ -1,4 +1,4 @@
-// The Node host for stage 1: files relative to the config file's directory, and the Lua checker.
+// The Node host for stage 1: files relative to the layout file's directory, and the Lua checker.
 
 import fs from "node:fs";
 import path from "node:path";

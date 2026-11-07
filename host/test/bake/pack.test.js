@@ -8,9 +8,9 @@ import { renderImages } from "../../src/bake/render.js";
 import { packTree, toBpak, ROOT_TYPE, headerText } from "../../src/bake/pack.js";
 import { OP, BLOB_VERSION } from "../../src/bake/consts.js";
 
-async function baked(config, files)
+async function baked(layout, files)
 {
-    const tree = ok(config, files);
+    const tree = ok(layout, files);
     await renderImages(tree, fakeRenderer());
     return tree;
 }
@@ -74,7 +74,7 @@ test("a shared image is stored once, 4-aligned, with the same pointer from every
     assert.equal(binary.length % 4, 0);
 });
 
-test("an empty config packs", async () => {
+test("an empty layout packs", async () => {
     const tree = await baked({ version: 1, home: {} });
     const u = unpack(ROOT_TYPE, packTree(tree).binary);
     assert.equal(u.activities.length, 0);

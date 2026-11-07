@@ -1,4 +1,4 @@
-// End to end: the example in docs/config-format.md through all three stages, with the real
+// End to end: the example in docs/layout-format.md through all three stages, with the real
 // Lua checker and a fake renderer (the cli's own tests, with the real renderer, are in cli/test).
 import { test } from "node:test";
 import assert from "node:assert/strict";

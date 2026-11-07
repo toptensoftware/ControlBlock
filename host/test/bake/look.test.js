@@ -1,9 +1,9 @@
-// Look properties -> the four image definitions per key (docs/config-format.md, "Button definition").
+// Look properties -> the four image definitions per key (docs/layout-format.md, "Button definition").
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { run, ok, errorText } from "./helpers.js";
 
-// Resolve one Home key (plus optional config extras) and return that key
+// Resolve one Home key (plus optional layout extras) and return that key
 const keyOf = (button, extra = {}, files) =>
     ok({ version: 1, ...extra, home: { ...(extra.home ?? {}), keys: [button] } }, files).home.keys[0];
 

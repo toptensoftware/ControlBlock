@@ -11,8 +11,8 @@
 #include "esp_timer.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "compositor.h"
-#include "config_boot.h"
-#include "config_flash.h"
+#include "layout_boot.h"
+#include "layout_flash.h"
 #include "model.h"
 #include "protocol.h"
 #include "status.h"
@@ -33,7 +33,7 @@ static const char *TAG = "host";
 
 #define IDLE_POLL_MS         20      // while images wait for a sweep
 
-// After a config commit's response: let USB send it before restarting
+// After a layout commit's response: let USB send it before restarting
 #define RESTART_DELAY_MS     200
 
 static_assert(SWIPE_CAUSE_USER == PAGE_CAUSE_USER && SWIPE_CAUSE_HOST == PAGE_CAUSE_HOST,
@@ -42,7 +42,7 @@ static_assert(SWIPE_CAUSE_USER == PAGE_CAUSE_USER && SWIPE_CAUSE_HOST == PAGE_CA
 static_assert(STATUS_TEXT_MAX == STATUS_BAR_TEXT_MAX, "protocol text limit is the status bar's");
 
 static Protocol     s_proto;
-static ConfigStore  s_config;
+static LayoutStore  s_layout_store;
 static TaskHandle_t s_task;
 static char         s_serial[16];
 
@@ -71,7 +71,7 @@ static void   ph_set_backlight(bool on, void *)
 }
 static bool   ph_backlight_on(void *)                        { return s_backlight; }
 
-// A config upload is under way (true) or over (false). Flash erases and
+// A layout upload is under way (true) or over (false). Flash erases and
 // writes stall the display, so it is dark meanwhile; afterwards it goes back
 // to what the host set. A committed upload leaves it dark: a restart follows.
 static void   cf_busy(bool busy, void *)
@@ -81,7 +81,7 @@ static void   cf_busy(bool busy, void *)
 static void   ph_wifi_status(WifiStatus *out, void *)          { wifi_get_status(out); }
 static void   ph_restart(void *)
 {
-    ESP_LOGI(TAG, "config saved: restarting");
+    ESP_LOGI(TAG, "layout saved: restarting");
     vTaskDelay(pdMS_TO_TICKS(RESTART_DELAY_MS));
     esp_restart();
 }
@@ -203,18 +203,18 @@ esp_err_t host_link_init(void)
     h.wifi_status      = ph_wifi_status;
     h.fw_version       = esp_app_get_description()->version;
     h.serial           = s_serial;
-    ConfigFlash cf = {};
-    config_flash_open(&cf);
+    LayoutFlash cf = {};
+    layout_flash_open(&cf);
     cf.busy = cf_busy;
-    s_config.Init(cf);
-    s_proto.Init(model_store(), model_layout(), &s_config, wifi_config(), h);
-    s_proto.SetHome(config_summary(), config_blob());
+    s_layout_store.Init(cf);
+    s_proto.Init(model_store(), model_layout(), &s_layout_store, wifi_config(), h);
+    s_proto.SetHome(layout_summary(), layout_blob());
 
     if (xTaskCreatePinnedToCore(protocol_task, "protocol", PROTOCOL_TASK_STACK, nullptr,
                                 PROTOCOL_TASK_PRIO, &s_task, PROTOCOL_TASK_CORE) != pdPASS)
         return ESP_FAIL;
     swipe_set_page_changed_cb(on_page_changed);
-    if (standalone_init(config_blob()) != ESP_OK)
+    if (standalone_init(layout_blob()) != ESP_OK)
         return ESP_FAIL;
     swipe_set_key_cb(on_key);
     swipe_set_tick_cb(standalone_tick);

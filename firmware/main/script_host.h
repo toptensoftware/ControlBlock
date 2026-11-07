@@ -24,8 +24,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include "config_blob.h"           // CONFIG_MAX_OP_DATA
-#include "config_types.h"
+#include "layout_blob.h"           // LAYOUT_MAX_OP_DATA
+#include "layout_types.h"
 #include "lua_heap.h"
 #include "net_host.h"
 #include "op_exec.h"
@@ -51,14 +51,14 @@ struct ScriptPlatform
 // One sub-op's scratch storage: the call being made now (the executors read it as a blob op)
 union ScriptOpData
 {
-    cfgdata::op               base;
-    cfgdata::delayOp          delay;
-    cfgdata::switchActivityOp sw;
-    cfgdata::hidKeyOp         hid;
-    cfgdata::httpGetOp        get;
-    cfgdata::httpPostOp       post;
-    cfgdata::udpPacketOp      udp;
-    cfgdata::sendWolOp        wol;
+    layoutdata::op               base;
+    layoutdata::delayOp          delay;
+    layoutdata::switchActivityOp sw;
+    layoutdata::hidKeyOp         hid;
+    layoutdata::httpGetOp        get;
+    layoutdata::httpPostOp       post;
+    layoutdata::udpPacketOp      udp;
+    layoutdata::sendWolOp        wol;
 };
 
 // What the running script is waiting for
@@ -72,12 +72,12 @@ enum class ScriptWait : uint8_t
 class ScriptHost
 {
 public:
-    void Init(const ScriptPlatform &platform, const cfgdata::configRoot *root);
-    // Free the Lua state and everything cached (the config changed, takeover): a run in
+    void Init(const ScriptPlatform &platform, const layoutdata::layoutRoot *root);
+    // Free the Lua state and everything cached (the layout changed, takeover): a run in
     // progress must have been cancelled first
     void Close();
 
-    OpStatus Start(ExecCtx &exec, const cfgdata::scriptOp *op, OpTask &task);
+    OpStatus Start(ExecCtx &exec, const layoutdata::scriptOp *op, OpTask &task);
     OpStatus Poll(ExecCtx &exec, OpTask &task);
     void     Cancel(ExecCtx &exec, OpTask &task);
 
@@ -107,7 +107,7 @@ public:
     uint8_t    *NetKeepBuffer(size_t len);          // for a body built in place
 
     ExecCtx                    *m_exec = nullptr;
-    const cfgdata::configRoot  *m_root = nullptr;
+    const layoutdata::layoutRoot  *m_root = nullptr;
     ScriptOpData                m_op = {};          // the scratch op the API fills in
     OpTask                      m_sub = {};         // its task
     OpStatus                    m_last = OpStatus::Done;    // how the last sub-op / reply ended
@@ -122,7 +122,7 @@ public:
 private:
     bool     EnsureState();
     bool     OpenState();
-    bool     Compile(const cfgdata::scriptOp *op, int *env_index);  // pushes the env table; false: logged
+    bool     Compile(const layoutdata::scriptOp *op, int *env_index);  // pushes the env table; false: logged
     OpStatus Resume(ExecCtx &exec, OpTask &task);
     void     EndRun();
     void     AbortRun(ExecCtx &exec);

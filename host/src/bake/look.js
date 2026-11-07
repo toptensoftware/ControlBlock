@@ -1,6 +1,6 @@
 // Look properties: validation, inheritance and the four image definitions per key.
 // An image definition is a plain node-buttonImage settings object (stage 2 renders it).
-// See docs/config-format.md "Button definition" and "Inheritance and defaults".
+// See docs/layout-format.md "Button definition" and "Inheritance and defaults".
 
 import { KEY_SIZE, LONG_PRESS_MIN, LONG_PRESS_MAX } from "./consts.js";
 import { childPath } from "./diag.js";

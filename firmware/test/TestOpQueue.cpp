@@ -16,8 +16,8 @@ namespace
     // Ops are identified by their code; the fake executor decides what each does
     struct Rig
     {
-        cfgdata::op ops[8];
-        cfgdata::op *list[8];
+        layoutdata::op ops[8];
+        layoutdata::op *list[8];
         OpQueue      queue;
 
         // What the fake executor is told to do
@@ -43,7 +43,7 @@ namespace
             }
             OpHost h = {};
             h.ctx    = this;
-            h.start  = [](const cfgdata::op *op, OpTask &t, void *c) {
+            h.start  = [](const layoutdata::op *op, OpTask &t, void *c) {
                 Rig *r = (Rig *)c;
                 if (r->n_started < MAX_LOG) {
                     r->started[r->n_started] = op->op;
@@ -58,13 +58,13 @@ namespace
                     t.error = r->error_text;
                 return r->start_result;
             };
-            h.poll = [](const cfgdata::op *, OpTask &t, void *c) {
+            h.poll = [](const layoutdata::op *, OpTask &t, void *c) {
                 Rig *r = (Rig *)c;
                 r->polls++;
                 if (r->poll_error) { t.error = r->error_text; return OpStatus::Error; }
                 return r->polls_left-- > 0 ? OpStatus::Pending : OpStatus::Done;
             };
-            h.cancel = [](const cfgdata::op *op, OpTask &, void *c) {
+            h.cancel = [](const layoutdata::op *op, OpTask &, void *c) {
                 Rig *r = (Rig *)c;
                 if (r->n_cancelled < MAX_LOG)
                     r->cancelled[r->n_cancelled++] = op->op;
@@ -251,9 +251,9 @@ Fact("OpQueue Ring Is Forty List References")
 
 Fact("OpQueue Long Lists Take One Ring Entry Each")
 {
-    // 64 ops (CONFIG_MAX_OPS) per list, far more than the ring has entries
-    static cfgdata::op big[64];
-    static cfgdata::op *biglist[64];
+    // 64 ops (LAYOUT_MAX_OPS) per list, far more than the ring has entries
+    static layoutdata::op big[64];
+    static layoutdata::op *biglist[64];
     for (int i = 0; i < 64; i++) { big[i].op = 200 + i; biglist[i] = &big[i]; }
 
     Rig r;

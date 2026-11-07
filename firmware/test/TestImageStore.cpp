@@ -390,7 +390,7 @@ Fact("ImageStore Reset Frees Everything At Once")
 }
 
 // ---------------------------------------------------------------------------
-// External images: pointers into the config blob (docs/standalone.md)
+// External images: pointers into the layout blob (docs/standalone.md)
 // ---------------------------------------------------------------------------
 
 namespace
@@ -557,4 +557,15 @@ Fact("ImageStore Uploading Over An External ID Replaces It")
     // And again: now the old pixels are ours
     Assert(f.env.Upload(f.store, 5, f.env.Icon(2)) == ImageResult::Ok);
     Assert(f.store.HasRetired());
+}
+
+// RUN_STRESS uploads every test_keys.bin image with its blob size (main.cpp load_demo_images)
+Fact("ImageStore Accepts Every Test Key Image At Its Blob Size")
+{
+    StoreEnv env;
+    ImageStore store;
+    store.Init(env.Host(), 1u << 20, COMP_KEY_SIZE, COMP_KEY_SIZE);
+    static BLOBPACK *pack = LoadAsset("test_keys.bin");
+    for (uint32_t b = 0; b + 1 < pack->count; b++)
+        Assert(store.Put(0xDE000000u + b, get_blob(pack, b), get_blob_size(pack, b)) == ImageResult::Ok);
 }

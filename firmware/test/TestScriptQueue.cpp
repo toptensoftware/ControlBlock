@@ -17,10 +17,10 @@ namespace
     {
         Rig        r;
         OpQueue    q;
-        cfgdata::scriptOp  s1, s2;
-        cfgdata::hidKeyOp  key_a, key_x;
-        cfgdata::op       *list1[2];
-        cfgdata::op       *list2[1];
+        layoutdata::scriptOp  s1, s2;
+        layoutdata::hidKeyOp  key_a, key_x;
+        layoutdata::op       *list1[2];
+        layoutdata::op       *list2[1];
         int        pushed_switches = 0;
 
         QRig()
@@ -31,9 +31,9 @@ namespace
             key_x = Key(0x1b);
         }
 
-        static cfgdata::hidKeyOp Key(uint8_t k)
+        static layoutdata::hidKeyOp Key(uint8_t k)
         {
-            cfgdata::hidKeyOp o = {};
+            layoutdata::hidKeyOp o = {};
             o.base.op = OP_HID_KEY; o.mode = HID_MODE_DOWN; o.key = k;
             return o;
         }

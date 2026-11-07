@@ -1,7 +1,7 @@
 #pragma once
 
 // The page swap a switchActivity does (Standalone's ActivityHost): the layout
-// (ConfigApplyActivity under the model lock), then the screen's page count, a
+// (LayoutApplyActivity under the model lock), then the screen's page count, a
 // glide to page 1 and the status bar's left text. Platform independent and
 // tested with the real store and layout and a recording screen; the device
 // layer (standalone_task.cpp) supplies the lock and the screen calls.
@@ -14,7 +14,7 @@
 // is Standalone's mutex, then the model lock (taken here, around the layout
 // swap only; the screen calls are made outside it).
 
-#include "config_apply.h"
+#include "layout_apply.h"
 #include "standalone.h"
 
 struct ActivityScreen
@@ -30,8 +30,8 @@ struct ActivityScreen
 class ActivityApplier
 {
 public:
-    // `blob` is the relocated blob `root` was taken from; `store`/`layout` the model's
-    void Init(const cfgdata::configRoot *root, const uint8_t *blob, ImageStore *store, KeyLayout *layout,
+    // `blob` is the relocated blob `root` was taken from; `store`/`keys` the model's
+    void Init(const layoutdata::layoutRoot *root, const uint8_t *blob, ImageStore *store, KeyLayout *keys,
               const ActivityScreen &screen);
 
     // The store was reset: the layout holds no activity's pages
@@ -47,10 +47,10 @@ private:
     static void Apply(int index, void *ctx);
     static void Glide(void *ctx);
 
-    const cfgdata::configRoot *m_root = nullptr;
+    const layoutdata::layoutRoot *m_root = nullptr;
     const uint8_t  *m_blob = nullptr;
     ImageStore     *m_store = nullptr;
-    KeyLayout      *m_layout = nullptr;
+    KeyLayout      *m_keys = nullptr;
     ActivityScreen  m_screen = {};
     ActivityHost    m_host = {};
     int             m_from = -1;

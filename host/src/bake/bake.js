@@ -6,20 +6,20 @@ import { renderImages } from "./render.js";
 import { packTree, toBpak } from "./pack.js";
 import { formatEntries } from "./diag.js";
 
-// Thrown when the config has errors; `errors` is the full list of { path, message }
+// Thrown when the layout has errors; `errors` is the full list of { path, message }
 export class BakeError extends Error
 {
     constructor(errors)
     {
-        super(`${errors.length} error${errors.length === 1 ? "" : "s"} in the config:\n${formatEntries(errors)}`);
+        super(`${errors.length} error${errors.length === 1 ? "" : "s"} in the layout:\n${formatEntries(errors)}`);
         this.errors = errors;
     }
 }
 
 // -> { blob (the BPAK file), tree, warnings }
-export async function bake(config, host, render)
+export async function bake(layout, host, render)
 {
-    const { tree, errors, warnings } = resolve(config, host);
+    const { tree, errors, warnings } = resolve(layout, host);
     if (errors.length)
         throw new BakeError(errors);
     await renderImages(tree, render);

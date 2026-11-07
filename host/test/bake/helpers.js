@@ -16,16 +16,16 @@ export function fakeHost(files = {}, { luaCheck, icons } = {})
     };
 }
 
-// Resolve a config and return everything
-export function run(config, files, opts)
+// Resolve a layout and return everything
+export function run(layout, files, opts)
 {
-    return resolve(config, fakeHost(files, opts));
+    return resolve(layout, fakeHost(files, opts));
 }
 
 // Resolve, assert no errors, return the tree
-export function ok(config, files, opts)
+export function ok(layout, files, opts)
 {
-    const r = run(config, files, opts);
+    const r = run(layout, files, opts);
     if (r.errors.length)
         throw new Error("unexpected errors:\n" + r.errors.map(e => `${e.path}: ${e.message}`).join("\n"));
     return r.tree;
@@ -54,10 +54,10 @@ export function fakeRenderer()
 // first generated binding (or undefined if resolution failed or the list is empty)
 export function opsOf(ops, { gesture = "tap", files, actions, activities, devices } = {})
 {
-    const config = { version: 1, home: { keys: [ { [gesture]: ops } ] } };
-    if (actions) config.actions = actions;
-    if (activities) config.activities = activities;
-    if (devices) config.devices = devices;
-    const r = run(config, files);
+    const layout = { version: 1, home: { keys: [ { [gesture]: ops } ] } };
+    if (actions) layout.actions = actions;
+    if (activities) layout.activities = activities;
+    if (devices) layout.devices = devices;
+    const r = run(layout, files);
     return { r, ops: r.tree?.home.bindings[0]?.ops };
 }

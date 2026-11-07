@@ -1,15 +1,15 @@
-# Config file format (user level)
+# Layout file format (user level)
 
 The file a user writes (by hand now, from a web front end later) to define a standalone-mode device: Home, activities, pages, buttons, devices and their actions. The bake pipeline turns it into the binpack blob that is uploaded to the device. This document specifies the **input** of that pipeline. The packed blob's structs, the loader, the op queue and the runtime are in [`standalone.md`](standalone.md); that document stays the source of truth for them.
 
-**Status:** the proposals below are confirmed and the bake code in the host library ([`host/src/bake/`](../host/src/bake/)) implements this format. Bake a config with `node cli/cli.js bake config.json -o out.bin` from the repo root; `node cli/cli.js upload config.json` sends it to the device ([`cli/README.md`](../cli/README.md), [`protocol.md`](protocol.md#configuration-upload)). A sample is `examples/upload-test.json`. Where the tool differs from, or settles, something in this document:
+**Status:** the proposals below are confirmed and the bake code in the host library ([`host/src/bake/`](../host/src/bake/)) implements this format. Bake a layout with `node cli/cli.js bake layout.json -o out.bin` from the repo root; `node cli/cli.js upload layout.json` sends it to the device ([`cli/README.md`](../cli/README.md), [`protocol.md`](protocol.md#layout-upload)). A sample is `examples/upload-test.json`. Where the tool differs from, or settles, something in this document:
 
 - `image` layers accept `.svg` paths and settings objects only (no `.png` yet).
 - A built-in icon name (`#name`) that node-buttonImage doesn't have is an error. The built-in names are kebab-case (`#play`, `#apple-tv`, `#volume-mute`), not Material names.
 - A `hidKey` chord is modifiers plus **one** key (the packed op has `mode`, `modifiers`, `key`); `hold` is accepted under `press`/`release` only, and in a hook or device list it's an error.
 - Not checked yet (deliberately): device limits (pages, images, blob size, op list length) and the "icon larger than the icon area" warning.
 - The default pressed look is the normal face with a 35% black overlay, unless `pressed` sets its own `color` or `face`.
-- The packed structs are in `host/src/bake/schema.js`; `node tools/codegen/gen-types.js` writes their C declarations (`firmware/main/config_types.gen.h`).
+- The packed structs are in `host/src/bake/schema.js`; `node tools/codegen/gen-types.js` writes their C declarations (`firmware/main/layout_types.gen.h`).
 
 ## Goals
 
@@ -24,10 +24,10 @@ The file a user writes (by hand now, from a web front end later) to define a sta
 |---|---|
 | Format | JSON (`.json`) or a JS module (`.js`/`.mjs`) whose default export is the object |
 | Encoding | UTF-8; JSON is strict (no comments, no trailing commas); the JS form allows both |
-| Paths | `svg`, `file` and similar are resolved relative to the **config file's directory**, not the working directory. A `#name` prefix on an `svg` value means a built-in node-buttonImage icon |
+| Paths | `svg`, `file` and similar are resolved relative to the **layout file's directory**, not the working directory. A `#name` prefix on an `svg` value means a built-in node-buttonImage icon |
 | Unknown properties | **Error** (typos like `longPres` must not pass silently). A property starting with `_` or `$` is ignored, for notes and the web front end's own data |
 | Names | Activity, device and action names are case-sensitive strings, unique within their kind, and may not be empty |
-| Order | Arrays keep their order; it matters for pages, keys and `bindings` (every matching binding is enqueued in config order) |
+| Order | Arrays keep their order; it matters for pages, keys and `bindings` (every matching binding is enqueued in layout order) |
 
 ## Overview
 
@@ -58,7 +58,7 @@ Only `version` and `home` are required. A file with just those is a valid (if bo
 
 | Property | Type | Description |
 |---|---|---|
-| `version` | integer | Config **file** format version. Currently `1`. A different value is an error. (Not the packed blob's version, which the pipeline sets.) |
+| `version` | integer | Layout **file** format version. Currently `1`. A different value is an error. (Not the packed blob's version, which the pipeline sets.) |
 | `defaults` | [`ButtonDefaults`](#button-definition) | Root of the inheritance chain |
 | `settings` | object | See [Settings](#settings) |
 | `devices` | map name → [Device](#devices) | External equipment the activities power on and off |
@@ -72,7 +72,7 @@ Only `version` and `home` are required. A file with just those is a valid (if bo
 |---|---|---|
 | `longPressMs` | firmware constant (500, tuned on hardware) | The long-press time for every control. A button's own `longPressMs` overrides it |
 
-More settings (HTTP timeout, Lua limits) are firmware constants today and become settings only if there's a reason to tune them per config. The Wi-Fi credentials are **not** in this file: they're set from the CLI and kept in NVS ([`standalone.md`](standalone.md#wi-fi)), so the file is safe to share and commit.
+More settings (HTTP timeout, Lua limits) are firmware constants today and become settings only if there's a reason to tune them per layout. The Wi-Fi credentials are **not** in this file: they're set from the CLI and kept in NVS ([`standalone.md`](standalone.md#wi-fi)), so the file is safe to share and commit.
 
 ## Home and activities
 
@@ -325,7 +325,7 @@ Errors:
 - A `script` with both or neither of `lua` and `file`; a missing file; a Lua syntax error; a source over 16 KB.
 - A missing icon/SVG file, or a render that fails.
 - A `control` of the form `touch[...]` in `bindings`.
-- Resolved config exceeds a device limit: images or pages (the PSRAM image store and the three page buffers are the real limit), blob size (the partition), op list length. Limits are read from the firmware's published constants (the same source as GET_INFO), so they stay in one place.
+- Resolved layout exceeds a device limit: images or pages (the PSRAM image store and the three page buffers are the real limit), blob size (the partition), op list length. Limits are read from the firmware's published constants (the same source as GET_INFO), so they stay in one place.
 
 Warnings:
 
@@ -403,7 +403,7 @@ In "Watch TV"'s first page, `Mute` is at index 4 (column 4, row 0), so on the pa
 
 Unit tested in `host/test/bake/` (`npm test` in `host/`; Node's test runner; stage 1 needs no device, no `sharp`):
 
-- Valid configs: the example above, a minimal one (`version` + empty `home`), and a maximal one (15 keys on every page).
+- Valid layouts: the example above, a minimal one (`version` + empty `home`), and a maximal one (15 keys on every page).
 - Resolution: the defaults chain (each level overrides, recursive merge, `null` clears, gestures and labels don't inherit); name → index; `use` expansion (nested, cycle error); touch control names across the page strip (Home columns 0..4, page 1 from 5); `action` → `tap`; generated binding order.
 - Validation: each error and warning above, with the exact path and message; several errors reported at once.
 - Scripts: syntax error is reported; `file` and `lua` forms; identical sources deduplicated.
@@ -423,6 +423,6 @@ The browser run of the pipeline (`sharp`, rle565 encoder, Lua checker) is untest
 - **HID key names** (including consumer/media keys) are decided when HID is built.
 - **Named actions with arguments** are out of scope (a script reads `param` instead).
 - **Wildcard or templated bindings** (e.g. one binding for `macro1..6`) are the authoring layer's job and are not in this format.
-- **Multiple files:** `$include` for splitting a big config isn't specified. Reusable pieces are `actions`, `defaults` and, in the JS form, ordinary imports.
+- **Multiple files:** `$include` for splitting a big layout isn't specified. Reusable pieces are `actions`, `defaults` and, in the JS form, ordinary imports.
 - **Web front end:** the editor probably wants stable ids on buttons and pages to keep diffs sensible; `_`-prefixed properties are reserved for it.
 - **`CLAUDE.md` (a rules file, so only with your OK):** link this document from the Repository Layout's `docs/` list.

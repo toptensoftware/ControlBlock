@@ -10,8 +10,8 @@ import { fileURLToPath } from "node:url";
 import { ControlBlock, BakeError, WifiState, bakeFile, formatEntries, uploadBlob } from "../host/index.js";
 import { parseArgs, UsageError } from "./args.js";
 
-// Bake a config file; prints its warnings. Resolves the blob.
-async function bakeConfig(input, io)
+// Bake a layout file; prints its warnings. Resolves the blob.
+async function bakeLayout(input, io)
 {
     const { blob, warnings } = await bakeFile(input);
     if (warnings.length)
@@ -29,7 +29,7 @@ function upload(blob, a, io)
 const COMMANDS = {
     async bake(a, io)
     {
-        const blob = await bakeConfig(a.input, io);
+        const blob = await bakeLayout(a.input, io);
         // Uploading doesn't need the file; baking alone writes it next to the input
         const out = a.out ?? (a.upload ? undefined : defaultBlobPath(a.input));
         if (out)
@@ -47,7 +47,7 @@ const COMMANDS = {
             blob = fs.readFileSync(a.input);
         else
         {
-            blob = await bakeConfig(a.input, io);
+            blob = await bakeLayout(a.input, io);
             io.stdout(`${a.input}: ${blob.length} bytes`);
         }
         await upload(blob, a, io);

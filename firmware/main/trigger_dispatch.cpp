@@ -1,7 +1,7 @@
 #include <string.h>
 #include "trigger_dispatch.h"
 
-void TriggerDispatcher::Init(const cfgdata::configRoot *root, OpQueue *queue)
+void TriggerDispatcher::Init(const layoutdata::layoutRoot *root, OpQueue *queue)
 {
     m_root     = root;
     m_queue    = queue;
@@ -19,7 +19,7 @@ bool TriggerDispatcher::SetActivity(int index)
     }
     if (!m_root || (uint32_t)index >= m_root->activities_count)
         return false;
-    const cfgdata::activity &a = m_root->activities[index];
+    const layoutdata::activity &a = m_root->activities[index];
     m_activity = Bindings{ a.bindings_count, a.bindings };
     return true;
 }
@@ -29,7 +29,7 @@ template <class F>
 void TriggerDispatcher::ForMatches(const Bindings &list, const char *control, const char *event, F fn) const
 {
     for (uint32_t i = 0; i < list.count; i++) {
-        const cfgdata::binding &b = list.items[i];
+        const layoutdata::binding &b = list.items[i];
         if (strcmp(b.control, control) == 0 && strcmp(b.event, event) == 0)
             if (!fn(b))
                 return;
@@ -48,7 +48,7 @@ void TriggerDispatcher::ForAllMatches(const char *control, const char *event, F 
 bool TriggerDispatcher::HasBinding(const char *control, const char *event) const
 {
     bool found = false;
-    ForAllMatches(control, event, [&](const cfgdata::binding &) { return !(found = true); });
+    ForAllMatches(control, event, [&](const layoutdata::binding &) { return !(found = true); });
     return found;
 }
 
@@ -56,7 +56,7 @@ int TriggerDispatcher::Trigger(const char *control, const char *event, const cha
 {
     int matched = 0;
     bool release = event && strcmp(event, "release") == 0;
-    ForAllMatches(control, event, [&](const cfgdata::binding &b) {
+    ForAllMatches(control, event, [&](const layoutdata::binding &b) {
         matched++;
         m_queue->PushList(b.ops_count, b.ops, release, param);
         return true;

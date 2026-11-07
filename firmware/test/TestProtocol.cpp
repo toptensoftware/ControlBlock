@@ -9,7 +9,7 @@
 #include "flash_env.h"
 #include "wifi_env.h"
 #include "crc32_table.h"
-#include "config_env.h"
+#include "layout_env.h"
 
 using namespace SimpleLib;
 
@@ -55,7 +55,7 @@ namespace
         ImageStore store;
         KeyLayout  layout;
         FakeFlash  flash;
-        ConfigStore config;
+        LayoutStore layout_store;
         FakeWifiStorage wifi_storage;
         WifiConfig wifi;
         Protocol   proto;
@@ -71,14 +71,14 @@ namespace
         int  wifi_changes = 0;                  // credential changes the device layer was told of
         List<int> changed_pages;
         List<int> mode_changes;                 // 1 = hosted, 0 = standalone, per mode_changed call
-        List<uint8_t> home_blob;                // UseHome(): the sample config
-        ConfigSummary home = {};
+        List<uint8_t> home_blob;                // UseHome(): the sample layout
+        LayoutSummary home = {};
 
         // `hosted`: take control first (most tests are of a hosted session);
         // the device boots standalone, and the takeover's effects are not counted
-        explicit Fixture(uint32_t capacity = 1u << 20, bool hosted = true) : flash(16 * CONFIG_SECTOR)
+        explicit Fixture(uint32_t capacity = 1u << 20, bool hosted = true) : flash(16 * LAYOUT_SECTOR)
         {
-            config.Init(flash.Host());
+            layout_store.Init(flash.Host());
             wifi.Init(wifi_storage.Host());
             wifi.SetChangedCallback([](const WifiCredentials &, void *c) { ((Fixture *)c)->wifi_changes++; }, this);
 
@@ -116,7 +116,7 @@ namespace
             h.fw_version       = "1.2.3";
             h.serial           = "ABCDEF";
             h.ctx              = this;
-            proto.Init(&store, &layout, &config, &wifi, h);
+            proto.Init(&store, &layout, &layout_store, &wifi, h);
 
             if (hosted) {
                 Request(MSG_TAKE_CONTROL);
@@ -129,15 +129,15 @@ namespace
             }
         }
 
-        // The sample config is the device's: its Home is shown now (as at boot)
+        // The sample layout is the device's: its Home is shown now (as at boot)
         // and the protocol rebuilds it on release. Use with hosted = false.
         void UseHome()
         {
-            home_blob = config_env::LoadSample();
-            Assert(ConfigValidate(home_blob.GetBuffer(), (uint32_t)home_blob.GetCount(), &home) == ConfigError::Ok);
+            home_blob = layout_env::LoadSample();
+            Assert(LayoutValidate(home_blob.GetBuffer(), (uint32_t)home_blob.GetCount(), &home) == LayoutError::Ok);
             proto.SetHome(&home, home_blob.GetBuffer());
             lock_depth++;                       // model changes are made under the lock
-            Assert(ConfigApplyHome(home, home_blob.GetBuffer(), &store, &layout));
+            Assert(LayoutApplyHome(home, home_blob.GetBuffer(), &store, &layout));
             lock_depth--;
             changed_pages.Clear();
         }
@@ -297,13 +297,13 @@ Fact("Protocol Get Info")
     Assert(m.U32At(i) > 0);                                   i += 4;     // largest free
     Assert(m.U16At(i) == SCREEN_W && m.U16At(i + 2) == SCREEN_H); i += 4;
     Assert(m.U8At(i) == COMP_COLS && m.U8At(i + 1) == COMP_ROWS);  i += 2;
-    Assert(m.U8At(i) == LAYOUT_MAX_PAGES && m.U8At(i + 1) == 1);   i += 2;
+    Assert(m.U8At(i) == KEY_LAYOUT_MAX_PAGES && m.U8At(i + 1) == 1);   i += 2;
     Assert(m.U16At(i) == COMP_KEY_SIZE && m.U16At(i + 2) == COMP_KEY_SIZE); i += 4;
     Assert(m.U16At(i) == KEY_ICON_SIZE && m.U16At(i + 2) == KEY_ICON_SIZE); i += 4;
     Assert(m.U8At(i) == 0);                                   i += 1;     // current page
     Assert(m.U8At(i) == 5 && memcmp(m.data + i + 1, "1.2.3", 5) == 0); i += 6;
     Assert(m.U8At(i) == 6 && memcmp(m.data + i + 1, "ABCDEF", 6) == 0); i += 7;
-    Assert(m.U32At(i) == 15 * CONFIG_SECTOR);                 i += 4;     // config capacity
+    Assert(m.U32At(i) == 15 * LAYOUT_SECTOR);                 i += 4;     // layout capacity
     Assert(m.U32At(i) == 0 && m.U32At(i + 4) == 0);           i += 8;     // nothing stored
     Assert(m.len == i);
 }
@@ -813,7 +813,7 @@ Fact("Protocol Heartbeat Does Not Use The Event Queue")
 }
 
 // ---------------------------------------------------------------------------
-// Config upload (docs/protocol.md "Configuration upload")
+// Layout upload (docs/protocol.md "Layout upload")
 // ---------------------------------------------------------------------------
 
 namespace
@@ -831,14 +831,14 @@ namespace
 
     uint32_t CrcOf(const Bytes &b) { return crc32(0, b.b.GetBuffer(), (size_t)b.Count()); }
 
-    Bytes ConfigBegin(uint32_t size, uint32_t crc)
+    Bytes LayoutBegin(uint32_t size, uint32_t crc)
     {
         Bytes p;
         p.U32(size).U32(crc);
         return p;
     }
 
-    Bytes ConfigData(const Bytes &blob, uint32_t offset, uint32_t len)
+    Bytes LayoutData(const Bytes &blob, uint32_t offset, uint32_t len)
     {
         Bytes p;
         p.U32(offset).Raw(blob.b.GetBuffer() + offset, len);
@@ -846,74 +846,74 @@ namespace
     }
 
     // Begin, chunked data, commit: returns the commit's status
-    uint16_t UploadConfig(Fixture &f, const Bytes &blob, uint32_t chunk, int piece = 0)
+    uint16_t UploadLayout(Fixture &f, const Bytes &blob, uint32_t chunk, int piece = 0)
     {
         uint32_t size = (uint32_t)blob.Count();
-        Check(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(size, CrcOf(blob))).Status() == ST_OK);
+        Check(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(size, CrcOf(blob))).Status() == ST_OK);
         for (uint32_t off = 0; off < size; off += chunk) {
             uint32_t n = size - off < chunk ? size - off : chunk;
-            Check(f.Request(MSG_CONFIG_DATA, ConfigData(blob, off, n), piece).Status() == ST_OK);
+            Check(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, off, n), piece).Status() == ST_OK);
         }
-        return f.Request(MSG_CONFIG_COMMIT).Status();
+        return f.Request(MSG_LAYOUT_COMMIT).Status();
     }
 }
 
-Fact("Protocol Config Upload Saves Blanks And Restarts")
+Fact("Protocol Layout Upload Saves Blanks And Restarts")
 {
     Fixture f;
     Bytes blob = Blob(20000);
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(20000, CrcOf(blob))).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(20000, CrcOf(blob))).Status() == ST_OK);
     Assert(f.flash.busy);                           // the screen is dark for the upload
     for (uint32_t off = 0; off < 20000; off += 8188)
-        Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, off, 20000 - off < 8188 ? 20000 - off : 8188)).Status() == ST_OK);
+        Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, off, 20000 - off < 8188 ? 20000 - off : 8188)).Status() == ST_OK);
     Assert(f.restarts == 0);
-    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_OK);     // the response was sent...
+    Assert(f.Request(MSG_LAYOUT_COMMIT).Status() == ST_OK);     // the response was sent...
     Assert(f.restarts == 1);                                    // ...then the device restarted
 
-    ConfigInfo info;
-    Assert(f.config.Stored(&info) && info.size == 20000 && info.crc == CrcOf(blob));
-    Assert(memcmp(f.flash.mem + CONFIG_DATA_OFFSET, blob.b.GetBuffer(), 20000) == 0);
+    LayoutInfo info;
+    Assert(f.layout_store.Stored(&info) && info.size == 20000 && info.crc == CrcOf(blob));
+    Assert(memcmp(f.flash.mem + LAYOUT_DATA_OFFSET, blob.b.GetBuffer(), 20000) == 0);
 }
 
-// A host can skip an upload of the config the device already has
-Fact("Protocol Get Info Reports The Stored Config")
+// A host can skip an upload of the layout the device already has
+Fact("Protocol Get Info Reports The Stored Layout")
 {
     Fixture f;
     Bytes blob = Blob(5000);
     uint8_t scratch[512];
-    Assert(f.config.Begin(5000, CrcOf(blob)) == ConfigResult::Ok);
-    Assert(f.config.Data(0, blob.b.GetBuffer(), 5000) == ConfigResult::Ok);
+    Assert(f.layout_store.Begin(5000, CrcOf(blob)) == LayoutStoreResult::Ok);
+    Assert(f.layout_store.Data(0, blob.b.GetBuffer(), 5000) == LayoutStoreResult::Ok);
     Msg during = f.Request(MSG_GET_INFO);                   // an upload under way stores nothing yet
     Assert(during.U32At(during.len - 8) == 0 && during.U32At(during.len - 4) == 0);
-    Assert(f.config.Commit(scratch, sizeof(scratch)) == ConfigResult::Ok);
+    Assert(f.layout_store.Commit(scratch, sizeof(scratch)) == LayoutStoreResult::Ok);
 
     Msg m = f.Request(MSG_GET_INFO);
     int tail = m.len - 12;
-    Assert(m.U32At(tail) == 15 * CONFIG_SECTOR && m.U32At(tail + 4) == 5000 && m.U32At(tail + 8) == CrcOf(blob));
+    Assert(m.U32At(tail) == 15 * LAYOUT_SECTOR && m.U32At(tail + 4) == 5000 && m.U32At(tail + 8) == CrcOf(blob));
 }
 
-Fact("Protocol Config Upload Works Arriving In Any Pieces")
+Fact("Protocol Layout Upload Works Arriving In Any Pieces")
 {
     static const int pieces[] = { 1, 5, 64 };
     for (int piece : pieces) {
         Fixture f;
         Bytes blob = Blob(3000, piece);
-        Assert(UploadConfig(f, blob, 1000, piece) == ST_OK);
+        Assert(UploadLayout(f, blob, 1000, piece) == ST_OK);
         Assert(f.restarts == 1);
-        ConfigInfo info;
-        Assert(f.config.Stored(&info) && info.crc == CrcOf(blob));
+        LayoutInfo info;
+        Assert(f.layout_store.Stored(&info) && info.crc == CrcOf(blob));
     }
 }
 
-Fact("Protocol Config Upload Pipelined")
+Fact("Protocol Layout Upload Pipelined")
 {
     Fixture f;
     Bytes blob = Blob(3000);
     Bytes all;
-    all.Add(Message(MSG_CONFIG_BEGIN, 1, ConfigBegin(3000, CrcOf(blob))));
+    all.Add(Message(MSG_LAYOUT_BEGIN, 1, LayoutBegin(3000, CrcOf(blob))));
     for (uint32_t off = 0; off < 3000; off += 1000)
-        all.Add(Message(MSG_CONFIG_DATA, (uint16_t)(2 + off / 1000), ConfigData(blob, off, 1000)));
-    all.Add(Message(MSG_CONFIG_COMMIT, 9));
+        all.Add(Message(MSG_LAYOUT_DATA, (uint16_t)(2 + off / 1000), LayoutData(blob, off, 1000)));
+    all.Add(Message(MSG_LAYOUT_COMMIT, 9));
     f.Send(all);
     List<Msg> r = f.Read();
     Assert(r.GetCount() == 5);
@@ -922,134 +922,134 @@ Fact("Protocol Config Upload Pipelined")
     Assert(f.restarts == 1);
 }
 
-Fact("Protocol Config Messages After The Commit Are Ignored")
+Fact("Protocol Layout Messages After The Commit Are Ignored")
 {
     Fixture f;
     Bytes blob = Blob(500);
     Bytes all;
-    all.Add(Message(MSG_CONFIG_BEGIN, 1, ConfigBegin(500, CrcOf(blob))));
-    all.Add(Message(MSG_CONFIG_DATA, 2, ConfigData(blob, 0, 500)));
-    all.Add(Message(MSG_CONFIG_COMMIT, 3));
+    all.Add(Message(MSG_LAYOUT_BEGIN, 1, LayoutBegin(500, CrcOf(blob))));
+    all.Add(Message(MSG_LAYOUT_DATA, 2, LayoutData(blob, 0, 500)));
+    all.Add(Message(MSG_LAYOUT_COMMIT, 3));
     all.Add(Message(MSG_PING, 4));
     f.Send(all);
     List<Msg> r = f.Read();
-    Assert(r.GetCount() == 3 && r[2].type == MSG_CONFIG_COMMIT);
+    Assert(r.GetCount() == 3 && r[2].type == MSG_LAYOUT_COMMIT);
     Assert(f.restarts == 1);
 }
 
-Fact("Protocol Config Begin Errors")
+Fact("Protocol Layout Begin Errors")
 {
     Fixture f;
     Bytes short_begin;
     short_begin.U32(100).U16(1);
-    Assert(f.Request(MSG_CONFIG_BEGIN, short_begin).Status() == ST_BAD_LENGTH);
-    Assert(f.Request(MSG_CONFIG_BEGIN).Status() == ST_BAD_LENGTH);
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(0, 0)).Status() == ST_BAD_ARG);
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(15 * CONFIG_SECTOR + 1, 0)).Status() == ST_NO_SPACE);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, short_begin).Status() == ST_BAD_LENGTH);
+    Assert(f.Request(MSG_LAYOUT_BEGIN).Status() == ST_BAD_LENGTH);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(0, 0)).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(15 * LAYOUT_SECTOR + 1, 0)).Status() == ST_NO_SPACE);
     Assert(!f.flash.busy && f.flash.erase_calls == 0);
 
     // The biggest that fits
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(15 * CONFIG_SECTOR, 0)).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(15 * LAYOUT_SECTOR, 0)).Status() == ST_OK);
 
     f.flash.fail_erase_in = 1;
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(100, 0)).Status() == ST_IO_ERROR);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(100, 0)).Status() == ST_IO_ERROR);
     Assert(!f.flash.busy);
 }
 
-Fact("Protocol Config Data Errors")
+Fact("Protocol Layout Data Errors")
 {
     Fixture f;
     Bytes blob = Blob(3000);
 
     // No begin
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 100)).Status() == ST_BAD_SEQUENCE);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 0, 100)).Status() == ST_BAD_SEQUENCE);
 
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob))).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(3000, CrcOf(blob))).Status() == ST_OK);
     Bytes no_offset;
     no_offset.U16(0);
-    Assert(f.Request(MSG_CONFIG_DATA, no_offset).Status() == ST_BAD_LENGTH);
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 0)).Status() == ST_BAD_LENGTH);      // no data
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 1000)).Status() == ST_OK);            // the upload survived
+    Assert(f.Request(MSG_LAYOUT_DATA, no_offset).Status() == ST_BAD_LENGTH);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 0, 0)).Status() == ST_BAD_LENGTH);      // no data
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 0, 1000)).Status() == ST_OK);            // the upload survived
 
     // A gap ends it; the stream stays in step
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 2000, 1000)).Status() == ST_BAD_SEQUENCE);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 2000, 1000)).Status() == ST_BAD_SEQUENCE);
     Assert(!f.flash.busy);
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 1000, 1000)).Status() == ST_BAD_SEQUENCE);
-    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_BAD_SEQUENCE);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 1000, 1000)).Status() == ST_BAD_SEQUENCE);
+    Assert(f.Request(MSG_LAYOUT_COMMIT).Status() == ST_BAD_SEQUENCE);
     Assert(f.Request(MSG_PING).Status() == ST_OK);
     Assert(f.restarts == 0);
 
     // Past the end
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(100, 0)).Status() == ST_OK);
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 101)).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(100, 0)).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 0, 101)).Status() == ST_BAD_ARG);
 
     // A flash error
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob))).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(3000, CrcOf(blob))).Status() == ST_OK);
     f.flash.fail_write_in = 1;
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 1000)).Status() == ST_IO_ERROR);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 0, 1000)).Status() == ST_IO_ERROR);
     Assert(!f.flash.busy);
 }
 
-Fact("Protocol Config Commit Errors")
+Fact("Protocol Layout Commit Errors")
 {
     Fixture f;
     Bytes blob = Blob(3000);
-    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_BAD_SEQUENCE);
+    Assert(f.Request(MSG_LAYOUT_COMMIT).Status() == ST_BAD_SEQUENCE);
 
     // Incomplete: the upload carries on
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob))).Status() == ST_OK);
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 1000)).Status() == ST_OK);
-    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_BAD_SEQUENCE);
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 1000, 2000)).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(3000, CrcOf(blob))).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 0, 1000)).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_COMMIT).Status() == ST_BAD_SEQUENCE);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 1000, 2000)).Status() == ST_OK);
     Assert(f.restarts == 0);
 
     // Wrong CRC
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob) + 1)).Status() == ST_OK);
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 3000)).Status() == ST_OK);
-    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_BAD_CRC);
-    ConfigInfo info;
-    Assert(!f.config.Stored(&info) && f.restarts == 0 && !f.flash.busy);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(3000, CrcOf(blob) + 1)).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 0, 3000)).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_COMMIT).Status() == ST_BAD_CRC);
+    LayoutInfo info;
+    Assert(!f.layout_store.Stored(&info) && f.restarts == 0 && !f.flash.busy);
 
     // A write that went wrong, found by the read-back
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob))).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(3000, CrcOf(blob))).Status() == ST_OK);
     f.flash.corrupt_next_write = true;
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 3000)).Status() == ST_OK);
-    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_IO_ERROR);
-    Assert(!f.config.Stored(&info) && f.restarts == 0);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 0, 3000)).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_COMMIT).Status() == ST_IO_ERROR);
+    Assert(!f.layout_store.Stored(&info) && f.restarts == 0);
 
     // And a good one still works afterwards
-    Assert(UploadConfig(f, blob, 1500) == ST_OK);
+    Assert(UploadLayout(f, blob, 1500) == ST_OK);
     Assert(f.restarts == 1);
 }
 
-Fact("Protocol Reset Stream Abandons A Config Upload But Reset Does Not")
+Fact("Protocol Reset Stream Abandons A Layout Upload But Reset Does Not")
 {
     Fixture f;
     Bytes blob = Blob(3000);
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(3000, CrcOf(blob))).Status() == ST_OK);
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 1000)).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(3000, CrcOf(blob))).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 0, 1000)).Status() == ST_OK);
     Assert(f.Request(MSG_RESET).Status() == ST_OK);
-    Assert(f.config.Active() && f.flash.busy);
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 1000, 1000)).Status() == ST_OK);
+    Assert(f.layout_store.Active() && f.flash.busy);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 1000, 1000)).Status() == ST_OK);
 
     f.proto.ResetStream();
-    Assert(!f.config.Active() && !f.flash.busy);
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 2000, 1000)).Status() == ST_BAD_SEQUENCE);
-    ConfigInfo info;
-    Assert(!f.config.Stored(&info));
+    Assert(!f.layout_store.Active() && !f.flash.busy);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 2000, 1000)).Status() == ST_BAD_SEQUENCE);
+    LayoutInfo info;
+    Assert(!f.layout_store.Stored(&info));
 }
 
-Fact("Protocol Config Upload Is Independent Of Image Uploads")
+Fact("Protocol Layout Upload Is Independent Of Image Uploads")
 {
     Fixture f;
     Bytes blob = Blob(2000);
     const void *icon = f.env.Icon(0);
     uint32_t size = f.env.Size(icon), half = size / 2;
     Assert(f.Request(MSG_PUT_IMAGE, f.PutImage(2, icon, 0, half)).Status() == ST_OK);
-    Assert(f.Request(MSG_CONFIG_BEGIN, ConfigBegin(2000, CrcOf(blob))).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(2000, CrcOf(blob))).Status() == ST_OK);
     Assert(f.Request(MSG_PUT_IMAGE, f.PutImage(2, icon, half)).Status() == ST_OK);
-    Assert(f.Request(MSG_CONFIG_DATA, ConfigData(blob, 0, 2000)).Status() == ST_OK);
-    Assert(f.Request(MSG_CONFIG_COMMIT).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_DATA, LayoutData(blob, 0, 2000)).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_COMMIT).Status() == ST_OK);
     Assert(f.store.IsLive(2));
 }
 
@@ -1324,8 +1324,8 @@ namespace
         }
     }
 
-    // Home's distinct images in the sample config
-    uint32_t HomeImageCount(const ConfigSummary &home)
+    // Home's distinct images in the sample layout
+    uint32_t HomeImageCount(const LayoutSummary &home)
     {
         Set<uint32_t> s;
         for (int k = 0; k < COMP_KEYS; k++)
@@ -1374,7 +1374,7 @@ Fact("Protocol Standalone Refuses Layout Requests And Changes Nothing")
     Assert(!f.proto.Corrupt());
 }
 
-Fact("Protocol Standalone Still Answers Ping Info Query Backlight Config And Wifi")
+Fact("Protocol Standalone Still Answers Ping Info Query Backlight Layout And Wifi")
 {
     Fixture f(1u << 20, false);
     Assert(f.Request(MSG_PING).Status() == ST_OK);
@@ -1386,8 +1386,8 @@ Fact("Protocol Standalone Still Answers Ping Info Query Backlight Config And Wif
     Assert(f.Request(MSG_WIFI_STATUS).Status() == ST_OK);
     Bytes cfg;
     cfg.U32(64).U32(0);
-    Assert(f.Request(MSG_CONFIG_BEGIN, cfg).Status() == ST_OK);       // reaches ConfigStore
-    Assert(f.Request(MSG_CONFIG_DATA).Status() == ST_BAD_LENGTH);    // not NOT_HOSTED
+    Assert(f.Request(MSG_LAYOUT_BEGIN, cfg).Status() == ST_OK);       // reaches LayoutStore
+    Assert(f.Request(MSG_LAYOUT_DATA).Status() == ST_BAD_LENGTH);    // not NOT_HOSTED
 }
 
 Fact("Protocol Take Control Resets The Model Like Reset")
@@ -1469,7 +1469,7 @@ Fact("Protocol Release Rebuilds Home And Goes Standalone")
     Assert(f.layout.PageCount() == 1);
 }
 
-Fact("Protocol Release Without A Config Leaves An Empty Home")
+Fact("Protocol Release Without A Layout Leaves An Empty Home")
 {
     Fixture f;
     f.Upload(1, f.env.Icon(0));
@@ -1488,7 +1488,7 @@ Fact("Protocol Release When Home Can't Be Shown Leaves It Empty But Standalone")
     f.UseHome();
     f.Request(MSG_TAKE_CONTROL);
     f.home.home[7][KEY_SLOT_BG] = f.home.home[0][KEY_SLOT_BG];
-    f.home.home[7][KEY_SLOT_FG] = ConfigImage{ 700, 64 };           // refused by the store
+    f.home.home[7][KEY_SLOT_FG] = LayoutImage{ 700, 64 };           // refused by the store
     Assert(f.Request(MSG_RELEASE_CONTROL).Status() == ST_OK);
     Assert(!f.proto.Hosted());
     for (int k = 0; k < COMP_KEYS; k++)
@@ -1544,12 +1544,12 @@ Fact("Protocol Disconnect Releases Like The Message")
     Assert(f.mode_changes.GetCount() == 0);
 }
 
-Fact("Protocol Disconnect Drops A Partial Message And A Config Upload")
+Fact("Protocol Disconnect Drops A Partial Message And A Layout Upload")
 {
     Fixture f;
     Bytes begin;
     begin.U32(64).U32(0);
-    Assert(f.Request(MSG_CONFIG_BEGIN, begin).Status() == ST_OK);
+    Assert(f.Request(MSG_LAYOUT_BEGIN, begin).Status() == ST_OK);
     Bytes ping;
     ping.U32(1);
     Bytes half = Message(MSG_PING, 1, ping);
@@ -1560,7 +1560,7 @@ Fact("Protocol Disconnect Drops A Partial Message And A Config Upload")
     Assert(f.Request(MSG_PING).Status() == ST_OK);                   // the parser is at a header again
     Bytes data;
     data.U32(0).U8(1);
-    Assert(f.Request(MSG_CONFIG_DATA, data).Status() == ST_BAD_SEQUENCE);
+    Assert(f.Request(MSG_LAYOUT_DATA, data).Status() == ST_BAD_SEQUENCE);
 }
 
 Fact("Protocol Disconnect While Standalone Only Restores The Backlight")

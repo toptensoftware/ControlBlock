@@ -1,6 +1,6 @@
 // Text of the C headers the firmware builds from the bake's tables. tools/codegen/gen-*.js write
 // them into firmware/main/; test/bake/*-header.test.js fail if the committed files are out of date.
-//   config_types.gen.h: the C structs and op codes for the packed config, from the binpack schema
+//   layout_types.gen.h: the C structs and op codes for the packed layout, from the binpack schema
 //                       (schema.js). The firmware reads the blob through them.
 //   hid_keys.gen.h:     the key and modifier names of hid.js as C tables, so the device's chord
 //                       parser (hid_chord.cpp, for a script's hid.key) uses the bake's names and usage ids.
@@ -12,7 +12,7 @@ import { KEYS, MODIFIERS } from "./hid.js";
 
 const FIRMWARE_MAIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../firmware/main");
 
-export const TYPES_HEADER_PATH = path.join(FIRMWARE_MAIN, "config_types.gen.h");
+export const TYPES_HEADER_PATH = path.join(FIRMWARE_MAIN, "layout_types.gen.h");
 export const HID_KEYS_HEADER_PATH = path.join(FIRMWARE_MAIN, "hid_keys.gen.h");
 
 const banner = (script, source) =>

@@ -2,7 +2,7 @@
   "name": "controlblock-cli",
   "private": true,
   "type": "module",
-  "description": "ControlBlock command line: bake and upload standalone configs, set up Wi-Fi. A thin wrapper over the library in ../host (imported by relative path, so nothing to install).",
+  "description": "ControlBlock command line: bake and upload standalone layouts, set up Wi-Fi. A thin wrapper over the library in ../host (imported by relative path, so nothing to install).",
   "bin": { "controlblock": "./cli.js" },
   "scripts": {
     "test": "node --test \"test/*.test.js\""

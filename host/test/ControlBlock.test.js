@@ -71,12 +71,12 @@ test("a message that ends on a whole USB packet is followed by a zero-length pac
     await cb.close();
 });
 
-test("uploadConfig works when the last chunk ends on a whole USB packet", async () => {
-    // The case found on the hardware: a 53464-byte blob, whose last CONFIG_DATA was 4352 bytes
-    const { dev, cb } = await connected({ config: {} });
-    const r = await cb.uploadConfig(blobOf(53464));
+test("uploadLayout works when the last chunk ends on a whole USB packet", async () => {
+    // The case found on the hardware: a 53464-byte blob, whose last LAYOUT_DATA was 4352 bytes
+    const { dev, cb } = await connected({ layout: {} });
+    const r = await cb.uploadLayout(blobOf(53464));
     assert.equal(r.uploaded, true);
-    assert.equal(dev.config.stored.size, 53464);
+    assert.equal(dev.layout.stored.size, 53464);
     await cb.close();
 });
 
@@ -232,26 +232,26 @@ test("key images are rle565 with a stable content ID", async () => {
     assert.notEqual(imageId(other), a.id);
 });
 
-// --- Standalone config upload (docs/protocol.md "Configuration upload") ---
+// --- Standalone layout upload (docs/protocol.md "Layout upload") ---
 
 function blobOf(size, seed = 1)
 {
     return new Uint8Array(size).map((_, i) => ((i + seed) * 2654435761) >>> 24);
 }
 
-test("uploadConfig sends begin, ordered chunks and commit, then the device restarts", async () => {
-    const { dev, cb } = await connected({ maxPayload: 100, config: {} });
+test("uploadLayout sends begin, ordered chunks and commit, then the device restarts", async () => {
+    const { dev, cb } = await connected({ maxPayload: 100, layout: {} });
     const blob = blobOf(250);
     const progress = [];
-    const r = await cb.uploadConfig(blob, { onProgress: (sent, total) => progress.push([sent, total]) });
+    const r = await cb.uploadLayout(blob, { onProgress: (sent, total) => progress.push([sent, total]) });
     assert.deepEqual(r, { uploaded: true, size: 250, crc: crc32(blob) });
 
-    const reqs = dev.requests.filter(m => m.type >= Msg.CONFIG_BEGIN && m.type <= Msg.CONFIG_COMMIT);
-    assert.equal(reqs[0].type, Msg.CONFIG_BEGIN);
+    const reqs = dev.requests.filter(m => m.type >= Msg.LAYOUT_BEGIN && m.type <= Msg.LAYOUT_COMMIT);
+    assert.equal(reqs[0].type, Msg.LAYOUT_BEGIN);
     const begin = new Reader(reqs[0].payload);
     assert.equal(begin.u32(), 250);
     assert.equal(begin.u32(), crc32(blob));
-    const data = reqs.filter(m => m.type === Msg.CONFIG_DATA);
+    const data = reqs.filter(m => m.type === Msg.LAYOUT_DATA);
     assert.equal(data.length, 3);                       // 96 + 96 + 58
     let pos = 0;
     for (const c of data) {
@@ -260,95 +260,95 @@ test("uploadConfig sends begin, ordered chunks and commit, then the device resta
         pos += c.payload.length - 4;
     }
     assert.equal(pos, 250);
-    assert.equal(reqs.at(-1).type, Msg.CONFIG_COMMIT);
-    assert.deepEqual([...dev.config.stored.bytes], [...blob]);
+    assert.equal(reqs.at(-1).type, Msg.LAYOUT_COMMIT);
+    assert.deepEqual([...dev.layout.stored.bytes], [...blob]);
     assert.deepEqual(progress.at(-1), [250, 250]);
     assert.ok(progress.every(([sent], i) => i === 0 || sent > progress[i - 1][0]));
     await cb.close();
 });
 
-test("uploadConfig keeps only a few chunks in flight", async () => {
+test("uploadLayout keeps only a few chunks in flight", async () => {
     // Each chunk takes a while to answer; the library must not queue them all
-    const { dev, cb } = await connected({ maxPayload: 100, config: { latencyMs: 10 } });
-    await cb.uploadConfig(blobOf(96 * 40));             // 40 chunks
-    assert.ok(dev.config.maxInflight > 1, "pipelined");
-    assert.ok(dev.config.maxInflight <= 8, `window (saw ${dev.config.maxInflight})`);
-    assert.equal(dev.config.stored.size, 96 * 40);
+    const { dev, cb } = await connected({ maxPayload: 100, layout: { latencyMs: 10 } });
+    await cb.uploadLayout(blobOf(96 * 40));             // 40 chunks
+    assert.ok(dev.layout.maxInflight > 1, "pipelined");
+    assert.ok(dev.layout.maxInflight <= 8, `window (saw ${dev.layout.maxInflight})`);
+    assert.equal(dev.layout.stored.size, 96 * 40);
     await cb.close();
 });
 
-test("uploadConfig skips a config the device already has", async () => {
+test("uploadLayout skips a layout the device already has", async () => {
     const blob = blobOf(300);
-    const { dev, cb } = await connected({ config: { stored: { size: 300, crc: crc32(blob) } } });
-    const r = await cb.uploadConfig(blob);
+    const { dev, cb } = await connected({ layout: { stored: { size: 300, crc: crc32(blob) } } });
+    const r = await cb.uploadLayout(blob);
     assert.deepEqual(r, { uploaded: false, size: 300, crc: crc32(blob) });
-    assert.ok(!dev.requests.some(m => m.type === Msg.CONFIG_BEGIN));
+    assert.ok(!dev.requests.some(m => m.type === Msg.LAYOUT_BEGIN));
 
     // Unless forced
-    const forced = await cb.uploadConfig(blob, { force: true });
+    const forced = await cb.uploadLayout(blob, { force: true });
     assert.equal(forced.uploaded, true);
-    assert.ok(dev.requests.some(m => m.type === Msg.CONFIG_BEGIN));
+    assert.ok(dev.requests.some(m => m.type === Msg.LAYOUT_BEGIN));
     await cb.close();
 });
 
-test("uploadConfig refuses what can't be right before sending anything", async () => {
-    const { dev, cb } = await connected({ config: { capacity: 1000 } });
-    await assert.rejects(cb.uploadConfig(new Uint8Array(0)), /Empty/);
-    await assert.rejects(cb.uploadConfig(blobOf(1001)), /1000/);
-    assert.ok(!dev.requests.some(m => m.type === Msg.CONFIG_BEGIN));
+test("uploadLayout refuses what can't be right before sending anything", async () => {
+    const { dev, cb } = await connected({ layout: { capacity: 1000 } });
+    await assert.rejects(cb.uploadLayout(new Uint8Array(0)), /Empty/);
+    await assert.rejects(cb.uploadLayout(blobOf(1001)), /1000/);
+    assert.ok(!dev.requests.some(m => m.type === Msg.LAYOUT_BEGIN));
     await cb.close();
 });
 
-test("uploadConfig reports a begin the device refuses and sends no data", async () => {
-    const { dev, cb } = await connected({ config: { capacity: 1 << 20 } });
-    dev.config.capacity = 100;                          // less than the info said
-    await assert.rejects(cb.uploadConfig(blobOf(500)),
+test("uploadLayout reports a begin the device refuses and sends no data", async () => {
+    const { dev, cb } = await connected({ layout: { capacity: 1 << 20 } });
+    dev.layout.capacity = 100;                          // less than the info said
+    await assert.rejects(cb.uploadLayout(blobOf(500)),
                          err => err instanceof ControlBlockError && err.status === Status.NO_SPACE);
-    assert.ok(!dev.requests.some(m => m.type === Msg.CONFIG_DATA || m.type === Msg.CONFIG_COMMIT));
+    assert.ok(!dev.requests.some(m => m.type === Msg.LAYOUT_DATA || m.type === Msg.LAYOUT_COMMIT));
     await cb.close();
 });
 
-test("uploadConfig stops at the first failed chunk and never commits", async () => {
-    const { dev, cb } = await connected({ maxPayload: 100, config: { failAt: 96 * 3, latencyMs: 5 } });
-    await assert.rejects(cb.uploadConfig(blobOf(96 * 30)),
+test("uploadLayout stops at the first failed chunk and never commits", async () => {
+    const { dev, cb } = await connected({ maxPayload: 100, layout: { failAt: 96 * 3, latencyMs: 5 } });
+    await assert.rejects(cb.uploadLayout(blobOf(96 * 30)),
                          err => err instanceof ControlBlockError && err.status === Status.IO_ERROR);
-    const sent = dev.requests.filter(m => m.type === Msg.CONFIG_DATA).length;
+    const sent = dev.requests.filter(m => m.type === Msg.LAYOUT_DATA).length;
     assert.ok(sent < 30, `stopped early (sent ${sent} of 30)`);
-    assert.ok(!dev.requests.some(m => m.type === Msg.CONFIG_COMMIT));
-    assert.equal(dev.config.stored, null);
+    assert.ok(!dev.requests.some(m => m.type === Msg.LAYOUT_COMMIT));
+    assert.equal(dev.layout.stored, null);
     await cb.close();
 });
 
-test("uploadConfig lets the commit take longer than an ordinary request", async () => {
-    const { dev, cb } = await connected({ config: { commitMs: 450 } });     // the connection's timeout is 300 ms
-    const r = await cb.uploadConfig(blobOf(100));
+test("uploadLayout lets the commit take longer than an ordinary request", async () => {
+    const { dev, cb } = await connected({ layout: { commitMs: 450 } });     // the connection's timeout is 300 ms
+    const r = await cb.uploadLayout(blobOf(100));
     assert.equal(r.uploaded, true);
-    assert.equal(dev.config.stored.size, 100);
+    assert.equal(dev.layout.stored.size, 100);
     await cb.close();
 });
 
 test("a wrong CRC at the device is a BAD_CRC error", async () => {
-    const { dev, cb } = await connected({ config: {} });
+    const { dev, cb } = await connected({ layout: {} });
     // Corrupt what arrives: flip a byte in each chunk on its way
     const send = dev.transferOut.bind(dev);
     dev.transferOut = async (ep, data) => {
         const bytes = new Uint8Array(data);
-        if (bytes[2] === Msg.CONFIG_DATA)
+        if (bytes[2] === Msg.LAYOUT_DATA)
             bytes[bytes.length - 1] ^= 1;
         return send(ep, bytes);
     };
-    await assert.rejects(cb.uploadConfig(blobOf(100)),
+    await assert.rejects(cb.uploadLayout(blobOf(100)),
                          err => err instanceof ControlBlockError && err.status === Status.BAD_CRC);
-    assert.equal(dev.config.stored, null);
+    assert.equal(dev.layout.stored, null);
     await cb.close();
 });
 
 test("after a commit the connection closes quietly and reconnect() finds the restarted device", async () => {
     const blob = blobOf(500);
-    const { dev, cb } = await connected({ config: { restartMs: 120 } });
+    const { dev, cb } = await connected({ layout: { restartMs: 120 } });
     const errors = [];
     cb.on("error", e => errors.push(e));
-    await cb.uploadConfig(blob);
+    await cb.uploadLayout(blob);
 
     // The device went away; the library reads that as a restart, not a failure
     const again = await cb.reconnect({
@@ -357,8 +357,8 @@ test("after a commit the connection closes quietly and reconnect() finds the res
     });
     assert.equal(cb.connected, false);
     assert.deepEqual(errors, []);
-    assert.equal(again.info.configSize, 500);
-    assert.equal(again.info.configCrc, crc32(blob));
+    assert.equal(again.info.layoutSize, 500);
+    assert.equal(again.info.layoutCrc, crc32(blob));
     await again.close();
 });
 

@@ -1,7 +1,7 @@
 #pragma once
 
 // The op lists a switch of the selected activity queues (docs/standalone.md
-// "Devices and activity switching"). Pure: the config and the devices-on mask in,
+// "Devices and activity switching"). Pure: the layout and the devices-on mask in,
 // the lists in order and the new mask out. Nothing is queued or committed here;
 // the executor pushes the lists (OpQueue::PushLists, all or nothing) and keeps
 // the new mask only if that worked.
@@ -17,12 +17,12 @@
 // leaves other devices alone.
 
 #include <stdint.h>
-#include "config_blob.h"        // CONFIG_MAX_DEVICES
-#include "config_types.h"
+#include "layout_blob.h"        // LAYOUT_MAX_DEVICES
+#include "layout_types.h"
 #include "op_queue.h"           // OpListRef
 
 // Four hooks and one list per device (a device is turned on or off, not both)
-#define ACTIVITY_SWITCH_MAX_LISTS   (4 + CONFIG_MAX_DEVICES)
+#define ACTIVITY_SWITCH_MAX_LISTS   (4 + LAYOUT_MAX_DEVICES)
 
 struct ActivitySwitch
 {
@@ -32,5 +32,5 @@ struct ActivitySwitch
 };
 
 // `from` and `to` are activity indices or -1 for none. False for an index
-// outside the config (`out` is then empty). from == to is success with no lists.
-bool ActivitySwitchPlan(const cfgdata::configRoot *root, int from, int to, uint32_t devices_on, ActivitySwitch &out);
+// outside the layout (`out` is then empty). from == to is success with no lists.
+bool ActivitySwitchPlan(const layoutdata::layoutRoot *root, int from, int to, uint32_t devices_on, ActivitySwitch &out);

@@ -47,7 +47,7 @@ test("index.js exports the device API, the image helpers and the bake API", () =
         assert.equal(node[name], browser[name], `index.js: ${name}`);
     for (const name of ["imageId", "encodeImage", "keyImage", "keyImageFromSvg", "renderButtonImage", "buttonKeyImage",
                         "bake", "BakeError", "resolve", "renderImages", "packTree", "toBpak", "ROOT_TYPE", "formatEntries",
-                        "createNodeHost", "createRenderer", "createLuaChecker", "loadConfigFile", "bakeFile", "uploadBlob",
+                        "createNodeHost", "createRenderer", "createLuaChecker", "loadLayoutFile", "bakeFile", "uploadBlob",
                         "parseChord", "KEYS", "MODIFIERS", "KEY_SIZE", "BLOB_VERSION", "OP"])
         assert.ok(node[name] !== undefined, `index.js lacks ${name}`);
 });

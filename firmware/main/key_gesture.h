@@ -34,7 +34,7 @@ class GestureBank
 public:
     void Init(const GestureHost &host, uint32_t long_press_ms);
 
-    // The default long-press time (the config's longPressMs); 0 = the firmware default
+    // The default long-press time (the layout's longPressMs); 0 = the firmware default
     void SetLongPressMs(uint32_t ms);
 
     // Forget every held control, firing nothing (a later release of one is ignored)

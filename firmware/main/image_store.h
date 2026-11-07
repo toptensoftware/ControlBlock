@@ -108,7 +108,7 @@ public:
     // A whole image from memory in one chunk (the device's own images)
     ImageResult Put(uint32_t id, const void *data, uint32_t size);
 
-    // An image that lives elsewhere (the config blob): checked like an
+    // An image that lives elsewhere (the layout blob): checked like an
     // upload, then used in place. Never copied, retired or freed: the memory
     // must stay put until Reset(). 4-byte aligned. Adding the same ID and
     // pointer again is fine (the loader dedupes by ID); a different image

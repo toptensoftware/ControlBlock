@@ -178,7 +178,14 @@ void display_set_framebuffer(uint16_t *fb)
     s_swap_pending = true;
 }
 
+// The backlight is locked on (as at power-up) unless BACKLIGHT_SWITCH is built in: switching
+// it on corrupts PSRAM and drops the CH343P (CLAUDE.md Open Items, docs/backlight.md Hardware)
 esp_err_t display_enable_backlight(bool enable)
 {
+#if BACKLIGHT_SWITCH
     return ch422g_set(CH422G_BACKLIGHT, enable);
+#else
+    (void)enable;
+    return ESP_OK;
+#endif
 }

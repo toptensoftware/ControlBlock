@@ -11,21 +11,21 @@ const usage = (argv, pattern) => assert.throws(() => parseArgs(argv), err => {
 });
 
 test("args: bake only", () => {
-    assert.deepEqual(parseArgs(["bake", "config.json"]), { command: "bake", input: "config.json", out: undefined, upload: false, serial: undefined, force: false });
-    const a = parseArgs(["bake", "config.json", "-o", "out.bin"]);
+    assert.deepEqual(parseArgs(["bake", "layout.json"]), { command: "bake", input: "layout.json", out: undefined, upload: false, serial: undefined, force: false });
+    const a = parseArgs(["bake", "layout.json", "-o", "out.bin"]);
     assert.equal(a.out, "out.bin");
-    assert.equal(parseArgs(["bake", "config.mjs", "--out", "x.bin"]).out, "x.bin");
+    assert.equal(parseArgs(["bake", "layout.mjs", "--out", "x.bin"]).out, "x.bin");
     assert.equal(a.upload, false);
 });
 
 test("args: bake --upload, --serial and --force", () => {
-    const a = parseArgs(["bake", "config.json", "--upload", "--serial", "ABC123", "--force"]);
+    const a = parseArgs(["bake", "layout.json", "--upload", "--serial", "ABC123", "--force"]);
     assert.equal(a.upload, true);
     assert.equal(a.serial, "ABC123");
     assert.equal(a.force, true);
 });
 
-test("args: upload takes a config or a baked .bin", () => {
+test("args: upload takes a layout or a baked .bin", () => {
     assert.deepEqual(parseArgs(["upload", "out.bin"]), { command: "upload", input: "out.bin", binary: true, serial: undefined, force: false });
     assert.deepEqual(parseArgs(["upload", "cfg.mjs", "--serial", "S1", "--force"]), { command: "upload", input: "cfg.mjs", binary: false, serial: "S1", force: true });
     assert.equal(parseArgs(["upload", "OUT.BIN"]).binary, true);
@@ -34,15 +34,15 @@ test("args: upload takes a config or a baked .bin", () => {
 });
 
 test("args: mistakes are reported with the usage", () => {
-    usage(["bake", "a.json", "b.json"], /one config/);
-    usage(["bake"], /one config/);
+    usage(["bake", "a.json", "b.json"], /one layout/);
+    usage(["bake"], /one layout/);
     usage(["bake", "a.json", "--nope"], /unknown option --nope/);
     usage(["bake", "a.json", "--serial"], /needs a value/);
     usage(["bake", "a.json", "-o"], /needs a value/);
     usage(["bake", "a.json", "--serial", "X"], /--upload/);    // --serial without --upload does nothing
     usage(["bake", "a.json", "--force"], /--upload/);
     usage(["bake", "a.json", "--header", "t.h"], /unknown option --header/);   // dropped: tools/codegen writes the header
-    usage(["upload"], /one config/);
+    usage(["upload"], /one layout/);
 });
 
 test("args: no command, or an unknown one", () => {

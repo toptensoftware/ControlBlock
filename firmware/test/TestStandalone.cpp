@@ -1,19 +1,19 @@
 // The standalone owner (docs/standalone.md milestone step 2): router key events
 // go through the gestures and bindings to the op queue, and the host's
-// take-over / release switches it off and re-arms it. The config is the
+// take-over / release switches it off and re-arms it. The layout is the
 // sample baked by host/src/bake (longPressMs 650). Home: touch[0,0] tap (hidKey),
 // touch[1,0] tap (hidKey) + long (delay), touch[2,0] tap (switchActivity).
 
 #include "UnitTesting.h"
 #include "Core.h"
-#include "config_env.h"
+#include "layout_env.h"
 #include "standalone.h"
 #include "hid_keyboard.h"
 #include "touch_router.h"       // TOUCH_KEY_*
 #include "net_env.h"
 
 using namespace SimpleLib;
-using namespace config_env;
+using namespace layout_env;
 
 namespace
 {
@@ -23,7 +23,7 @@ namespace
     struct Rig
     {
         List<uint8_t> bytes = LoadSample();
-        const cfgdata::configRoot *root = nullptr;      // `bytes`, relocated once
+        const layoutdata::layoutRoot *root = nullptr;      // `bytes`, relocated once
         Standalone    sa;
         uint32_t      now = 1000;
         uint32_t      run[64];                  // op codes in the order they ran
@@ -50,7 +50,7 @@ namespace
             StandaloneHost h = {};
             h.ctx    = this;
             h.now_ms = [](void *c) { return ((Rig *)c)->now; };
-            h.run    = [](const cfgdata::op *, uint32_t code, void *c) {
+            h.run    = [](const layoutdata::op *, uint32_t code, void *c) {
                 Rig *r = (Rig *)c;
                 if (r->ran < 64)
                     r->run[r->ran++] = code;
@@ -89,12 +89,12 @@ namespace
     };
 
     // The nth switchActivity op bound on Home (key 2 is the first: Watch, key 9 the second: none)
-    cfgdata::switchActivityOp *HomeSwitch(const cfgdata::configRoot *root, int nth)
+    layoutdata::switchActivityOp *HomeSwitch(const layoutdata::layoutRoot *root, int nth)
     {
         for (uint32_t i = 0; i < root->homePage.bindings_count; i++) {
-            cfgdata::binding &b = root->homePage.bindings[i];
+            layoutdata::binding &b = root->homePage.bindings[i];
             if (b.ops_count && b.ops[0]->op == SWITCH && nth-- == 0)
-                return (cfgdata::switchActivityOp *)b.ops[0];
+                return (layoutdata::switchActivityOp *)b.ops[0];
         }
         return nullptr;
     }
@@ -230,7 +230,7 @@ Fact("Standalone SwitchActivity Inside A Hook Only Queues And Cannot Recurse")
 {
     Rig r(false);
     // Watch.didActivate is replaced by Home key 9's switch-to-none op
-    r.root->activities[0].didActivate[0] = (cfgdata::op *)HomeSwitch(r.root, 1);
+    r.root->activities[0].didActivate[0] = (layoutdata::op *)HomeSwitch(r.root, 1);
     r.Start();
     r.Tap(2);
     r.Drain();
@@ -293,7 +293,7 @@ Fact("Standalone Network Ops Reach The Net Host And Their Errors Are Counted")
     Rig r(false);
     r.net = &fake.host;
     // Home's first binding (touch[0,0] tap) now runs the sample's didActivate udpPacket
-    cfgdata::binding *b = &r.root->homePage.bindings[0];
+    layoutdata::binding *b = &r.root->homePage.bindings[0];
     b->ops[0] = r.root->activities[0].didActivate[0];
     r.Start();
     Assert(r.sa.Errors() == 0 && r.sa.LastError() == nullptr);
@@ -340,7 +340,7 @@ Fact("Standalone Long Binding Defers Tap")
     r.Drain();
     Assert(r.ran == 1 && r.run[0] == HID);
 
-    // A long press: `long` at the threshold (the config's 650 ms), and no tap
+    // A long press: `long` at the threshold (the layout's 650 ms), and no tap
     r.ran = 0;
     r.Key(1, TOUCH_KEY_PRESS);
     r.Advance(LONG_MS - 1);
@@ -356,14 +356,14 @@ Fact("Standalone Long Binding Defers Tap")
     Assert(r.ran == 1);
 }
 
-Fact("Standalone Key's Own Long Press Time Overrides The Config's")
+Fact("Standalone Key's Own Long Press Time Overrides The Layout's")
 {
     Rig r;
     // Home key 1's own longPressMs set to 900 (a plain value: fine in the relocated blob)
     Put32(r.bytes, CB_HOME_KEY(1) + CB_OFF(key, longPressMs), 900);
     r.Start();
     r.Key(1, TOUCH_KEY_PRESS);
-    r.Advance(LONG_MS);                     // the config's time has passed: not long yet
+    r.Advance(LONG_MS);                     // the layout's time has passed: not long yet
     r.Drain();
     Assert(r.ran == 0);
     r.Advance(900 - LONG_MS);
@@ -579,13 +579,13 @@ Fact("Standalone Release Of A Hold Whose Press Never Ran Sends Nothing")
     Assert(r.sent == 0);
 }
 
-Fact("Standalone Without A Config Ignores Everything")
+Fact("Standalone Without A Layout Ignores Everything")
 {
     Rig r(false);
     StandaloneHost h = {};
     h.ctx    = &r;
     h.now_ms = [](void *c) { return ((Rig *)c)->now; };
-    h.run    = [](const cfgdata::op *, uint32_t, void *c) { ((Rig *)c)->ran++; };
+    h.run    = [](const layoutdata::op *, uint32_t, void *c) { ((Rig *)c)->ran++; };
     r.sa.Init(h, nullptr);
     r.Key(0, TOUCH_KEY_PRESS);
     r.Key(0, TOUCH_KEY_RELEASE);

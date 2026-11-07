@@ -11,7 +11,7 @@ void Standalone::GestureTrigger(const char *control, const char *event, void *ct
     ((Standalone *)ctx)->m_dispatch.Trigger(control, event, "");
 }
 
-void Standalone::Init(const StandaloneHost &host, const cfgdata::configRoot *root)
+void Standalone::Init(const StandaloneHost &host, const layoutdata::layoutRoot *root)
 {
     m_host   = host;
     m_root   = root;
@@ -22,7 +22,7 @@ void Standalone::Init(const StandaloneHost &host, const cfgdata::configRoot *roo
 }
 
 // Everything held or queued is dropped (the active op is told to stop and every
-// key let go); the config's long-press time is read again
+// key let go); the layout's long-press time is read again
 void Standalone::Arm()
 {
     m_queue.Cancel();                   // a waiting script is cancelled here
@@ -37,7 +37,7 @@ void Standalone::Arm()
     m_exec         = {};
     m_exec.ctx     = this;
     m_exec.now_ms  = [](void *c) { Standalone *s = (Standalone *)c; return s->m_host.now_ms(s->m_host.ctx); };
-    m_exec.started = [](const cfgdata::op *op, void *c) {
+    m_exec.started = [](const layoutdata::op *op, void *c) {
         Standalone *s = (Standalone *)c;
         if (s->m_host.run)
             s->m_host.run(op, op->op, s->m_host.ctx);
@@ -102,7 +102,7 @@ const char *Standalone::SwitchActivity(int to)
 }
 
 // Home's keys carry their own long-press time; an activity's pages aren't
-// selectable yet (0 = the config's default)
+// selectable yet (0 = the layout's default)
 uint32_t Standalone::KeyLongPressMs(int page, int key) const
 {
     if (page != 0 || key < 0 || key >= COMP_KEYS)

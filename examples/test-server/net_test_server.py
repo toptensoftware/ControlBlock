@@ -1,4 +1,4 @@
-"""Test server for the hardware test configs in examples/ (net-test.json, activity-test.mjs, script-test.mjs).
+"""Test server for the hardware test layouts in examples/ (net-test.json, activity-test.mjs, script-test.mjs).
 
 Run on the PC:  python examples/test-server/net_test_server.py
 HTTP on :8000, UDP listeners on :9 (WoL) and :9999. Allow it through the Windows firewall.

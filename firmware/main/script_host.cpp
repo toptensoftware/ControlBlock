@@ -44,7 +44,7 @@ namespace
     struct StartArgs
     {
         ScriptHost                 *host;
-        const cfgdata::scriptOp    *op;
+        const layoutdata::scriptOp    *op;
         const char                 *param;
         lua_State                 **thread;
         int                        *thread_ref;
@@ -111,7 +111,7 @@ namespace
     }
 }
 
-void ScriptHost::Init(const ScriptPlatform &platform, const cfgdata::configRoot *root)
+void ScriptHost::Init(const ScriptPlatform &platform, const layoutdata::layoutRoot *root)
 {
     m_platform = platform;
     m_root     = root;
@@ -192,7 +192,7 @@ void ScriptHostHook(lua_State *L, lua_Debug *)
         luaL_error(L, "script ran too long without waiting");
 }
 
-OpStatus ScriptHost::Start(ExecCtx &exec, const cfgdata::scriptOp *op, OpTask &task)
+OpStatus ScriptHost::Start(ExecCtx &exec, const layoutdata::scriptOp *op, OpTask &task)
 {
     if (!m_platform.realloc)
         return OpStatus::Done;                          // scripts are off

@@ -1,11 +1,11 @@
-// The device's config structs as binpack types (docs/standalone.md "Schema"). Importing this
+// The device's layout structs as binpack types (docs/standalone.md "Schema"). Importing this
 // registers them. No field mappers: stage 1 already produced exactly this shape.
 // `formatTypes()` (see pack.js headerText) generates the C header the firmware loader uses.
 
 import { registerEnum, registerType } from "../../../binpack/index.js";
 import { OP, HID_MODE } from "./consts.js";
 
-export const ROOT_TYPE = "configRoot";
+export const ROOT_TYPE = "layoutRoot";
 
 registerEnum("op", OP);
 registerEnum("hid_mode", HID_MODE);

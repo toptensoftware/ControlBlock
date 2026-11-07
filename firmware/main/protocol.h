@@ -5,7 +5,7 @@
 // writes responses and events for bulk IN. Platform independent: the device
 // (host_link.cpp) supplies the transport and the screen through
 // ProtocolHost. Spec: docs/protocol.md (wire format), docs/image-assets.md.
-// The standalone config upload is ConfigStore's (config_store.h).
+// The standalone layout upload is LayoutStore's (layout_store.h).
 //
 // Receive(), ResetStream(), SendEvents() and Idle() run on one task (the
 // protocol task). PostKey(), PostPageChanged(), PostWake() and PostWifiState()
@@ -16,9 +16,9 @@
 #include "port.h"
 #include "image_store.h"
 #include "key_layout.h"
-#include "config_store.h"
-#include "config_blob.h"
-#include "config_apply.h"
+#include "layout_store.h"
+#include "layout_blob.h"
+#include "layout_apply.h"
 #include "wifi_credentials.h"
 #include "wifi_state.h"
 
@@ -51,9 +51,9 @@ enum : uint8_t
     MSG_SET_PAGE_COUNT = 0x20,
     MSG_SET_KEYS       = 0x21,
     MSG_SET_PAGE       = 0x22,
-    MSG_CONFIG_BEGIN   = 0x30,
-    MSG_CONFIG_DATA    = 0x31,
-    MSG_CONFIG_COMMIT  = 0x32,
+    MSG_LAYOUT_BEGIN   = 0x30,
+    MSG_LAYOUT_DATA    = 0x31,
+    MSG_LAYOUT_COMMIT  = 0x32,
     MSG_WIFI_SET       = 0x40,
     MSG_WIFI_GET       = 0x41,
     MSG_WIFI_STATUS    = 0x42,
@@ -91,7 +91,7 @@ enum : uint16_t
     ST_BAD_SEQUENCE = 8,
     ST_BAD_CRC      = 9,
     ST_IO_ERROR     = 10,
-    ST_NOT_HOSTED   = 11,       // a layout request while standalone: TAKE_CONTROL first
+    ST_NOT_HOSTED   = 11,       // a key/screen request while standalone: TAKE_CONTROL first
 };
 
 // KEY event actions, PAGE_CHANGED causes
@@ -144,7 +144,7 @@ struct ProtocolHost
     // cancels whatever belongs to the old mode (held keys).
     void (*mode_changed)(bool hosted, void *ctx);
 
-    // After a config commit's response has been sent: restart the device.
+    // After a layout commit's response has been sent: restart the device.
     // Should give USB a moment to send it first; need not return.
     void (*restart)(void *ctx);
 
@@ -160,7 +160,7 @@ struct ProtocolHost
 class Protocol
 {
 public:
-    void Init(ImageStore *store, KeyLayout *layout, ConfigStore *config, WifiConfig *wifi, const ProtocolHost &host);
+    void Init(ImageStore *store, KeyLayout *keys, LayoutStore *layout_store, WifiConfig *wifi, const ProtocolHost &host);
 
     // Bytes from the host (bulk OUT), in order, in any pieces. Complete
     // messages are handled as they arrive and their responses flushed.
@@ -172,18 +172,18 @@ public:
     // A bad header was seen: everything is ignored until ResetStream()
     bool Corrupt() const { return m_corrupt; }
 
-    // A valid message has arrived since boot (the demo layout stops)
+    // A valid message has arrived since boot (the demo keys stop)
     bool HostSeen() const { return m_host_seen; }
 
     // --- Mode (docs/standalone.md "Runtime modes") ---
     // Boots standalone. TAKE_CONTROL resets the model (like RESET) and starts
     // the KEY / PAGE_CHANGED event stream; RELEASE_CONTROL and a USB
     // disconnect go through one Release(): rebuild Home, stop that stream.
-    // While standalone, requests that define the layout get ST_NOT_HOSTED.
+    // While standalone, requests that edit the screen get ST_NOT_HOSTED.
 
-    // The config's Home, shown on release (null summary: an empty Home). Both
+    // The layout's Home, shown on release (null summary: an empty Home). Both
     // must stay valid. Call before the first request.
-    void SetHome(const ConfigSummary *summary, const uint8_t *blob);
+    void SetHome(const LayoutSummary *summary, const uint8_t *blob);
 
     // Any task: has a host taken control? The device layer routes key events
     // by this (hosted: PostKey; standalone: the activity's actions).
@@ -253,9 +253,9 @@ private:
     void OnSetPageCount();
     void OnSetKeys();
     void OnSetPage();
-    void OnConfigBegin();
-    void OnConfigData();
-    void OnConfigCommit();
+    void OnLayoutBegin();
+    void OnLayoutData();
+    void OnLayoutCommit();
     void OnWifiSet();
     void OnWifiGet();
     void OnWifiStatus();
@@ -267,22 +267,22 @@ private:
     bool NeedsHost(uint8_t type) const;
 
     ImageStore  *m_store = nullptr;
-    KeyLayout   *m_layout = nullptr;
-    ConfigStore *m_config = nullptr;
+    KeyLayout   *m_keys = nullptr;
+    LayoutStore *m_layout_store = nullptr;
     WifiConfig  *m_wifi = nullptr;
     ProtocolHost m_host = {};
 
     // Mode (atomics: read from any task)
     uint32_t m_hosted = 0;
     uint32_t m_disconnect = 0;
-    const ConfigSummary *m_home = nullptr;
+    const LayoutSummary *m_home = nullptr;
     const uint8_t       *m_home_blob = nullptr;
 
     // Parser
     State    m_state = State::Header;
     bool     m_corrupt = false;
     bool     m_host_seen = false;
-    bool     m_restart = false;     // a config was committed: nothing more is read, the device restarts
+    bool     m_restart = false;     // a layout was committed: nothing more is read, the device restarts
     bool     m_restarted = false;
     uint8_t  m_hdr[PROTO_HEADER_SIZE];
     uint32_t m_have = 0;            // bytes of the current part (header, prefix, payload)

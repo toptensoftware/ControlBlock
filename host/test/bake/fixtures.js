@@ -1,5 +1,5 @@
-// Shared bake fixtures: the docs/config-format.md example config and the script files it
-// names (relative to the config's directory). Used by the bake, files and cli tests.
+// Shared bake fixtures: the docs/layout-format.md example layout and the script files it
+// names (relative to the layout's directory). Used by the bake, files and cli tests.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -53,15 +53,15 @@ export const files = {
     "scripts/vol.lua": "http.post('http://avr.local/vol', 'delta=' .. ((tonumber(param) or 1) // 10))\n",
 };
 
-// A temporary directory holding the example as config.json plus its scripts. Returns
-// { dir, file, cleanup }. `config` replaces the example; `name` the file name.
-export function exampleDir({ config = example(), name = "config.json" } = {})
+// A temporary directory holding the example as layout.json plus its scripts. Returns
+// { dir, file, cleanup }. `layout` replaces the example; `name` the file name.
+export function exampleDir({ layout = example(), name = "layout.json" } = {})
 {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cbbake-"));
     fs.mkdirSync(path.join(dir, "scripts"));
     for (const [file, text] of Object.entries(files))
         fs.writeFileSync(path.join(dir, file), text);
     const file = path.join(dir, name);
-    fs.writeFileSync(file, typeof config === "string" ? config : JSON.stringify(config));
+    fs.writeFileSync(file, typeof layout === "string" ? layout : JSON.stringify(layout));
     return { dir, file, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }

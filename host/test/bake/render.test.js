@@ -4,10 +4,10 @@ import assert from "node:assert/strict";
 import { ok, fakeRenderer } from "./helpers.js";
 import { renderImages } from "../../src/bake/render.js";
 
-const config = (keys, extra = {}) => ({ version: 1, ...extra, home: { keys } });
+const layout = (keys, extra = {}) => ({ version: 1, ...extra, home: { keys } });
 
 test("every image definition becomes a Buffer; absent images stay null", async () => {
-    const tree = ok(config([{ color: "red", icon: "#a" }, {}]));
+    const tree = ok(layout([{ color: "red", icon: "#a" }, {}]));
     await renderImages(tree, fakeRenderer());
     const k = tree.home.keys[0];
     for (const f of ["normalBg", "normalFg", "pressedBg", "pressedFg"])
@@ -17,7 +17,7 @@ test("every image definition becomes a Buffer; absent images stay null", async (
 });
 
 test("identical definitions render once and share one Buffer object", async () => {
-    const tree = ok(config([{ color: "red", icon: "#a" }, { color: "red", icon: "#a" }, { color: "red", icon: "#b" }]));
+    const tree = ok(layout([{ color: "red", icon: "#a" }, { color: "red", icon: "#a" }, { color: "red", icon: "#b" }]));
     const render = fakeRenderer();
     await renderImages(tree, render);
     const [a, b, c] = tree.home.keys;
@@ -32,7 +32,7 @@ test("identical definitions render once and share one Buffer object", async () =
 });
 
 test("different definitions that encode to the same bytes still share one Buffer object", async () => {
-    const tree = ok(config([{ icon: "#a" }, { icon: "#b" }]));
+    const tree = ok(layout([{ icon: "#a" }, { icon: "#b" }]));
     // a renderer that ignores the definition
     await renderImages(tree, async () => Buffer.from([1, 2, 3, 4, 5]));
     const [a, b] = tree.home.keys;
@@ -47,7 +47,7 @@ test("activity page keys are rendered too", async () => {
 });
 
 test("renders run concurrently, up to the limit", async () => {
-    const tree = ok(config(Array.from({ length: 10 }, (_, i) => ({ icon: "#i" + i }))));
+    const tree = ok(layout(Array.from({ length: 10 }, (_, i) => ({ icon: "#i" + i }))));
     let active = 0, peak = 0;
     const render = async def => {
         active++; peak = Math.max(peak, active);
@@ -60,13 +60,13 @@ test("renders run concurrently, up to the limit", async () => {
 });
 
 test("a render failure names the key and layer", async () => {
-    const tree = ok(config([{}, { icon: "#a" }]));
+    const tree = ok(layout([{}, { icon: "#a" }]));
     await assert.rejects(renderImages(tree, async () => { throw new Error("no such icon"); }),
         /home\.keys\[1\]\.normalFg.*no such icon/);
 });
 
 test("the renderer must return bytes", async () => {
-    const tree = ok(config([{ icon: "#a" }]));
+    const tree = ok(layout([{ icon: "#a" }]));
     await assert.rejects(renderImages(tree, async () => "text"), /Buffer|bytes/);
-    await assert.rejects(renderImages(ok(config([{ icon: "#a" }])), async () => Buffer.alloc(0)), /empty/);
+    await assert.rejects(renderImages(ok(layout([{ icon: "#a" }])), async () => Buffer.alloc(0)), /empty/);
 });

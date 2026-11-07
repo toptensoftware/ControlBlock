@@ -1,8 +1,8 @@
 # ControlBlock USB Protocol (v1)
 
-This is the host ↔ device protocol for **mode 1 (host-controlled)**. The device boots into standalone mode ([`standalone.md`](standalone.md)); a host sends [`TAKE_CONTROL`](#0x06-take_control) to enter mode 1 and [`RELEASE_CONTROL`](#0x07-release_control) to give the screen back. The PC software uploads images and key layouts. The device draws them, runs paging, swiping and press feedback on its own, and reports key presses back to the PC.
+This is the host ↔ device protocol for **mode 1 (host-controlled)**. The device boots into standalone mode ([`standalone.md`](standalone.md)); a host sends [`TAKE_CONTROL`](#0x06-take_control) to enter mode 1 and [`RELEASE_CONTROL`](#0x07-release_control) to give the screen back. The PC software uploads images and sets the keys. The device draws them, runs paging, swiping and press feedback on its own, and reports key presses back to the PC.
 
-How images are stored, replaced and freed on the device is in [`image-assets.md`](image-assets.md). Backlight on/off and the wake-on-touch event are in [`backlight.md`](backlight.md). Uploading the standalone config to flash is [below](#configuration-upload); how it's stored is in [`standalone.md`](standalone.md).
+How images are stored, replaced and freed on the device is in [`image-assets.md`](image-assets.md). Backlight on/off and the wake-on-touch event are in [`backlight.md`](backlight.md). Uploading the standalone layout to flash is [below](#layout-upload); how it's stored is in [`standalone.md`](standalone.md).
 
 ## Design summary
 
@@ -41,7 +41,7 @@ The device is a composite device. The vendor interface (interface 0) carries thi
 
 The host **must** end every bulk OUT transfer whose length is a multiple of 64 (the max packet size) with a zero-length packet (ZLP), the usual USB way of marking the end of a transfer. With WebUSB or the `usb` package that is a second `transferOut` with an empty buffer, straight after the first. Other lengths end in a short packet and need nothing.
 
-Why: for speed, the device receives in 512-byte transfers (`CONFIG_TINYUSB_VENDOR_EPSIZE`), and a transfer completes only when it is full or a short packet ends it. Without the ZLP, the bytes after the last 512-byte boundary of such a write wait on the device until more data arrives: the request is never answered and the host times out. (Found with a 4352-byte `CONFIG_DATA`.) The host library does this in `ControlBlock._write`, and its test `FakeDevice` holds back data the same way the device does.
+Why: for speed, the device receives in 512-byte transfers (`CONFIG_TINYUSB_VENDOR_EPSIZE`), and a transfer completes only when it is full or a short packet ends it. Without the ZLP, the bytes after the last 512-byte boundary of such a write wait on the device until more data arrives: the request is never answered and the host times out. (Found with a 4352-byte `LAYOUT_DATA`.) The host library does this in `ControlBlock._write`, and its test `FakeDevice` holds back data the same way the device does.
 
 ### Control request: reset stream
 
@@ -52,7 +52,7 @@ Why: for speed, the device receives in 512-byte transfers (`CONFIG_TINYUSB_VENDO
 This brings the byte stream back to a known state:
 - The device discards any partly received message and aborts any upload in progress.
 - It drops queued events. Responses it has already queued may still arrive, as whole messages. The host ignores any response whose seq it isn't waiting for.
-- Layout and images are **not** cleared.
+- Keys and images are **not** cleared.
 
 The host library sends this every time it opens the device, then sends `GET_INFO`. It also sends it whenever it gets out of sync, such as after a timeout or a malformed message.
 
@@ -92,10 +92,10 @@ Any data specific to that response follows these two fields.
 | 5 | BAD_IMAGE | Data failed rle565 validation, or isn't `key_w`×`key_h` |
 | 6 | NOT_FOUND | Referenced image ID doesn't exist |
 | 7 | — | Reserved (was IN_USE; freeing is never refused now) |
-| 8 | BAD_SEQUENCE | Upload chunk out of order or not started, or a config commit before all the data arrived |
-| 9 | BAD_CRC | Config upload: the data doesn't match the CRC-32 given at `CONFIG_BEGIN` |
-| 10 | IO_ERROR | Config upload: a flash erase, write or read-back failed. `WIFI_SET`: the credentials couldn't be stored |
-| 11 | NOT_HOSTED | A request that edits the layout while the device is standalone: send [`TAKE_CONTROL`](#0x06-take_control) first |
+| 8 | BAD_SEQUENCE | Upload chunk out of order or not started, or a layout commit before all the data arrived |
+| 9 | BAD_CRC | Layout upload: the data doesn't match the CRC-32 given at `LAYOUT_BEGIN` |
+| 10 | IO_ERROR | Layout upload: a flash erase, write or read-back failed. `WIFI_SET`: the credentials couldn't be stored |
+| 11 | NOT_HOSTED | A request that edits the screen while the device is standalone: send [`TAKE_CONTROL`](#0x06-take_control) first |
 
 ## Host → device requests
 
@@ -103,11 +103,11 @@ Any data specific to that response follows these two fields.
 |---|---|---|
 | `0x00` | PING | Echoes the payload back (for latency and throughput tests) |
 | `0x01` | GET_INFO | Device capabilities and geometry |
-| `0x02` | RESET | Clear the layout and every image |
+| `0x02` | RESET | Clear the keys and every image |
 | `0x03` | SET_STATUS_TEXT | Set the status bar's left or right text |
 | `0x04` | — | Reserved, not yet defined |
 | `0x05` | SET_BACKLIGHT | Turn the backlight on or off |
-| `0x06` | TAKE_CONTROL | Enter host-controlled mode (clears the layout like `RESET`) |
+| `0x06` | TAKE_CONTROL | Enter host-controlled mode (clears the keys like `RESET`) |
 | `0x07` | RELEASE_CONTROL | Hand the screen back to the device's standalone Home |
 | `0x10` | PUT_IMAGE | Upload or replace an image, in chunks |
 | `0x11` | FREE_IMAGES | Free images (deferred while keys use them) |
@@ -115,9 +115,9 @@ Any data specific to that response follows these two fields.
 | `0x20` | SET_PAGE_COUNT | Set the number of pages |
 | `0x21` | SET_KEYS | Define one or more keys (applied together) |
 | `0x22` | SET_PAGE | Go to a page |
-| `0x30` | CONFIG_BEGIN | Start uploading the standalone config (erases the stored one) |
-| `0x31` | CONFIG_DATA | One chunk of the config |
-| `0x32` | CONFIG_COMMIT | Finish: verify, save and restart the device |
+| `0x30` | LAYOUT_BEGIN | Start uploading the standalone layout (erases the stored one) |
+| `0x31` | LAYOUT_DATA | One chunk of the layout |
+| `0x32` | LAYOUT_COMMIT | Finish: verify, save and restart the device |
 | `0x40` | WIFI_SET | Store Wi-Fi credentials and connect; an empty ssid clears |
 | `0x41` | WIFI_GET | Read the stored Wi-Fi credentials |
 | `0x42` | WIFI_STATUS | Wi-Fi connection state, IP, signal |
@@ -154,11 +154,11 @@ Any data specific to that response follows these two fields.
 | u8 | current_page | |
 | u8 | fw_version_len | Followed by `fw_version` (UTF-8) |
 | u8 | serial_len | Followed by `serial` (UTF-8). Lets the host tell several devices apart |
-| u32 | config_capacity | Largest config the device can store, in bytes |
-| u32 | config_size | Size of the stored config; `0` if there is none (or an upload is in progress) |
-| u32 | config_crc | CRC-32 of the stored config; `0` if there is none |
+| u32 | layout_capacity | Largest layout the device can store, in bytes |
+| u32 | layout_size | Size of the stored layout; `0` if there is none (or an upload is in progress) |
+| u32 | layout_crc | CRC-32 of the stored layout; `0` if there is none |
 
-`config_size` and `config_crc` let a host skip an upload when the device already has the same config. They describe what was committed; the CRC is not re-checked against the flash for each `GET_INFO`.
+`layout_size` and `layout_crc` let a host skip an upload when the device already has the same layout. They describe what was committed; the CRC is not re-checked against the flash for each `GET_INFO`.
 
 ### `0x02` RESET
 
@@ -204,7 +204,7 @@ The hardware backlight can only be switched on or off (through the CH422G); it h
 - **Turning off mid-touch:** a key being held gets a `CANCEL`, and a swipe settles. The finger still down is swallowed and sends no `WAKE`.
 - **Turning on mid-touch:** a touch that went down while dark stays swallowed until it lifts, so the wake touch never presses what appears under it.
 - **Content keeps updating** while dark (`SET_KEYS`, `PUT_IMAGE`, `SET_STATUS_TEXT`, `SET_PAGE`).
-- **Both modes:** unlike the layout requests, `SET_BACKLIGHT` works while standalone too. It is device state, not layout, and a config tool may want the screen dark.
+- **Both modes:** unlike the screen requests, `SET_BACKLIGHT` works while standalone too. It is device state, not keys, and a setup tool may want the screen dark.
 - **Lifetime:** boots on. `SET_BACKLIGHT` changes it; `RESET`, `RESET_STREAM` and taking control leave it alone. Releasing control (the message, a USB unmount or a suspend) **turns it on**, and so does a disconnect while standalone: nobody is left to answer a `WAKE`, and the standalone Home needs the screen.
 - **Reading the state:** `GET_INFO` `flags` bit 0.
 - Setting the current state does nothing. A missing `on` byte is `BAD_LENGTH`.
@@ -213,17 +213,17 @@ The hardware backlight can only be switched on or off (through the CH422G); it h
 
 **Request:** No payload.
 
-Switches the device from standalone to hosted mode ([`standalone.md`](standalone.md), "Runtime modes"). The device **boots standalone**, showing its own Home, and refuses every request that edits the layout until the host takes control:
+Switches the device from standalone to hosted mode ([`standalone.md`](standalone.md), "Runtime modes"). The device **boots standalone**, showing its own Home, and refuses every request that edits the screen until the host takes control:
 
 | Request or event | Standalone | Hosted |
 |---|---|---|
 | `RESET`, `SET_STATUS_TEXT`, `PUT_IMAGE`, `FREE_IMAGES`, `SET_PAGE_COUNT`, `SET_KEYS`, `SET_PAGE` | **`NOT_HOSTED`** (a refused `PUT_IMAGE`'s data is skipped, so the stream stays in step) | accepted |
-| `PING`, `GET_INFO`, `QUERY_IMAGES`, `SET_BACKLIGHT`, `CONFIG_*`, `WIFI_*`, `TAKE_CONTROL`, `RELEASE_CONTROL` | accepted | accepted |
+| `PING`, `GET_INFO`, `QUERY_IMAGES`, `SET_BACKLIGHT`, `LAYOUT_*`, `WIFI_*`, `TAKE_CONTROL`, `RELEASE_CONTROL` | accepted | accepted |
 | `KEY` and `PAGE_CHANGED` events | none | sent |
 
 There is no implicit takeover: a host that forgets `TAKE_CONTROL` gets `NOT_HOSTED` rather than half-editing Home.
 
-- **Effect:** exactly `RESET`: the layout is cleared (one empty page, no keys), every image is freed (Home's included), an image upload in progress is abandoned, and both status bar texts are cleared. The backlight and the Wi-Fi credentials are left alone. The device's own config stays in its flash and memory.
+- **Effect:** exactly `RESET`: the screen is cleared (one empty page, no keys), every image is freed (Home's included), an image upload in progress is abandoned, and both status bar texts are cleared. The backlight and the Wi-Fi credentials are left alone. The device's own layout stays in its flash and memory.
 - **Already hosted:** the reset happens again and the device stays hosted.
 - Standalone actions don't run while hosted ([`standalone.md`](standalone.md)).
 - **Reading the mode:** `GET_INFO` `flags` bit 2.
@@ -232,9 +232,9 @@ There is no implicit takeover: a host that forgets `TAKE_CONTROL` gets `NOT_HOST
 
 **Request:** No payload.
 
-Hands the screen back. The device goes to standalone: the layout, images and status texts are cleared and **Home is rebuilt** from the stored config (an empty Home if there is none, or if it can't be shown), the screen goes to page 0, the backlight is turned **on**, and the `KEY` / `PAGE_CHANGED` stream stops (ones still queued are dropped; `WAKE`, `HEARTBEAT` and `WIFI_STATE` events are unaffected). The response is sent after that. Releasing while standalone does nothing and answers `OK`.
+Hands the screen back. The device goes to standalone: the keys, images and status texts are cleared and **Home is rebuilt** from the stored layout (an empty Home if there is none, or if it can't be shown), the screen goes to page 0, the backlight is turned **on**, and the `KEY` / `PAGE_CHANGED` stream stops (ones still queued are dropped; `WAKE`, `HEARTBEAT` and `WIFI_STATE` events are unaffected). The response is sent after that. Releasing while standalone does nothing and answers `OK`.
 
-The device also releases by itself when the host goes away: a **USB unmount** (unplug) or a **USB suspend**, with the same result. The stream state is reset too (a partial message and any config upload are dropped), exactly as for `RESET_STREAM`. A host that hangs without disconnecting is not detected yet (a heartbeat timeout may be added).
+The device also releases by itself when the host goes away: a **USB unmount** (unplug) or a **USB suspend**, with the same result. The stream state is reset too (a partial message and any layout upload are dropped), exactly as for `RESET_STREAM`. A host that hangs without disconnecting is not detected yet (a heartbeat timeout may be added).
 
 After a disconnect the next host must `TAKE_CONTROL` again; it can read `GET_INFO` `flags` bit 2 to see the mode.
 
@@ -342,29 +342,29 @@ Each `KeyDef`:
 | u8 | page | |
 | u8 | flags | bit 0 `ANIMATE`: glide there as if the user had swiped |
 
-## Configuration upload
+## Layout upload
 
-Saves the standalone-mode config (a BPAK blob from the bake in `host/src/bake/`, see [`standalone.md`](standalone.md)) in the device's `config` flash partition. The device doesn't look inside the blob here: it checks the size and a CRC-32 and stores the bytes. The CRC-32 is the usual zlib one (polynomial `0xEDB88320`, initial and final XOR `0xFFFFFFFF`; the CRC of `"123456789"` is `0xCBF43926`).
+Saves the standalone-mode layout (a BPAK blob from the bake in `host/src/bake/`, see [`standalone.md`](standalone.md)) in the device's `layout` flash partition. The device doesn't look inside the blob here: it checks the size and a CRC-32 and stores the bytes. The CRC-32 is the usual zlib one (polynomial `0xEDB88320`, initial and final XOR `0xFFFFFFFF`; the CRC of `"123456789"` is `0xCBF43926`). (These messages and the `GET_INFO` `layout_*` fields kept their opcodes and wire format when the standalone "config" was renamed "layout"; only the names changed, so the protocol version is unchanged.)
 
 ```
-CONFIG_BEGIN(size, crc)  →  CONFIG_DATA(0, …) … CONFIG_DATA(n, …)  →  CONFIG_COMMIT  →  device restarts
+LAYOUT_BEGIN(size, crc)  →  LAYOUT_DATA(0, …) … LAYOUT_DATA(n, …)  →  LAYOUT_COMMIT  →  device restarts
 ```
 
-### `0x30` CONFIG_BEGIN
+### `0x30` LAYOUT_BEGIN
 
 **Request:**
 
 | Type | Field | Notes |
 |---|---|---|
-| u32 | total_size | Size of the blob in bytes, at least 1 and at most `config_capacity` |
+| u32 | total_size | Size of the blob in bytes, at least 1 and at most `layout_capacity` |
 | u32 | crc32 | CRC-32 of the whole blob |
 
 - Starts a new upload, abandoning one in progress.
-- **The stored config is destroyed** as soon as the upload starts (the response is `OK`), even if the upload later fails: the device then has no config and boots to an empty Home.
-- `BAD_LENGTH` if the payload is shorter than 8 bytes. `BAD_ARG` if `total_size` is 0, `NO_SPACE` if it is more than `config_capacity`; in both cases nothing changes. `IO_ERROR` if the flash can't be erased.
+- **The stored layout is destroyed** as soon as the upload starts (the response is `OK`), even if the upload later fails: the device then has no layout and boots to an empty Home.
+- `BAD_LENGTH` if the payload is shorter than 8 bytes. `BAD_ARG` if `total_size` is 0, `NO_SPACE` if it is more than `layout_capacity`; in both cases nothing changes. `IO_ERROR` if the flash can't be erased.
 - **The screen goes dark** (backlight off) until the upload ends. Flash erases and writes stall the display, so it is blanked rather than glitching. A failed upload, `RESET_STREAM` or a new `BEGIN` that fails restores the backlight to the host's setting ([`SET_BACKLIGHT`](#0x05-set_backlight)).
 
-### `0x31` CONFIG_DATA
+### `0x31` LAYOUT_DATA
 
 **Request:**
 
@@ -374,19 +374,19 @@ CONFIG_BEGIN(size, crc)  →  CONFIG_DATA(0, …) … CONFIG_DATA(n, …)  →  
 | … | data | Chunk bytes, at least 1, up to `max_payload − 4` |
 
 - **Order:** the first chunk has `offset = 0` and each later chunk starts where the previous one ended (like [`PUT_IMAGE`](#0x10-put_image)). Chunks may be pipelined; other message types may be interleaved.
-- **Errors end the upload:** `BAD_SEQUENCE` (no upload in progress, or the offset isn't the next one), `BAD_ARG` (the chunk runs past `total_size`) or `IO_ERROR`. The stored config stays destroyed and every later `CONFIG_DATA` gets `BAD_SEQUENCE` until a new `CONFIG_BEGIN`. `BAD_LENGTH` (no data) changes nothing.
+- **Errors end the upload:** `BAD_SEQUENCE` (no upload in progress, or the offset isn't the next one), `BAD_ARG` (the chunk runs past `total_size`) or `IO_ERROR`. The stored layout stays destroyed and every later `LAYOUT_DATA` gets `BAD_SEQUENCE` until a new `LAYOUT_BEGIN`. `BAD_LENGTH` (no data) changes nothing.
 - A chunk's response arrives once it is in flash. A chunk can take tens of milliseconds (erases), so a host shouldn't have unlimited chunks in flight with a fixed timeout; the `host/` library keeps a small window.
 
-### `0x32` CONFIG_COMMIT
+### `0x32` LAYOUT_COMMIT
 
 **Request:** No payload.
 
 - `BAD_SEQUENCE` if no upload is in progress, or if fewer than `total_size` bytes have arrived (the upload carries on).
-- Otherwise the device checks the CRC-32 of the bytes it received (`BAD_CRC` if wrong), re-reads the flash and checks it again (`IO_ERROR` if wrong), then writes the config's header. Any failure ends the upload with the config destroyed, as above.
-- On `OK` the config is saved and **the device restarts** right after sending the response. The host sees its USB connection drop and should wait for the device to come back (about a second or two), then read `config_size` / `config_crc` from `GET_INFO` to confirm.
-- Bytes sent after `CONFIG_COMMIT` in the same stream are ignored.
+- Otherwise the device checks the CRC-32 of the bytes it received (`BAD_CRC` if wrong), re-reads the flash and checks it again (`IO_ERROR` if wrong), then writes the layout's header. Any failure ends the upload with the layout destroyed, as above.
+- On `OK` the layout is saved and **the device restarts** right after sending the response. The host sees its USB connection drop and should wait for the device to come back (about a second or two), then read `layout_size` / `layout_crc` from `GET_INFO` to confirm.
+- Bytes sent after `LAYOUT_COMMIT` in the same stream are ignored.
 
-**Other messages and the upload:** `RESET_STREAM` abandons the upload (the config stays destroyed). `RESET` doesn't touch it. Everything else works as usual during an upload, but the screen is dark.
+**Other messages and the upload:** `RESET_STREAM` abandons the upload (the layout stays destroyed). `RESET` doesn't touch it. Everything else works as usual during an upload, but the screen is dark.
 
 ## Wi-Fi
 
@@ -535,20 +535,20 @@ Sent when the state or the address changes (not on every retry), so a host can s
 
 ## Typical session
 
-Uploading a standalone config instead: `RESET_STREAM`, `GET_INFO` (skip the rest if `config_size` and `config_crc` already match), `CONFIG_BEGIN`, pipelined `CONFIG_DATA`, `CONFIG_COMMIT`, then wait for the device to restart.
+Uploading a standalone layout instead: `RESET_STREAM`, `GET_INFO` (skip the rest if `layout_size` and `layout_crc` already match), `LAYOUT_BEGIN`, pipelined `LAYOUT_DATA`, `LAYOUT_COMMIT`, then wait for the device to restart.
 
 And for a host-controlled session:
 
 1. Open the device and send RESET_STREAM (control request).
-2. Send `GET_INFO`: check `protocol_version` and read the geometry. Send `TAKE_CONTROL` (the device boots standalone and refuses the layout requests below until then). When finished, send `RELEASE_CONTROL`; closing or unplugging has the same effect.
+2. Send `GET_INFO`: check `protocol_version` and read the geometry. Send `TAKE_CONTROL` (the device boots standalone and refuses the screen requests below until then). When finished, send `RELEASE_CONTROL`; closing or unplugging has the same effect.
 3. Render the faces and icons (with labels), encode them with the rle565 encoder and compute their IDs (CRC-32). Send `QUERY_IMAGES`, then `PUT_IMAGE` only for the missing ones, pipelined.
 4. Send `SET_PAGE_COUNT`, then one `SET_KEYS` with every key. Set the status bar texts with `SET_STATUS_TEXT`, and again whenever they change.
 5. Handle `KEY` events. To sleep the screen, send `SET_BACKLIGHT` off; on a `WAKE` event, send it on. Later changes are `SET_KEYS` with the affected keys (plus `PUT_IMAGE` for any new images), or a `PUT_IMAGE` that replaces an image in place. `FREE_IMAGES` images that are no longer wanted.
 
 ## Device state lifetime
 
-- Layout and images are kept in PSRAM while the device is powered. A host app that restarts can reconnect, query what the device has, and avoid uploading it again.
-- Layout and images are never saved to flash. Only the standalone config is ([configuration upload](#configuration-upload)); the standalone mode that runs it is in [`standalone.md`](standalone.md).
+- Keys and images are kept in PSRAM while the device is powered. A host app that restarts can reconnect, query what the device has, and avoid uploading it again.
+- Keys and images are never saved to flash. Only the standalone layout is ([layout upload](#layout-upload)); the standalone mode that runs it is in [`standalone.md`](standalone.md).
 - The device can't tell when the host app closes (it only sees USB unmount or suspend, which release control). A host that wants the device back on its Home before it exits sends `RELEASE_CONTROL`; `RESET` only clears the screen and keeps the host in control.
 
 ## Open questions

@@ -4,7 +4,7 @@ import {
     encodeMessage, MessageParser, encodeKeys, encodeIds, encodePutImage, decodeInfo, decodeQuery, decodeEvent,
     Msg, Flags, KeyFlags, HEADER_SIZE, KEYDEF_SIZE, MAGIC, statusName, Status,
     encodeStatusText, StatusText, STATUS_TEXT_MAX_BYTES,
-    crc32, encodeConfigBegin, encodeConfigData, CONFIG_DATA_PREFIX, HEARTBEAT_INTERVAL_MS,
+    crc32, encodeLayoutBegin, encodeLayoutData, LAYOUT_DATA_PREFIX, HEARTBEAT_INTERVAL_MS,
     InfoFlags, Writer, WifiState, WIFI_SSID_MAX_BYTES, WIFI_PASS_MIN_BYTES, WIFI_PASS_MAX_BYTES,
     encodeWifiSet, decodeWifiCredentials, decodeWifiStatus,
 } from "../src/protocol.js";
@@ -148,28 +148,28 @@ test("crc32 is zlib's", async () => {
     assert.ok(crc32(Uint8Array.of(1, 2, 3)) >= 0);
 });
 
-test("config messages match the firmware's wire format", () => {
-    assert.deepEqual([...encodeConfigBegin(0x01020304, 0xAABBCCDD)], [4, 3, 2, 1, 0xDD, 0xCC, 0xBB, 0xAA]);
-    const d = encodeConfigData(0x100, Uint8Array.of(9, 8, 7));
+test("layout messages match the firmware's wire format", () => {
+    assert.deepEqual([...encodeLayoutBegin(0x01020304, 0xAABBCCDD)], [4, 3, 2, 1, 0xDD, 0xCC, 0xBB, 0xAA]);
+    const d = encodeLayoutData(0x100, Uint8Array.of(9, 8, 7));
     assert.deepEqual([...d], [0, 1, 0, 0, 9, 8, 7]);
-    assert.equal(Msg.CONFIG_BEGIN, 0x30);
-    assert.equal(Msg.CONFIG_DATA, 0x31);
-    assert.equal(Msg.CONFIG_COMMIT, 0x32);
+    assert.equal(Msg.LAYOUT_BEGIN, 0x30);
+    assert.equal(Msg.LAYOUT_DATA, 0x31);
+    assert.equal(Msg.LAYOUT_COMMIT, 0x32);
     assert.equal(Status.BAD_CRC, 9);
     assert.equal(Status.IO_ERROR, 10);
     assert.equal(statusName(9), "BAD_CRC");
-    assert.equal(CONFIG_DATA_PREFIX, 4);
+    assert.equal(LAYOUT_DATA_PREFIX, 4);
 });
 
-test("GET_INFO ends with the stored config, and older devices have none", () => {
-    const info = decodeInfo(infoPayload({ config: { capacity: 4190208, size: 1234, crc: 0xDEADBEEF } }));
-    assert.equal(info.configCapacity, 4190208);
-    assert.equal(info.configSize, 1234);
-    assert.equal(info.configCrc, 0xDEADBEEF);
+test("GET_INFO ends with the stored layout, and older devices have none", () => {
+    const info = decodeInfo(infoPayload({ layout: { capacity: 4190208, size: 1234, crc: 0xDEADBEEF } }));
+    assert.equal(info.layoutCapacity, 4190208);
+    assert.equal(info.layoutSize, 1234);
+    assert.equal(info.layoutCrc, 0xDEADBEEF);
     const old = decodeInfo(infoPayload());
-    assert.equal(old.configCapacity, 0);
-    assert.equal(old.configSize, 0);
-    assert.equal(old.configCrc, 0);
+    assert.equal(old.layoutCapacity, 0);
+    assert.equal(old.layoutSize, 0);
+    assert.equal(old.layoutCrc, 0);
     assert.equal(old.serial, "SERIAL1");
 });
 

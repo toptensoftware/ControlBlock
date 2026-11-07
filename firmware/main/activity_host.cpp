@@ -1,12 +1,12 @@
 #include "activity_host.h"
 
-void ActivityApplier::Init(const cfgdata::configRoot *root, const uint8_t *blob, ImageStore *store, KeyLayout *layout,
+void ActivityApplier::Init(const layoutdata::layoutRoot *root, const uint8_t *blob, ImageStore *store, KeyLayout *keys,
                            const ActivityScreen &screen)
 {
     m_root     = root;
     m_blob     = blob;
     m_store    = store;
-    m_layout   = layout;
+    m_keys     = keys;
     m_screen   = screen;
     m_from     = -1;
     m_failures = 0;
@@ -22,8 +22,8 @@ void ActivityApplier::Apply(int index, void *ctx)
         return;
 
     a->m_screen.lock(a->m_screen.ctx);
-    bool ok = ConfigApplyActivity(a->m_root, a->m_blob, a->m_from, index, a->m_store, a->m_layout);
-    int pages = a->m_layout->PageCount();
+    bool ok = LayoutApplyActivity(a->m_root, a->m_blob, a->m_from, index, a->m_store, a->m_keys);
+    int pages = a->m_keys->PageCount();
     a->m_screen.unlock(a->m_screen.ctx);
     if (!ok) {
         a->m_failures++;            // layout, store and page count are as they were
@@ -35,7 +35,7 @@ void ActivityApplier::Apply(int index, void *ctx)
     a->m_screen.set_page_count(pages, a->m_screen.ctx);
     if (index >= 0)
         a->m_screen.go_to_page(1, true, a->m_screen.ctx);
-    const cfgdata::activity *act = index >= 0 ? &a->m_root->activities[index] : nullptr;
+    const layoutdata::activity *act = index >= 0 ? &a->m_root->activities[index] : nullptr;
     const char *text = "";
     if (act)
         text = (act->displayName && act->displayName[0]) ? act->displayName : act->name;

@@ -1,6 +1,6 @@
-// Hardware test config for activity switching and devices
+// Hardware test layout for activity switching and devices
 // (wip/wip-activity-device-management.md, step 9). Every hook and device op sends a short
-// UDP message (or an HTTP GET) to examples/test-server/net_test_server.py, so its console shows what ran
+// UDP message (or an HTTP GET) to examples/test-server/test-server.mjs, so its console shows what ran
 // and in what order. Bake and upload from the repo root:
 //     node cli/cli.js upload examples/activity-test.mjs
 
@@ -48,7 +48,7 @@ function page(tag, p, color, overrides = {})
 
 const ping = (name) => ({ label: `Ping\n${name}`, color: "#264653", tap: udp(`ping from ${name}`) });
 
-const config = {
+const layout = {
     version: 1,
     defaults: { color: "#22262e", pressed: { color: "#3a86ff" } },
 
@@ -133,4 +133,4 @@ const config = {
     },
 };
 
-export default FLAT ? flatten(config) : config;
+export default FLAT ? flatten(layout) : layout;

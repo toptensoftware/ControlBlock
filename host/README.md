@@ -3,7 +3,7 @@
 One library for everything a host does with a ControlBlock:
 
 - **Device API:** talks to the device over its USB vendor interface (mode 1, [`docs/protocol.md`](../docs/protocol.md)).
-- **Config bake:** turns a standalone config ([`docs/config-format.md`](../docs/config-format.md)) into the blob the device loads, and uploads it.
+- **Layout bake:** turns a standalone layout ([`docs/layout-format.md`](../docs/layout-format.md)) into the blob the device loads, and uploads it.
 
 The command line ([`cli/`](../cli/README.md)) and the scripts in [`examples/`](../examples/README.md) are thin users of it.
 
@@ -29,7 +29,7 @@ node ../examples/bench.js   # latency, throughput and upload speed
 |---|---|
 | `src/ControlBlock.js`, `src/protocol.js`, `src/Emitter.js` | the device API |
 | `src/images.js` | `imageId`, `encodeImage`, `keyImage`, `keyImageFromSvg`, `renderButtonImage`, `buttonKeyImage` |
-| `src/bake/` | the bake: `resolve.js` (stage 1), `render.js` (stage 2), `pack.js`/`schema.js` (stage 3, BPAK through binpack), `bake.js` (all three), `files.js` (`loadConfigFile`, `bakeFile`), `upload.js` (`uploadBlob`), `headers.js` (the firmware headers `tools/codegen` writes) |
+| `src/bake/` | the bake: `resolve.js` (stage 1), `render.js` (stage 2), `pack.js`/`schema.js` (stage 3, BPAK through binpack), `bake.js` (all three), `files.js` (`loadLayoutFile`, `bakeFile`), `upload.js` (`uploadBlob`), `headers.js` (the firmware headers `tools/codegen` writes) |
 | `test/` | device API tests against `test/FakeDevice.js` (a fake WebUSB device); `test/bake/` the bake tests |
 
 binpack is imported by relative path (`../../../binpack/`), not installed, so edits to it apply at once. The other `file:` dependencies (node-buttonImage, the rle565 encoder) are copied in by `npm install` (`install-links=true`): after changing one, bump its version, delete its folder under `node_modules` and `npm install` again.
@@ -58,10 +58,10 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: Ke
 ```
 
 - **Modes** ([`docs/standalone.md`](../docs/standalone.md)):
-  - The device boots **standalone**, showing its own Home. In that mode it refuses every request that edits the layout (`reset`, `putImage`, `freeImages`, `setPageCount`, `setKeys`, `setPage`, `setStatusText`) with a `NOT_HOSTED` error, so call `takeControl()` first.
-  - `takeControl()` clears the layout and images like `reset()`, and starts the `key` and `pageChanged` events. `info.hosted` says which mode the device is in.
+  - The device boots **standalone**, showing its own Home. In that mode it refuses every request that edits the screen (`reset`, `putImage`, `freeImages`, `setPageCount`, `setKeys`, `setPage`, `setStatusText`) with a `NOT_HOSTED` error, so call `takeControl()` first.
+  - `takeControl()` clears the keys and images like `reset()`, and starts the `key` and `pageChanged` events. `info.hosted` says which mode the device is in.
   - `releaseControl()` gives the screen back: the device rebuilds its Home and turns the backlight on. Unplugging, closing the host or a USB suspend does the same by itself.
-  - `ping`, `getInfo`, `queryImages`, `setBacklight`, `uploadConfig` and the Wi-Fi calls work in both modes.
+  - `ping`, `getInfo`, `queryImages`, `setBacklight`, `uploadLayout` and the Wi-Fi calls work in both modes.
 - **Requests are pipelined:** every method returns a promise for its own response. A status other than OK throws a `ControlBlockError`.
 - **`putImage(id, data)`:**
   - It splits the image into chunks the device can take.
@@ -71,12 +71,12 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: Ke
   - It sets the status bar's texts. Only the fields given change, and `""` clears one.
   - Each is at most 47 bytes of UTF-8 (the font is ASCII only for now). A longer or invalid text throws before anything is sent.
   - The device has no clock: send the time yourself, e.g. `setStatusText({ right: "12:35" })`.
-- **`uploadConfig(blob, { force, onProgress })`:**
-  - It saves a standalone config (the BPAK blob from the bake, below) in the device's flash ([`docs/protocol.md`](../docs/protocol.md#configuration-upload)).
-  - The device's screen goes dark while it writes, and the device **restarts** when it's done: the connection closes by itself (no `error` event). `reconnect()` waits for the same device (by serial) to come back and resolves to a new `ControlBlock`; its `info.configSize` and `info.configCrc` show what the device kept.
+- **`uploadLayout(blob, { force, onProgress })`:**
+  - It saves a standalone layout (the BPAK blob from the bake, below) in the device's flash ([`docs/protocol.md`](../docs/protocol.md#layout-upload)).
+  - The device's screen goes dark while it writes, and the device **restarts** when it's done: the connection closes by itself (no `error` event). `reconnect()` waits for the same device (by serial) to come back and resolves to a new `ControlBlock`; its `info.layoutSize` and `info.layoutCrc` show what the device kept.
   - It resolves `{ uploaded: false }` and sends nothing if the device already has exactly this blob (`force: true` sends it anyway).
-  - A failure (`ControlBlockError`: `NO_SPACE`, `BAD_CRC`, `IO_ERROR`…) leaves the device with no config until the next good upload.
-  - `crc32(bytes)` (zlib's) is exported, as are `info.configCapacity`, `configSize` and `configCrc`.
+  - A failure (`ControlBlockError`: `NO_SPACE`, `BAD_CRC`, `IO_ERROR`…) leaves the device with no layout until the next good upload.
+  - `crc32(bytes)` (zlib's) is exported, as are `info.layoutCapacity`, `layoutSize` and `layoutCrc`.
 - **Wi-Fi** ([`docs/wifi.md`](../docs/wifi.md)): works in any mode, and `reset()` leaves it alone.
   - `setWifi(ssid, password)` stores a network and connects in the background; `clearWifi()` forgets it and turns Wi-Fi off. A missing password is an open network. A bad length or a NUL throws before anything is sent (ssid 32 bytes, password 8 to 63).
   - `getWifi()` returns `{ ssid, password, ssidBytes }` (the password in clear text). `info.wifiCredentials` says whether any are stored.
@@ -95,6 +95,6 @@ if (warnings.length) console.warn(formatEntries(warnings));
 await uploadBlob(blob, { log: console.log });   // send, wait for the restart, check what the device kept
 ```
 
-- `loadConfigFile(file)` reads a `.json` config, or the default export of a `.js`/`.mjs` module. `bakeFile(file)` loads and bakes it, with asset and script paths relative to the config's folder, and resolves `{ blob, tree, warnings }`.
-- `bake(config, host, render)` is the bake itself, with file access (`createNodeHost(dir)`) and the key renderer (`createRenderer()`) passed in.
-- `uploadBlob(blob, { serial, force, log })` is the whole upload: `uploadConfig()`, `reconnect()`, then a check of `configSize`/`configCrc`.
+- `loadLayoutFile(file)` reads a `.json` layout, or the default export of a `.js`/`.mjs` module. `bakeFile(file)` loads and bakes it, with asset and script paths relative to the layout's folder, and resolves `{ blob, tree, warnings }`.
+- `bake(layout, host, render)` is the bake itself, with file access (`createNodeHost(dir)`) and the key renderer (`createRenderer()`) passed in.
+- `uploadBlob(blob, { serial, force, log })` is the whole upload: `uploadLayout()`, `reconnect()`, then a check of `layoutSize`/`layoutCrc`.

@@ -1,5 +1,5 @@
 // The trigger dispatcher and the global op queue (docs/standalone.md "Triggers
-// and bindings", "Actions"). The config is the sample baked by host/src/bake,
+// and bindings", "Actions"). The layout is the sample baked by host/src/bake,
 // relocated in place and read through the generated structs. Home's bindings:
 // touch[0,0] tap, touch[1,0] tap + long, touch[2,0] tap (switchActivity).
 // Activity 0 ("Watch"): touch[5,0] tap (script), macro1 tap (hidKey).
@@ -7,13 +7,13 @@
 
 #include "UnitTesting.h"
 #include "Core.h"
-#include "config_env.h"
+#include "layout_env.h"
 #include "op_queue.h"
 #include "op_registry.h"
 #include "trigger_dispatch.h"
 
 using namespace SimpleLib;
-using namespace config_env;
+using namespace layout_env;
 
 namespace
 {
@@ -23,7 +23,7 @@ namespace
     struct Rig
     {
         List<uint8_t>     bytes = LoadSample();
-        const cfgdata::configRoot *root = nullptr;
+        const layoutdata::layoutRoot *root = nullptr;
         OpQueue           queue;
         TriggerDispatcher disp;
         ExecCtx           exec = {};
@@ -36,7 +36,7 @@ namespace
             root = Relocate(bytes);
             exec.ctx     = this;
             exec.now_ms  = [](void *c) { return ((Rig *)c)->now; };
-            exec.started = [](const cfgdata::op *op, void *c) {
+            exec.started = [](const layoutdata::op *op, void *c) {
                 Rig *r = (Rig *)c;
                 if (r->ran < 256)
                     r->run[r->ran++] = op->op;

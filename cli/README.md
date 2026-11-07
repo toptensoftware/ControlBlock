@@ -1,6 +1,6 @@
 # ControlBlock command line
 
-Bakes and uploads standalone-mode configs, and sets up the device's Wi-Fi. It is a thin
+Bakes and uploads standalone-mode layouts, and sets up the device's Wi-Fi. It is a thin
 wrapper: argument parsing and output only. Everything it does is the library's
 (`../host`: `bakeFile`, `uploadBlob`, `ControlBlock`), imported by relative path, so there
 is nothing to install here beyond `npm install` in `host/`.
@@ -16,24 +16,24 @@ Optionally `npm link` in `cli/` puts it on the path as `controlblock`.
 
 ## Commands
 
-### `bake <config> [-o out.bin] [--upload [--serial S] [--force]]`
+### `bake <layout> [-o out.bin] [--upload [--serial S] [--force]]`
 
-Bakes a config (`.json`, or a `.js`/`.mjs` module whose default export is the config;
-[`docs/config-format.md`](../docs/config-format.md)) into the blob the device loads. Asset
-and script paths in the config are relative to the config file.
+Bakes a layout (`.json`, or a `.js`/`.mjs` module whose default export is the layout;
+[`docs/layout-format.md`](../docs/layout-format.md)) into the blob the device loads. Asset
+and script paths in the layout are relative to the layout file.
 
-- Writes `<config name>.bin` next to the config, or the file `-o` names. With `--upload`
+- Writes `<layout name>.bin` next to the layout, or the file `-o` names. With `--upload`
   and no `-o`, nothing is written.
 - Prints any warnings, then `<file>: N bytes`.
-- A config with errors prints every error with its path in the config and exits 1;
+- A layout with errors prints every error with its path in the layout and exits 1;
   nothing is written.
 - `--upload` also uploads the blob, as `upload` does.
 
-### `upload <config|baked.bin> [--serial S] [--force]`
+### `upload <layout|baked.bin> [--serial S] [--force]`
 
-Uploads to the device over USB ([`docs/protocol.md`](../docs/protocol.md#configuration-upload)):
+Uploads to the device over USB ([`docs/protocol.md`](../docs/protocol.md#layout-upload)):
 sends the blob, waits for the device to restart and checks it kept the same blob. A `.bin`
-is sent as it is; a config is baked in memory first. If the device already has the same
+is sent as it is; a layout is baked in memory first. If the device already has the same
 blob nothing is sent, unless `--force`.
 
 ### `wifi <action> [--serial S]`
@@ -60,7 +60,7 @@ A password that starts with `-` goes after `--`: `wifi set Home -- -secret-`.
 | Code | |
 |---|---|
 | 0 | done (`wifi set`/`wait`: connected) |
-| 1 | failed: a bad config, a device error, no device, or (`wifi set`/`wait`) not connected in time or no network stored |
+| 1 | failed: a bad layout, a device error, no device, or (`wifi set`/`wait`) not connected in time or no network stored |
 | 2 | usage error (the usage is printed) |
 
 ## Examples

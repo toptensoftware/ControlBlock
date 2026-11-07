@@ -17,9 +17,9 @@ const OpDesc *OpFind(uint32_t code);
 
 // Run an op through its registry entry. An unknown op, or one with no
 // executor, is Done.
-OpStatus OpStart(ExecCtx &exec, const cfgdata::op *op, OpTask &task);
-OpStatus OpPoll(ExecCtx &exec, const cfgdata::op *op, OpTask &task);
-void     OpCancel(ExecCtx &exec, const cfgdata::op *op, OpTask &task);
+OpStatus OpStart(ExecCtx &exec, const layoutdata::op *op, OpTask &task);
+OpStatus OpPoll(ExecCtx &exec, const layoutdata::op *op, OpTask &task);
+void     OpCancel(ExecCtx &exec, const layoutdata::op *op, OpTask &task);
 
 // An OpQueue host that runs the registry's executors with `exec`, which must
 // outlive the queue.

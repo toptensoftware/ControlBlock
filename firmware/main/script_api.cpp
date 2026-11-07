@@ -203,7 +203,7 @@ namespace
         int n = lua_gettop(L);
         ScriptHost *h = H(L);
         int a = Arg(L, n, 1, "activity");
-        uint32_t index = CONFIG_ACTIVITY_NONE;
+        uint32_t index = LAYOUT_ACTIVITY_NONE;
         if (!lua_isnil(L, a)) {
             if (!IsStr(L, a))
                 return Fail(L, "switchActivity: expected an activity name or nil");
@@ -316,7 +316,7 @@ namespace
             return Fail(L, "http.post: contentType must be a string");
         size_t bl;
         const char *body = lua_tolstring(L, b, &bl);
-        if (bl > CONFIG_MAX_OP_DATA)
+        if (bl > LAYOUT_MAX_OP_DATA)
             return Fail(L, "http.post: body is too large");
 
         h->NetSlotBegin();
@@ -373,7 +373,7 @@ namespace
         if (IsStr(L, da)) {
             size_t n;
             const char *s = lua_tolstring(L, da, &n);
-            if (n == 0 || n > CONFIG_MAX_OP_DATA)
+            if (n == 0 || n > LAYOUT_MAX_OP_DATA)
                 return Fail(L, "udp.send: data must be 1 to 4096 bytes");
             data = (const uint8_t *)h->NetKeep(s, n, false);
             dl = (uint32_t)n;
@@ -391,7 +391,7 @@ namespace
                     return Fail(L, "udp.send: hex must be hex digits");
                 digits++;
             }
-            if (digits == 0 || (digits & 1) || digits / 2 > CONFIG_MAX_OP_DATA)
+            if (digits == 0 || (digits & 1) || digits / 2 > LAYOUT_MAX_OP_DATA)
                 return Fail(L, "udp.send: hex must be an even number of digits, 1 to 4096 bytes");
             uint8_t *out = h->NetKeepBuffer((size_t)digits / 2);
             int pos = 0, hi = -1;
