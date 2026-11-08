@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "standalone.h"
 #include "touch_router.h"       // TOUCH_KEY_*
 
@@ -89,7 +90,15 @@ const char *Standalone::SwitchActivity(int to)
     ActivitySwitch plan;
     if (!ActivitySwitchPlan(m_root, m_activity, to, m_devices_on, plan))
         return "activity switch: bad index";
-    if (!m_queue.PushLists(plan.lists, plan.count))
+    if (m_script.Running() && ActivitySwitchRunsScript(plan)) {
+        // The script waits for these lists, and there is one Lua state: refused, nothing changes
+        char line[96];
+        snprintf(line, sizeof(line), "script: switchActivity refused: the switch to %s runs a script",
+                 to >= 0 ? m_root->activities[to].name : "none");
+        m_script.Log(line);
+        return "switchActivity: the switch runs a script";
+    }
+    if (!m_queue.PushListsNext(plan.lists, plan.count))     // before the rest of the switching list
         return "activity switch refused: op queue full";     // nothing changed (the queue counts the drop)
 
     m_devices_on = plan.devices_on;

@@ -4,7 +4,8 @@
 // reply) yields the script's coroutine; ScriptHost::Poll resumes it when the wait is over.
 //
 //   delay(ms)                              yields; true
-//   switchActivity(name | nil)             true, or nil, err
+//   switchActivity(name | nil)             waits for the switch's ops (the script parks in the
+//                                          op queue); true, or nil, err (refused if they hold a script)
 //   hid.key(keys [, mode])                 mode tap (default), down, up; a tap yields
 //   http.get(url [, headers])              yields; body, status  (or nil, err)
 //   http.get{ url=, headers=, reply=false } the fire and forget op; true
@@ -221,7 +222,11 @@ namespace
         }
         h->m_op.sw.base.op = OP_SWITCH_ACTIVITY;
         h->m_op.sw.index   = index;
-        return RunOp(L);
+        // The switch's ops run next; the script waits for them (parked in the op queue)
+        OpStatus st = h->StartOp();
+        if (st == OpStatus::Pending || (st == OpStatus::Done && h->ParkForSwitch()))
+            return lua_yieldk(L, 0, 0, Continue);
+        return Results(L);
     }
 
     int HidKey(lua_State *L)

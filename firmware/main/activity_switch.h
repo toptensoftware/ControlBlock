@@ -3,7 +3,7 @@
 // The op lists a switch of the selected activity queues (docs/standalone.md
 // "Devices and activity switching"). Pure: the layout and the devices-on mask in,
 // the lists in order and the new mask out. Nothing is queued or committed here;
-// the executor pushes the lists (OpQueue::PushLists, all or nothing) and keeps
+// the executor pushes the lists to run next (OpQueue::PushListsNext, all or nothing) and keeps
 // the new mask only if that worked.
 //
 // Order: old.willDeactivate, new.willActivate, turnOn of each device the new
@@ -34,3 +34,7 @@ struct ActivitySwitch
 // `from` and `to` are activity indices or -1 for none. False for an index
 // outside the layout (`out` is then empty). from == to is success with no lists.
 bool ActivitySwitchPlan(const layoutdata::layoutRoot *root, int from, int to, uint32_t devices_on, ActivitySwitch &out);
+
+// Does any of the plan's lists hold a `script` op? (A script's switchActivity() waits for
+// the lists, and there is one Lua state, so such a switch is refused from a script.)
+bool ActivitySwitchRunsScript(const ActivitySwitch &plan);

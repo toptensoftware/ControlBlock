@@ -88,8 +88,11 @@ private:
     void Arm();                             // gestures, queue and dispatcher fresh from the layout
 
     // The switchActivity op (ExecCtx::switch_activity): null on success, else why not.
-    // Queues the switch's op lists at the tail, all or nothing; only if that worked
+    // Queues the switch's op lists to run next (straight after the switch op, before
+    // the rest of its list: OpQueue::PushListsNext), all or nothing; only if that worked
     // does the selection and device mask change, held keys go up and the host swap the pages.
+    // While a script runs (it waits for the lists) a switch whose lists hold a `script` op
+    // is refused: there is one Lua state.
     const char *SwitchActivity(int to);
     uint32_t KeyLongPressMs(int page, int key) const;
 

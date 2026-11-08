@@ -79,3 +79,12 @@ bool ActivitySwitchPlan(const layoutdata::layoutRoot *root, int from, int to, ui
         Add(out, o->didDeactivate, o->didDeactivate_count);
     return true;
 }
+
+bool ActivitySwitchRunsScript(const ActivitySwitch &plan)
+{
+    for (int i = 0; i < plan.count; i++)
+        for (uint32_t j = 0; j < plan.lists[i].count; j++)
+            if (plan.lists[i].ops[j]->op == OP_SCRIPT)
+                return true;
+    return false;
+}

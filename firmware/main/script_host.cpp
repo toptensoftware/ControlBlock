@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "script_host.h"
+#include "op_queue.h"
 #include "op_registry.h"
 
 #include "lua_include.h"
@@ -196,6 +197,11 @@ OpStatus ScriptHost::Start(ExecCtx &exec, const layoutdata::scriptOp *op, OpTask
 {
     if (!m_platform.realloc)
         return OpStatus::Done;                          // scripts are off
+    if (m_running) {                                    // one run at a time (one parked for a switch, say)
+        Log("script: another script is running");
+        task.error = "script: another script is running";
+        return OpStatus::Error;
+    }
     m_exec       = &exec;
     m_generation = task.generation;
     m_runs++;
@@ -258,6 +264,9 @@ OpStatus ScriptHost::Poll(ExecCtx &exec, OpTask &task)
         return OpStatus::Done;
     m_exec = &exec;
 
+    if (m_wait == ScriptWait::Switch)                   // back from the switch's ops: that time was not the script's
+        m_wall_deadline += Now() - m_parked_at;
+
     if (OpReached(Now(), m_wall_deadline)) {
         Log("script: timed out");
         m_errors++;
@@ -302,6 +311,15 @@ OpStatus ScriptHost::StartOp()
     if (st == OpStatus::Pending)
         m_wait = ScriptWait::Op;
     return st;
+}
+
+bool ScriptHost::ParkForSwitch()
+{
+    if (!m_exec->queue || !m_exec->queue->ParkActive())
+        return false;
+    m_wait      = ScriptWait::Switch;
+    m_parked_at = Now();
+    return true;
 }
 
 // ---- strings kept for network requests ----

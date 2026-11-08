@@ -101,7 +101,7 @@ More settings (HTTP timeout, Lua limits) are firmware constants today and become
 - **Home** has only keys. It has no hooks, devices, pages or bindings: Home's touch keys are the only thing it binds, and the macro pad and encoder always use the **current activity's** bindings, even while Home is in view ([`standalone.md`](standalone.md#triggers-and-bindings)).
 - A Home key that selects an activity is an ordinary button whose action is `{ "op": "switchActivity", "activity": "Watch TV" }`; there is no special key type.
 - `devices` entries must exist in the root `devices`. The packed form stores indices, and the **order matters at run time**: on a switch, `turnOn` lists run in the new activity's `devices` order and `turnOff` lists in the old activity's `devices` order.
-- Hooks (and device `turnOn`/`turnOff`) may not contain `switchActivity`. Delays between ops are the author's job: put a `delay` op in the list (a `delay` holds the whole queue, so touches queue behind a TV warm-up).
+- Hooks (and device `turnOn`/`turnOff`) may not contain `switchActivity`. Delays between ops are the author's job: put a `delay` op in the list (a `delay` holds the whole queue, so touches queue behind a TV warm-up). A switch's hooks and device lists run straight after its `switchActivity` op, before the rest of the list that switched, so a `delay` in a hook or `turnOn` also holds back the ops after `switchActivity` in that list.
 
 ## Devices
 
@@ -204,7 +204,7 @@ Every op has an `op` code. Properties beyond those listed are errors.
 | `op` | Properties | Behaviour |
 |---|---|---|
 | `delay` | `ms` (int, 1..60000) | Pauses the queue |
-| `switchActivity` | `activity` (name, or `null`) | Selects the activity (switching ops, page swap and glide). Name resolved to an index. `null` (the property is still required) selects **no activity**: turns off every device that is on, collapses the strip to Home and clears the status text (packed as index `0xFFFFFFFF`; the string `"none"` is an ordinary name lookup). Not allowed in an activity hook or a device's `turnOn`/`turnOff` list (error) |
+| `switchActivity` | `activity` (name, or `null`) | Selects the activity (switching ops, page swap and glide). Its switching ops (hooks, device `turnOn`/`turnOff`) run straight after it, before the rest of its list, so ops after it run once the devices are on. Name resolved to an index. `null` (the property is still required) selects **no activity**: turns off every device that is on, collapses the strip to Home and clears the status text (packed as index `0xFFFFFFFF`; the string `"none"` is an ordinary name lookup). Not allowed in an activity hook or a device's `turnOn`/`turnOff` list (error) |
 | `hidKey` | `keys` (string), `mode` (`"tap"` \| `"hold"` \| `"down"` \| `"up"`, default `"tap"`) | USB HID keyboard. `keys` is a chord: `"a"`, `"ctrl+c"`, `"ctrl+shift+esc"`, `"f5"`, `"enter"`. Names are checked and turned into usage codes in stage 1. `hold` is key down on `press`, key up on `release` (it only makes sense under `press`/`release`; elsewhere it's an error). *(Consumer/media keys: name the set when HID is built.)* |
 | `httpGet` | `url`, `headers`? | Fire and forget at the op level (the response is discarded). A script is needed to use the reply |
 | `httpPost` | `url`, `body`? (string), `contentType`? (default `application/x-www-form-urlencoded`), `headers`? | |
@@ -234,7 +234,7 @@ The API mirrors the ops, so a script can do anything an op can. Every call takes
 | Call | Returns | Notes |
 |---|---|---|
 | `delay(ms)` | `true` | 1..60000. Waits |
-| `switchActivity(name)` | `true`, or `nil, err` | `nil` selects no activity. Queued at the tail of the op queue (runs after the script); `nil, err` if the queue is full or the name is unknown |
+| `switchActivity(name)` | `true`, or `nil, err` | `nil` selects no activity. Waits while the switch's ops (hooks, device `turnOn`/`turnOff`) run, then returns, so code after it runs with the devices on; the waiting time doesn't count towards the 30 s limit. `nil, err` if the queue is full or the name is unknown, and `nil, "switchActivity: the switch runs a script"` (nothing changes) if any of the switch's ops is a `script` (only one script runs at a time) |
 | `hid.key(keys [, mode])` | `true` | `keys` is a chord as in `hidKey`; `mode` is `"tap"` (default, waits until the key is up and settled), `"down"` or `"up"`. `"hold"` is refused: it only means something under `press`/`release` |
 | `http.get(url [, headers])` | `body, status` | Waits for the reply (10 s timeout; `nil, "timeout"`). Bodies over 16 KB are truncated (status still returned) |
 | `http.get{ url=, headers=, reply=false }` | `true` | Fire and forget, like the `httpGet` op |
@@ -246,7 +246,7 @@ The API mirrors the ops, so a script can do anything an op can. Every call takes
 
 `headers` is a table of `{ Name = "value" }`. URLs must be `http://`. Fire-and-forget calls don't wait, so a script that only posts runs straight through.
 
-Limits: a script that runs 100 ms without waiting is stopped, a run is cancelled after 30 s in all, and the Lua heap is capped at 256 KB. A stopped or failed script is logged and the queue carries on.
+Limits: a script that runs 100 ms without waiting is stopped, a run is cancelled after 30 s in all (not counting time waiting in `switchActivity`), and the Lua heap is capped at 256 KB. A stopped or failed script is logged and the queue carries on.
 
 ## Bindings
 

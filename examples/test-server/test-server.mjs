@@ -3,7 +3,7 @@
 // Run on the PC:  node examples/test-server/test-server.mjs
 // HTTP on :8000, UDP listeners on :9 (WoL) and :9999. Allow node.exe through the Windows firewall.
 // Each line shows the client's source port, so a repeated port = a reused connection.
-// Tests: node --test examples/test-server/test-server.test.mjs
+// Tests (from the repo root): node --test "examples/**/*.test.mjs"
 
 import http from "node:http";
 import dgram from "node:dgram";
@@ -28,17 +28,23 @@ export function repr(bytes)
     return `b'${s}'`;
 }
 
-// " WoL magic, ..." for a magic packet (six 0xFF, then the MAC 16 times), else ""
-function wolNote(data)
+// A WoL magic packet (six 0xFF, then the MAC 16 times) -> { mac: "aa:bb:...", ok: all 16 repeats match }, else null
+export function wolMac(data)
 {
     if (data.length !== 102 || !data.subarray(0, 6).every(b => b === 0xff))
-        return "";
+        return null;
     const mac = data.subarray(6, 12);
     let ok = true;
     for (let i = 6; i < 102; i++)
         ok &&= data[i] === mac[i % 6];
-    const hex = [...mac].map(b => b.toString(16).padStart(2, "0")).join(":");
-    return `  WoL magic, mac=${hex}, repeats ok=${ok ? "True" : "False"}`;
+    return { mac: [...mac].map(b => b.toString(16).padStart(2, "0")).join(":"), ok };
+}
+
+// " WoL magic, ..." for a magic packet, else ""
+export function wolNote(data)
+{
+    const w = wolMac(data);
+    return w ? `  WoL magic, mac=${w.mac}, repeats ok=${w.ok ? "True" : "False"}` : "";
 }
 
 // Starts the HTTP server and UDP listeners. Resolves { httpServer, httpPort, udpPorts, close() }.

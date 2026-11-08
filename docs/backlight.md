@@ -25,6 +25,8 @@ Switching the backlight on causes a supply transient that **corrupts PSRAM trans
 - Scope the 3.3 V and 5 V rails at switch-on.
 - Waveshare's `disable_ack_check = true` on both CH422G I2C handles; measure DISP/EXIO2.
 
+**Related supply evidence (2026-11-08):** powered from the CH343P UART port alone, Wi-Fi associated but lost nearly all traffic (the first authentication timed out; 4 of 4 gateway pings lost). Connecting the native USB port fixed it. So the UART port alone can't carry the radio's transmit current either, which supports the supply-dip explanation. Note which ports power the board when running the experiments above.
+
 ### Possible mod: PWM dimming and a soft switch-on
 
 The LED driver is an MPS **MP3302** (boost, internal soft-start, 10 µF input capacitor recommended). Its EN pin, driven from EXIO2 through a resistor today, also dims ([datasheet application pages](https://www.omo-ic.com/pdf/278578/MP3302DD-LF-P/P7-P9.html), Rev 0.98; [full datasheet](https://www.farnell.com/datasheets/2914860.pdf)):
@@ -110,3 +112,10 @@ Tests come first and run on the host (`firmware/test/`); the backlight itself ca
 - **State is reported** in `GET_INFO` `flags` bit 0, so a reconnecting host knows if the screen is dark.
 - **No coordinates in `WAKE`:** it carries only a time. Any touch wakes.
 - **No brightness:** on or off only. Possible only with the PWM mod above (not planned).
+
+## Open items
+
+- **Standalone idle dim and screen off with no activity** (backlog, from the urem port, `urem2/README.md`): urem
+  turned the display off when no activity was selected, dimmed it after 8 s idle, and the first touch only woke it.
+  Standalone mode has no idle policy. Pick up once the backlight can switch (see the switch-on glitch above); dimming
+  needs the PWM mod.

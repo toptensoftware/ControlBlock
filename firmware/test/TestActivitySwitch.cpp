@@ -77,6 +77,18 @@ Fact("ActivitySwitch None To A Runs willActivate, TurnOns, didActivate")
     Assert(s.devices_on == (TV | AVR));
 }
 
+Fact("ActivitySwitch Tells Whether A Plan Runs A Script")
+{
+    Cfg c;
+    ActivitySwitch s;
+    Assert(ActivitySwitchPlan(&c.root, NONE, A, 0, s));
+    Assert(!ActivitySwitchRunsScript(s));
+    c.dev[1].turnOn[0]->op = OP_SCRIPT;                     // avr's turnOn is now a script
+    Assert(ActivitySwitchRunsScript(s));
+    Assert(ActivitySwitchPlan(&c.root, A, NONE, TV | AVR, s));
+    Assert(!ActivitySwitchRunsScript(s));                   // not in this plan (turnOffs, hooks)
+}
+
 Fact("ActivitySwitch A To B Follows The Spec Order And Keeps The Shared Device On")
 {
     Cfg c;

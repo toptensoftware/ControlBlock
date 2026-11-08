@@ -1,11 +1,12 @@
-// Tests for test-server.mjs. From the repo root:  node --test examples/test-server/
-// The server runs on free ports with short delays and a captured log.
+// Tests for test-server.mjs. From the repo root:  node --test "examples/**/*.test.mjs"
+// (a directory argument doesn't work with Node 24's --test). The server runs on free ports with short delays and
+// a captured log.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import dgram from "node:dgram";
-import { startTestServer, repr, timestamp } from "./test-server.mjs";
+import { startTestServer, repr, timestamp, wolMac, wolNote } from "./test-server.mjs";
 
 const lines = [];
 let srv;
@@ -222,4 +223,28 @@ test("UDP spots WoL magic and checks the repeats", async () => {
     await sendUdp(port, Buffer.alloc(102, 0x11));
     await waitFor(() => seen().length > 0);
     assert.doesNotMatch(seen()[0], /WoL/);
+});
+
+test("wolMac decodes a magic packet and checks the repeats", () => {
+    const mac = "01:23:45:67:89:ab";
+    assert.deepEqual(wolMac(wol(mac, Array(16).fill(mac))), { mac, ok: true });
+    assert.deepEqual(wolMac(wol(mac, [...Array(15).fill(mac), "01:23:45:67:89:ac"])), { mac, ok: false });
+});
+
+test("wolMac is null for anything but a magic packet", () => {
+    const mac = "01:23:45:67:89:ab";
+    assert.equal(wolMac(wol(mac, Array(15).fill(mac))), null);                     // wrong length
+    assert.equal(wolMac(Buffer.alloc(102, 0x11)), null);                            // no FF header
+    const noHeader = wol(mac, Array(16).fill(mac));
+    noHeader[3] = 0;
+    assert.equal(wolMac(noHeader), null);
+    assert.equal(wolMac(Buffer.alloc(0)), null);
+});
+
+test("wolNote output is unchanged", () => {
+    const mac = "01:23:45:67:89:ab";
+    assert.equal(wolNote(wol(mac, Array(16).fill(mac))), "  WoL magic, mac=01:23:45:67:89:ab, repeats ok=True");
+    assert.equal(wolNote(wol(mac, [...Array(15).fill(mac), "01:23:45:67:89:ac"])),
+                 "  WoL magic, mac=01:23:45:67:89:ab, repeats ok=False");
+    assert.equal(wolNote(Buffer.alloc(102, 0x11)), "");
 });

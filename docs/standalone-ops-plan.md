@@ -6,7 +6,7 @@ Written by a planning sub-agent (read-only; it did not read the binpack source o
 
 - **Superseded, steps 1 and 2 (offset codegen):** the plan to generate `op_spec.gen.h` field offsets, write offsets by hand with a sentinel test, and make `layout_blob.cpp` walk the blob by offsets through a hand-written struct header and view class was not followed. binpack now generates the C structs (`layout_types.gen.h`, via `node tools/codegen/gen-types.js`), `layout_types.h` adds the limits and `LAYOUT_ACTIVITY_NONE`, and the validator reads the blob through those structs. the hand-written header and view class are gone; the host tests are built 32-bit (`platform: "x86"`) so the structs match the device. `op_registry.cpp` holds the executor table and `op_exec.h` the executor protocol.
 - **Superseded, section G and step 3 (queue entries):** the queue holds list references (`{ops, count, param slot, release}`, ring of 40, `PushLists` all or nothing), not expanded `{op, param slot}` entries; see "Actions" in [`standalone.md`](standalone.md). The param pool is `param_pool.h`.
-- **Activities are no longer out of scope:** `switchActivity` has an executor, with a "none" target (`null`), and the switch is planned, queued and applied as described under "Devices and activity switching" in [`standalone.md`](standalone.md). `switchActivity` from a script (section F) still enqueues at the tail, as the executor does. A refused switch (ring full) returns an error string and changes nothing; the script call would return `nil, err`.
+- **Activities are no longer out of scope:** `switchActivity` has an executor, with a "none" target (`null`), and the switch is planned, queued and applied as described under "Devices and activity switching" in [`standalone.md`](standalone.md). `switchActivity` from a script (section F) queues its lists as the executor does (now to run next, not at the tail: see "Switch ops run next" in [`standalone.md`](standalone.md)). A refused switch (ring full) returns an error string and changes nothing; the script call would return `nil, err`.
 - **Dropped:** per-key `longPressMs` for activity pages (the one global setting is enough).
 
 ## Phasing and scope decisions (latest, these win over the text below)
@@ -102,7 +102,7 @@ void     cancel(ExecCtx&, OpTask&)
 
 - The script op is the queue's active op, so the queue is paused while the script runs.
 - Calls made by the script run **immediately and in the script's own order**; nothing else in the queue can interleave. The guarantee is the queue's single active slot.
-- `switchActivity` from a script (and any hook ops it pushes) **enqueues** at the queue tail, so those ops run after the script finishes.
+- `switchActivity` from a script (and any hook ops it pushes) **enqueues** at the queue tail, so those ops run after the script finishes. (Superseded: a switch's lists now run straight after the switching op, before the rest of its list; see "Switch ops run next" in [`standalone.md`](standalone.md).)
 - If the queue is full, the Lua call returns `nil, "queue full"`.
 
 ### G. Param through the queue

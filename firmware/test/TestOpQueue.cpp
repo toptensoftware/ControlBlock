@@ -16,13 +16,21 @@ namespace
     // Ops are identified by their code; the fake executor decides what each does
     struct Rig
     {
-        layoutdata::op ops[8];
-        layoutdata::op *list[8];
+        layoutdata::op ops[16];
+        layoutdata::op *list[16];
         OpQueue      queue;
+
+        // Called by the fake start after it logged the op (as the switchActivity
+        // executor pushes from inside its start)
+        void       (*on_start)(Rig &r, uint32_t code) = nullptr;
+        // Called by the fake poll before it answers (as a script resumed by a poll)
+        void       (*on_poll)(Rig &r, uint32_t code) = nullptr;
+        int          tag = 0;                                // scratch for the hooks
 
         // What the fake executor is told to do
         OpStatus     start_result = OpStatus::Done;          // for every op
         int          pending_polls = 0;                      // a Pending op stays so for this many polls
+        int          pend[17];                               // >= 0: op 100+i starts Pending for this many polls, whatever start_result says (16: any other code)
         bool         poll_error = false;
         const char  *error_text = "boom";
 
@@ -33,11 +41,19 @@ namespace
         uint32_t     generations[MAX_LOG];
         int          polls = 0;
         uint32_t     cancelled[MAX_LOG]; int n_cancelled = 0;
-        int          polls_left = 0;
+        int          left[17];                               // polls each op has left as Pending
+        int          events[MAX_LOG];   int n_events = 0;    // start: +code, poll: -code
+
+        void Event(int e) { if (n_events < MAX_LOG) events[n_events++] = e; }
+        static int Idx(uint32_t code) { return code >= 100 && code < 116 ? (int)code - 100 : 16; }
 
         Rig()
         {
-            for (int i = 0; i < 8; i++) {
+            for (int i = 0; i < 17; i++) {
+                pend[i] = -1;
+                left[i] = 0;
+            }
+            for (int i = 0; i < 16; i++) {
                 ops[i].op = 100 + i;
                 list[i]   = &ops[i];
             }
@@ -53,16 +69,25 @@ namespace
                     r->generations[r->n_started] = t.generation;
                     r->n_started++;
                 }
-                r->polls_left = r->pending_polls;
+                r->Event((int)op->op);
+                int i = Idx(op->op);
+                r->left[i] = r->pend[i] >= 0 ? r->pend[i] : r->pending_polls;
+                if (r->on_start)
+                    r->on_start(*r, op->op);
+                if (r->pend[i] >= 0)
+                    return OpStatus::Pending;
                 if (r->start_result == OpStatus::Error)
                     t.error = r->error_text;
                 return r->start_result;
             };
-            h.poll = [](const layoutdata::op *, OpTask &t, void *c) {
+            h.poll = [](const layoutdata::op *op, OpTask &t, void *c) {
                 Rig *r = (Rig *)c;
                 r->polls++;
+                r->Event(-(int)op->op);
+                if (r->on_poll)
+                    r->on_poll(*r, op->op);
                 if (r->poll_error) { t.error = r->error_text; return OpStatus::Error; }
-                return r->polls_left-- > 0 ? OpStatus::Pending : OpStatus::Done;
+                return r->left[Idx(op->op)]-- > 0 ? OpStatus::Pending : OpStatus::Done;
             };
             h.cancel = [](const layoutdata::op *op, OpTask &, void *c) {
                 Rig *r = (Rig *)c;
@@ -475,6 +500,447 @@ Fact("OpQueue Ring Wraps Over Many Cycles With Params")
         r.Drain();
         Assert(r.n_started == 2 && r.started[0] == 100 && r.started[1] == 101);
         Assert(strcmp(r.params[1], "w") == 0 && r.releasing[0] == !!(i & 1));
+    }
+    Assert(r.queue.Dropped() == 0 && r.queue.ParamsInUse() == 0 && r.queue.Count() == 0);
+}
+
+// ---- PushListsNext: insert straight after the active op, ahead of the rest of its list
+// (an activity switch's lists run before the ops that follow switchActivity)
+
+namespace
+{
+    bool StartedAre(const Rig &r, const uint32_t *want, int n)
+    {
+        if (r.n_started != n)
+            return false;
+        for (int i = 0; i < n; i++)
+            if (r.started[i] != want[i])
+                return false;
+        return true;
+    }
+}
+
+Fact("OpQueue PushListsNext Into An Idle Queue Runs Ahead Of Queued Lists")
+{
+    Rig r;
+    OpListRef one = { r.list + 10, 1 };
+    Assert(r.queue.PushListsNext(&one, 1));             // empty queue
+    Assert(r.queue.Lists() == 1 && r.queue.Count() == 1);
+    r.Drain();
+    const uint32_t a[1] = { 110 };
+    Assert(StartedAre(r, a, 1));
+
+    // Idle with lists queued: ahead of them all
+    Rig q;
+    q.Push(2);
+    OpListRef two = { q.list + 10, 2 };
+    Assert(q.queue.PushListsNext(&two, 1));
+    q.Drain();
+    const uint32_t b[4] = { 110, 111, 100, 101 };
+    Assert(StartedAre(q, b, 4));
+}
+
+Fact("OpQueue PushListsNext Mid List Runs Before The Rest Of The List And Older Lists")
+{
+    Rig r;
+    r.Push(3);                                          // 100 101 102
+    Assert(r.queue.PushList(1, r.list + 3));            // 103, queued behind it
+    r.on_start = [](Rig &g, uint32_t code) {
+        if (code != 100)
+            return;
+        OpListRef refs[3] = { { g.list + 10, 1 }, { nullptr, 0 }, { g.list + 11, 2 } };
+        Assert(g.queue.PushListsNext(refs, 3));
+        // two inserted, the remainder of the current list split off, and 103
+        Assert(g.queue.Lists() == 4 && g.queue.Count() == 6);
+    };
+    r.Drain();
+    const uint32_t want[7] = { 100, 110, 111, 112, 101, 102, 103 };
+    Assert(StartedAre(r, want, 7));
+    Assert(r.queue.Lists() == 0 && r.queue.Count() == 0);
+}
+
+Fact("OpQueue PushListsNext Twice From One Op Keeps Order And Nests Depth First")
+{
+    Rig r;
+    r.Push(3);
+    r.on_start = [](Rig &g, uint32_t code) {
+        if (code == 100) {                              // two inserts by one op: first in, first run
+            Assert(g.queue.PushList(1, g.list + 7));    // a trigger's tail push meanwhile
+            OpListRef a = { g.list + 10, 1 }, b = { g.list + 11, 1 };
+            Assert(g.queue.PushListsNext(&a, 1));
+            Assert(g.queue.PushListsNext(&b, 1));
+        }
+        else if (code == 110) {                         // an inserted op inserting: right after it
+            OpListRef c = { g.list + 13, 1 };
+            Assert(g.queue.PushListsNext(&c, 1));
+        }
+    };
+    r.Drain();
+    const uint32_t want[7] = { 100, 110, 113, 111, 101, 102, 107 };
+    Assert(StartedAre(r, want, 7));
+}
+
+Fact("OpQueue PushListsNext At The End Of A List Needs No Split")
+{
+    Rig r;
+    r.Push(1);                                          // 100 is the whole list
+    r.Push(1);                                          // then 100 again
+    r.on_start = [](Rig &g, uint32_t code) {
+        if (code != 100 || g.n_started != 1)
+            return;
+        OpListRef a = { g.list + 10, 1 };
+        Assert(g.queue.PushListsNext(&a, 1));
+        Assert(g.queue.Lists() == 2);                   // no remainder entry
+    };
+    r.Drain();
+    const uint32_t want[3] = { 100, 110, 100 };
+    Assert(StartedAre(r, want, 3));
+}
+
+Fact("OpQueue PushListsNext Remainder Keeps Its Param And Release Flag")
+{
+    Rig r;
+    Assert(r.Push(3, true, "abc"));
+    r.on_start = [](Rig &g, uint32_t code) {
+        if (code != 100)
+            return;
+        OpListRef a = { g.list + 10, 1, false, "x" };
+        Assert(g.queue.PushListsNext(&a, 1));
+        Assert(g.queue.ParamsInUse() == 2);
+    };
+    r.Drain();
+    const uint32_t want[4] = { 100, 110, 101, 102 };
+    Assert(StartedAre(r, want, 4));
+    Assert(strcmp(r.params[1], "x") == 0 && !r.releasing[1]);
+    const int own[3] = { 0, 2, 3 };
+    for (int i = 0; i < 3; i++)
+        Assert(strcmp(r.params[own[i]], "abc") == 0 && r.releasing[own[i]]);
+    Assert(r.queue.ParamsInUse() == 0);
+}
+
+Fact("OpQueue PushListsNext Counts The Split In Its Room Check And Refuses Cleanly")
+{
+    // The current list has ops left (+1 for its remainder, +1 kept for a resume
+    // marker should the op park): 2 lists need 4 free entries, and take 3
+    for (int queued = OP_QUEUE_SIZE - 4; queued <= OP_QUEUE_SIZE - 3; queued++) {
+        Rig r;
+        Assert(r.Push(3, false, "abc"));
+        for (int i = 0; i < queued; i++)
+            Assert(r.queue.PushList(1, r.list + 7));
+        r.queue.Poll();                                 // 100 done; 101 102 left in the current list
+        Assert(r.queue.Lists() == queued);
+        int count = r.queue.Count();
+        OpListRef refs[2] = { { r.list + 10, 1, false, "x" }, { r.list + 11, 1 } };
+        bool ok = r.queue.PushListsNext(refs, 2);
+        if (queued == OP_QUEUE_SIZE - 4) {
+            Assert(ok && r.queue.Lists() == OP_QUEUE_SIZE - 1 && r.queue.Dropped() == 0);
+            Assert(r.queue.Count() == count + 2);
+        }
+        else {
+            Assert(!ok);
+            Assert(r.queue.Dropped() == 2);             // the refused lists, not the split
+            Assert(r.queue.Lists() == queued && r.queue.Count() == count);
+            Assert(r.queue.ParamsInUse() == 1);         // only the current list's
+            r.Drain();
+            Assert(r.n_started == 3 + queued);
+            Assert(r.started[1] == 101 && r.started[2] == 102 && r.started[3] == 107);
+        }
+        r.Drain();
+        Assert(r.queue.ParamsInUse() == 0);
+    }
+
+    // The current list is spent: no split, so 2 lists need 3 free entries (one for a marker)
+    Rig s;
+    Assert(s.Push(1));
+    for (int i = 0; i < OP_QUEUE_SIZE - 3; i++)
+        Assert(s.queue.PushList(1, s.list + 7));
+    s.queue.Poll();
+    OpListRef refs[2] = { { s.list + 10, 1 }, { s.list + 11, 1 } };
+    Assert(s.queue.PushListsNext(refs, 2));
+    Assert(s.queue.Lists() == OP_QUEUE_SIZE - 1);
+    Assert(!s.queue.PushListsNext(refs, 1));            // the last entry stays free for the marker
+    Assert(s.queue.Lists() == OP_QUEUE_SIZE - 1);
+}
+
+Fact("OpQueue PushListsNext Rolls Back On A Full Param Pool")
+{
+    Rig r;
+    Assert(r.Push(3, false, "abc"));
+    for (int i = 0; i < PARAM_SLOTS - 2; i++)
+        Assert(r.Push(1, false, "p"));
+    r.queue.Poll();                                     // 100 done, 101 102 left
+    int lists = r.queue.Lists(), count = r.queue.Count();
+    OpListRef refs[2] = { { r.list + 10, 1, false, "a" }, { r.list + 11, 1, false, "b" } };
+    Assert(!r.queue.PushListsNext(refs, 2));
+    Assert(r.queue.Lists() == lists && r.queue.Count() == count);   // not split either
+    Assert(r.queue.ParamsInUse() == PARAM_SLOTS - 1 && r.queue.ParamDropped() == 1);
+    r.Drain();
+    Assert(r.started[1] == 101 && r.started[2] == 102);
+    Assert(r.queue.ParamsInUse() == 0);
+}
+
+Fact("OpQueue Cancel After A Split Frees Every Param")
+{
+    Rig r;
+    r.start_result  = OpStatus::Pending;
+    r.pending_polls = 100;
+    Assert(r.Push(3, false, "abc"));
+    Assert(r.Push(1, false, "def"));
+    r.on_start = [](Rig &g, uint32_t code) {
+        if (code != 100)
+            return;
+        OpListRef a = { g.list + 10, 2, false, "x" };
+        Assert(g.queue.PushListsNext(&a, 1));
+    };
+    r.queue.Poll();                                     // 100 pending, inserted behind it
+    Assert(r.queue.ParamsInUse() == 3 && r.queue.Count() == 5);
+    r.queue.Cancel();
+    Assert(r.queue.ParamsInUse() == 0 && r.queue.Count() == 0 && r.queue.Lists() == 0);
+    Assert(!r.queue.Poll());
+}
+
+Fact("OpQueue PushListsNext Wraps The Ring Over Many Cycles")
+{
+    Rig r;
+    r.on_start = [](Rig &g, uint32_t code) {
+        if (code != 100)
+            return;
+        OpListRef refs[2] = { { g.list + 10, 1, false, "v" }, { g.list + 11, 1 } };
+        Assert(g.queue.PushListsNext(refs, 2));
+    };
+    for (int i = 0; i < 5 * OP_QUEUE_SIZE; i++) {
+        Assert(r.Push(2, i & 1, "w"));
+        Assert(r.queue.PushList(1, r.list + 7));
+        r.n_started = 0;
+        r.Drain();
+        const uint32_t want[5] = { 100, 110, 111, 101, 107 };
+        Assert(StartedAre(r, want, 5));
+        Assert(strcmp(r.params[1], "v") == 0 && strcmp(r.params[3], "w") == 0 && r.releasing[3] == !!(i & 1));
+    }
+    Assert(r.queue.Dropped() == 0 && r.queue.ParamsInUse() == 0 && r.queue.Count() == 0);
+}
+
+// ---- ParkActive: the active op waits (parked) while the lists it pushed next
+// run, then resumes before the rest of its list (a script's switchActivity())
+
+namespace
+{
+    bool EventsAre(const Rig &r, const int *want, int n)
+    {
+        if (r.n_events != n)
+            return false;
+        for (int i = 0; i < n; i++)
+            if (r.events[i] != want[i])
+                return false;
+        return true;
+    }
+
+    // Op 100 pushes 110 and 111 next and parks
+    void PushTwoAndPark(Rig &g, uint32_t code)
+    {
+        if (code != 100)
+            return;
+        OpListRef refs[2] = { { g.list + 10, 1, false, "x" }, { g.list + 11, 1 } };
+        Assert(g.queue.PushListsNext(refs, 2));
+        Assert(g.queue.ParkActive());
+    }
+}
+
+Fact("OpQueue Parked Op Resumes After The Lists It Pushed Next, Before The Rest Of Its List")
+{
+    Rig r;
+    r.pend[0] = 0;                                      // 100: Pending, Done on its first poll
+    Assert(r.Push(3, true, "abc"));
+    Assert(r.queue.PushList(1, r.list + 7));            // queued behind
+    r.on_start = PushTwoAndPark;
+    Assert(r.queue.Poll());                             // 100 starts and parks
+    Assert(r.queue.Parked() && !r.queue.Active());
+    Assert(r.queue.Count() == 5);                       // 110 111 101 102 107: the parked op is not waiting
+    Assert(r.queue.ParamsInUse() == 2);                 // the parked op keeps its ref
+    r.Drain();
+    const int want[7] = { 100, 110, 111, -100, 101, 102, 107 };
+    Assert(EventsAre(r, want, 7));
+    Assert(!r.queue.Parked() && r.queue.Lists() == 0 && r.queue.Count() == 0);
+    Assert(r.queue.ParamsInUse() == 0 && r.queue.Errors() == 0);
+    Assert(strcmp(r.params[3], "abc") == 0 && r.releasing[3]);     // 101 kept its list's param
+}
+
+Fact("OpQueue Parked Op Resumes Even As The Last Op With Nothing Behind It")
+{
+    Rig r;
+    r.pend[0] = 0;
+    Assert(r.Push(1));
+    r.on_start = PushTwoAndPark;
+    r.Drain();
+    const int want[4] = { 100, 110, 111, -100 };
+    Assert(EventsAre(r, want, 4));
+    Assert(!r.queue.Parked() && !r.queue.Active() && r.queue.Lists() == 0);
+}
+
+Fact("OpQueue ParkActive Without Lists Pushed Next Does Not Park")
+{
+    Rig r;
+    r.pend[0] = 0;
+    Assert(r.Push(2));
+    r.on_start = [](Rig &g, uint32_t code) {
+        if (code != 100)
+            return;
+        Assert(g.queue.PushList(1, g.list + 7));        // a tail push is not a next-push
+        Assert(!g.queue.ParkActive());
+    };
+    r.Drain();
+    const int want[4] = { 100, -100, 101, 107 };        // an ordinary Pending op
+    Assert(EventsAre(r, want, 4));
+    Assert(!r.queue.Parked());
+
+    // No op running: nothing to park, even after a next-push into the idle queue
+    Rig idle;
+    idle.pend[0] = 0;
+    OpListRef a = { idle.list + 10, 1 };
+    Assert(idle.queue.PushListsNext(&a, 1));
+    Assert(!idle.queue.ParkActive());
+    Assert(idle.Push(1));
+    idle.Drain();
+    const int want2[3] = { 110, 100, -100 };            // 100 holds as an ordinary Pending op, not parked
+    Assert(EventsAre(idle, want2, 3));
+    Assert(!idle.queue.Parked() && idle.queue.Lists() == 0);
+}
+
+Fact("OpQueue Next-Push From An Op Run While Parked Lands Before The Resume")
+{
+    Rig r;
+    r.pend[0] = 0;
+    Assert(r.Push(2));
+    r.on_start = [](Rig &g, uint32_t code) {
+        PushTwoAndPark(g, code);
+        if (code == 110) {                              // a nested switch from a hook
+            OpListRef c = { g.list + 13, 1 };
+            Assert(g.queue.PushListsNext(&c, 1));
+            Assert(!g.queue.ParkActive());              // one parked op at a time
+        }
+    };
+    r.Drain();
+    const int want[6] = { 100, 110, 113, 111, -100, 101 };
+    Assert(EventsAre(r, want, 6));
+    Assert(r.queue.Lists() == 0 && r.queue.ParamsInUse() == 0);
+}
+
+Fact("OpQueue Delay In A List Pushed Next Holds The Parked Op And The Rest")
+{
+    Rig r;
+    r.pend[0]  = 0;
+    r.pend[10] = 2;                                     // 110 is a delay: Pending for two polls
+    Assert(r.Push(2));
+    r.on_start = PushTwoAndPark;
+    r.Drain();
+    const int want[8] = { 100, 110, -110, -110, -110, 111, -100, 101 };
+    Assert(EventsAre(r, want, 8));
+}
+
+Fact("OpQueue Parked Op Can Park Again After It Resumes")
+{
+    Rig r;
+    r.pend[0] = 1;                                      // 100: Pending for its first poll, Done on the second
+    Assert(r.Push(2));
+    r.on_start = [](Rig &g, uint32_t code) {
+        if (code != 100)
+            return;
+        OpListRef a = { g.list + 10, 1 };
+        Assert(g.queue.PushListsNext(&a, 1));
+        Assert(g.queue.ParkActive());
+    };
+    r.on_poll = [](Rig &g, uint32_t code) {             // the second switchActivity() of a script
+        if (code != 100 || g.tag++ != 0)
+            return;
+        OpListRef b = { g.list + 11, 1 };
+        Assert(g.queue.PushListsNext(&b, 1));
+        Assert(g.queue.ParkActive());
+    };
+    r.Drain();
+    const int want[6] = { 100, 110, -100, 111, -100, 101 };
+    Assert(EventsAre(r, want, 6));
+    Assert(r.queue.Lists() == 0 && !r.queue.Parked());
+}
+
+Fact("OpQueue Park Request Of An Op That Then Finishes Is Dropped")
+{
+    Rig r;                                              // 100 is Done at start despite asking to park
+    Assert(r.Push(2));
+    r.on_start = PushTwoAndPark;
+    r.Drain();
+    const int want[4] = { 100, 110, 111, 101 };         // the marker is skipped
+    Assert(EventsAre(r, want, 4));
+    Assert(!r.queue.Parked() && r.queue.Lists() == 0 && r.queue.ParamsInUse() == 0);
+}
+
+Fact("OpQueue Keeps A Ring Entry For The Resume Marker")
+{
+    // 2 lists + the remainder of the current list + the marker: 4 free entries needed
+    for (int queued = OP_QUEUE_SIZE - 4; queued <= OP_QUEUE_SIZE - 3; queued++) {
+        Rig r;
+        r.pend[0] = 0;
+        r.tag     = queued;
+        Assert(r.Push(3));
+        for (int i = 0; i < queued; i++)
+            Assert(r.queue.PushList(1, r.list + 7));
+        r.on_start = [](Rig &g, uint32_t code) {
+            if (code != 100)
+                return;
+            OpListRef refs[2] = { { g.list + 10, 1 }, { g.list + 11, 1 } };
+            bool fits = g.tag == OP_QUEUE_SIZE - 4;
+            Assert(g.queue.PushListsNext(refs, 2) == fits);
+            Assert(g.queue.ParkActive() == fits);
+            if (fits)
+                Assert(g.queue.Lists() == OP_QUEUE_SIZE);
+        };
+        r.Drain();
+        Assert(r.queue.ParamsInUse() == 0 && r.queue.Lists() == 0);
+        Assert(r.n_started == 3 + queued + (queued == OP_QUEUE_SIZE - 4 ? 2 : 0));
+    }
+}
+
+Fact("OpQueue Cancel While Parked Cancels The Active And The Parked Op And Frees Every Param")
+{
+    Rig r;
+    r.pend[0]  = 100;
+    r.pend[10] = 100;                                   // 110 holds the queue
+    Assert(r.Push(3, false, "abc"));
+    Assert(r.Push(1, false, "def"));
+    r.on_start = PushTwoAndPark;
+    r.queue.Poll();                                     // 100 parks
+    r.queue.Poll();                                     // 110 starts, pending
+    Assert(r.queue.Parked() && r.queue.Active());
+    Assert(r.queue.ParamsInUse() == 3);
+    r.queue.Cancel();
+    Assert(r.n_cancelled == 2 && r.cancelled[0] == 110 && r.cancelled[1] == 100);
+    Assert(!r.queue.Parked() && !r.queue.Active());
+    Assert(r.queue.ParamsInUse() == 0 && r.queue.Count() == 0 && r.queue.Lists() == 0);
+    Assert(!r.queue.Poll());
+
+    // Usable afterwards
+    r.on_start = nullptr;
+    r.pend[0]  = -1;
+    r.n_started = 0;
+    r.Push(1);
+    r.Drain();
+    Assert(r.n_started == 1 && r.started[0] == 100);
+}
+
+Fact("OpQueue Park And Resume Wraps The Ring Over Many Cycles")
+{
+    Rig r;
+    r.pend[0]  = 0;
+    r.on_start = PushTwoAndPark;
+    for (int i = 0; i < 5 * OP_QUEUE_SIZE; i++) {
+        Assert(r.Push(2, i & 1, "w"));
+        Assert(r.queue.PushList(1, r.list + 7));
+        r.n_started = 0;
+        r.n_events  = 0;
+        r.Drain();
+        const int want[6] = { 100, 110, 111, -100, 101, 107 };
+        Assert(EventsAre(r, want, 6));
+        Assert(strcmp(r.params[1], "x") == 0 && strcmp(r.params[3], "w") == 0 && r.releasing[3] == !!(i & 1));
+        Assert(!r.queue.Parked() && r.queue.Lists() == 0);
     }
     Assert(r.queue.Dropped() == 0 && r.queue.ParamsInUse() == 0 && r.queue.Count() == 0);
 }

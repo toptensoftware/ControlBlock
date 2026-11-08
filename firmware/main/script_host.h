@@ -10,6 +10,8 @@
 //            the end, Pending if it yielded waiting on something.
 //   Poll   - the thing it waits on (a sub-op, or an HTTP reply) is checked; when
 //            it is over the script is resumed. The wall timeout is checked here.
+//            switchActivity() parks the script in the op queue (OpQueue::ParkActive)
+//            while the switch's ops run; the queue polls it again after them.
 //   Cancel - takeover/release: the sub-op is cancelled and the coroutine dropped.
 //
 // The script API (script_api.cpp) calls the same executors as the op queue
@@ -67,6 +69,7 @@ enum class ScriptWait : uint8_t
     None,
     Op,             // the scratch op is Pending (delay, hid tap)
     Reply,          // an HTTP reply (http.get)
+    Switch,         // the ops of a switchActivity() (the script is parked in the op queue)
 };
 
 class ScriptHost
@@ -99,6 +102,10 @@ public:
     OpStatus StartOp();
     // After a Pending StartOp / an HTTP submit, record what to wait for
     void SetWaiting(ScriptWait w)  { m_wait = w; }
+    // After a switch pushed its ops to run next: park the script in the op queue so they
+    // run, then Poll resumes it (the parked time does not count towards SCRIPT_WALL_MS).
+    // False (the caller carries on) if the switch pushed nothing.
+    bool ParkForSwitch();
 
     // A string kept for a network request: copied into the next slot of the ring; null when
     // the request does not fit. Call NetSlotBegin first, then NetKeep for each string.
@@ -136,6 +143,7 @@ private:
     ScriptWait      m_wait = ScriptWait::None;
     uint32_t        m_slice_start = 0;
     uint32_t        m_wall_deadline = 0;
+    uint32_t        m_parked_at = 0;        // Switch: when the script stepped aside
     uint32_t        m_runs = 0, m_errors = 0;
 
     uint8_t        *m_net_arena = nullptr;

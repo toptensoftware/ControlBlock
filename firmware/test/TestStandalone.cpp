@@ -33,6 +33,7 @@ namespace
         NetHost      *net = nullptr;            // the network ops' host (null: they do nothing)
         bool          scripts = false;          // give the Lua runtime a heap
         int           script_logs = 0;
+        char          script_log[512] = {};     // every script log line, each followed by '|'
         ActivityHost  ah = {};
         int           applied[16];              // ApplyActivity(index) calls, in order
         int           n_applied = 0;
@@ -59,7 +60,12 @@ namespace
             if (scripts) {
                 h.script.ctx     = this;
                 h.script.realloc = [](void *p, size_t n, void *) -> void * { if (!n) { free(p); return nullptr; } return realloc(p, n); };
-                h.script.log     = [](const char *, void *c) { ((Rig *)c)->script_logs++; };
+                h.script.log     = [](const char *line, void *c) {
+                    Rig *r = (Rig *)c;
+                    r->script_logs++;
+                    strncat(r->script_log, line, sizeof(r->script_log) - strlen(r->script_log) - 2);
+                    strcat(r->script_log, "|");
+                };
             }
             ah.ctx     = this;
             ah.apply   = [](int index, void *c) {
@@ -88,15 +94,21 @@ namespace
         void Settle() { for (int i = 0; i < 50; i++) { Drain(); now += 100; } }
     };
 
-    // The nth switchActivity op bound on Home (key 2 is the first: Watch, key 9 the second: none)
-    layoutdata::switchActivityOp *HomeSwitch(const layoutdata::layoutRoot *root, int nth)
+    // The nth Home binding that starts with a switchActivity op (key 2 is the first: Watch, key 9 the second: none)
+    layoutdata::binding *HomeSwitchBinding(const layoutdata::layoutRoot *root, int nth)
     {
         for (uint32_t i = 0; i < root->homePage.bindings_count; i++) {
             layoutdata::binding &b = root->homePage.bindings[i];
             if (b.ops_count && b.ops[0]->op == SWITCH && nth-- == 0)
-                return (layoutdata::switchActivityOp *)b.ops[0];
+                return &b;
         }
         return nullptr;
+    }
+    // Its switchActivity op
+    layoutdata::switchActivityOp *HomeSwitch(const layoutdata::layoutRoot *root, int nth)
+    {
+        layoutdata::binding *b = HomeSwitchBinding(root, nth);
+        return b ? (layoutdata::switchActivityOp *)b->ops[0] : nullptr;
     }
 
     const uint32_t WOL = OP_SEND_WOL, GET = OP_HTTP_GET, POST = OP_HTTP_POST, UDP = OP_UDP_PACKET, SCRIPT = OP_SCRIPT;
@@ -183,10 +195,67 @@ Fact("Standalone SwitchActivity Queued Back To Back Runs In Order")
     Assert(r.sa.Queued() == 2);
     r.Drain();
     Assert(r.ran == 6);
-    // Both key ops were queued first, so both switches start before either's ops; the
-    // second is planned from the state the first left, and its ops land after the first's
-    const uint32_t want[6] = { SWITCH, SWITCH, WOL, GET, UDP, POST };
+    // Each switch's ops run straight after it, so the first's are done before the
+    // second switch starts; the second is planned from the state the first left
+    const uint32_t want[6] = { SWITCH, WOL, GET, UDP, SWITCH, POST };
     for (int i = 0; i < 6; i++)
+        Assert(r.run[i] == want[i]);
+    Assert(r.sa.Activity() == -1 && r.sa.DevicesOn() == 0);
+    Assert(r.n_applied == 2 && r.applied[0] == 0 && r.applied[1] == -1);
+}
+
+Fact("Standalone SwitchActivity Runs Its Ops Before The Rest Of Its List")
+{
+    Rig r(false);
+    // Home key 2 now runs [switchActivity Watch, hidKey (Home key 0's)]
+    layoutdata::op *list[2] = { (layoutdata::op *)HomeSwitch(r.root, 0), r.root->homePage.bindings[0].ops[0] };
+    Assert(list[1]->op == HID);
+    layoutdata::binding *b = HomeSwitchBinding(r.root, 0);
+    b->ops = list; b->ops_count = 2;
+    r.Start();
+    r.Tap(2);
+    r.Drain();
+    // tv on, avr on, Watch.didActivate, and only then the op after the switch
+    const uint32_t want[5] = { SWITCH, WOL, GET, UDP, HID };
+    Assert(r.ran == 5);
+    for (int i = 0; i < 5; i++)
+        Assert(r.run[i] == want[i]);
+    Assert(r.sa.Activity() == 0 && r.sa.Errors() == 0);
+}
+
+Fact("Standalone SwitchActivity Hook Delay Holds Back The Rest Of The List")
+{
+    Rig r(false);
+    HomeSwitch(r.root, 1)->index = 1;                       // key 9 selects Listen (willActivate: a delay)
+    layoutdata::op *list[2] = { (layoutdata::op *)HomeSwitch(r.root, 1), r.root->homePage.bindings[0].ops[0] };
+    layoutdata::binding *b = HomeSwitchBinding(r.root, 1);
+    b->ops = list; b->ops_count = 2;
+    r.Start();
+    r.Tap(9);
+    r.Drain();
+    Assert(r.ran == 2 && r.run[0] == SWITCH && r.run[1] == DELAY);     // the hidKey waits for the delay
+    r.Settle();
+    const uint32_t want[4] = { SWITCH, DELAY, GET, HID };  // then avr on, then the hidKey
+    Assert(r.ran == 4);
+    for (int i = 0; i < 4; i++)
+        Assert(r.run[i] == want[i]);
+    Assert(r.sa.Activity() == 1 && r.sa.DevicesOn() == AVR);
+}
+
+Fact("Standalone Two Switches In One List Each Run Their Ops Before The Next")
+{
+    Rig r(false);
+    // Home key 2 now runs [switchActivity Watch, switchActivity none, hidKey]
+    layoutdata::op *list[3] = { (layoutdata::op *)HomeSwitch(r.root, 0), (layoutdata::op *)HomeSwitch(r.root, 1),
+                                r.root->homePage.bindings[0].ops[0] };
+    layoutdata::binding *b = HomeSwitchBinding(r.root, 0);
+    b->ops = list; b->ops_count = 3;
+    r.Start();
+    r.Tap(2);
+    r.Drain();
+    const uint32_t want[7] = { SWITCH, WOL, GET, UDP, SWITCH, POST, HID };
+    Assert(r.ran == 7);
+    for (int i = 0; i < 7; i++)
         Assert(r.run[i] == want[i]);
     Assert(r.sa.Activity() == -1 && r.sa.DevicesOn() == 0);
     Assert(r.n_applied == 2 && r.applied[0] == 0 && r.applied[1] == -1);
@@ -234,7 +303,8 @@ Fact("Standalone SwitchActivity Inside A Hook Only Queues And Cannot Recurse")
     r.Start();
     r.Tap(2);
     r.Drain();
-    // Watch: tv on, avr on, then the hook's switch (planned when it runs: Watch -> none, tv off)
+    // Watch: tv on, avr on, then the hook's switch (planned when it runs: Watch -> none, tv off),
+    // whose ops run straight after it
     const uint32_t want[5] = { SWITCH, WOL, GET, SWITCH, POST };
     Assert(r.ran == 5);
     for (int i = 0; i < 5; i++)
@@ -632,4 +702,50 @@ Fact("Standalone Takeover Frees The Lua State")
     Assert(r.sa.Scripts().HeapUsed() > 0);
     r.sa.SetHosted(true);
     Assert(r.sa.Scripts().HeapUsed() == 0);
+}
+
+// A script waits for its switch's ops, so a switch that would run a script (a second
+// one: there is one Lua state) is refused from a script; from an op it is fine
+Fact("Standalone SwitchActivity From A Script Is Refused If The Switch Runs A Script")
+{
+    Rig r(false);
+    r.scripts = true;
+    layoutdata::scriptOp hook = {};                         // Watch.didActivate becomes a script
+    hook.base.op = OP_SCRIPT; hook.source = "log('hook')"; hook.source_count = 11;
+    r.root->activities[0].didActivate[0] = &hook.base;
+    layoutdata::scriptOp sw = {};                           // Home key 2 runs a script that selects Watch
+    const char *src = "local ok, why = switchActivity('Watch') log(tostring(ok), why)";
+    sw.base.op = OP_SCRIPT; sw.source = src; sw.source_count = (uint32_t)strlen(src);
+    layoutdata::op *list[1] = { &sw.base };
+    layoutdata::binding *b = HomeSwitchBinding(r.root, 0);
+    b->ops = list; b->ops_count = 1;
+    r.Start();
+    r.Tap(2);
+    r.Settle();
+    Assert(strstr(r.script_log, "script: switchActivity refused: the switch to Watch runs a script|") != nullptr);
+    Assert(strstr(r.script_log, "nil\tswitchActivity: the switch runs a script|") != nullptr);
+    Assert(!strstr(r.script_log, "hook"));
+    // Nothing changed or ran but the script and its switch call (reported before the script,
+    // which runs it from its start)
+    Assert(r.ran == 2 && r.run[0] == SWITCH && r.run[1] == SCRIPT);
+    Assert(r.sa.Activity() == -1 && r.sa.DevicesOn() == 0 && r.n_applied == 0);
+    Assert(r.sa.Errors() == 0 && r.sa.Scripts().Errors() == 0);
+}
+
+Fact("Standalone SwitchActivity From An Op May Run A Script")
+{
+    Rig r(false);
+    r.scripts = true;
+    layoutdata::scriptOp hook = {};
+    hook.base.op = OP_SCRIPT; hook.source = "log('hook')"; hook.source_count = 11;
+    r.root->activities[0].didActivate[0] = &hook.base;
+    r.Start();
+    r.Tap(2);
+    r.Settle();
+    const uint32_t want[4] = { SWITCH, WOL, GET, SCRIPT };
+    Assert(r.ran == 4);
+    for (int i = 0; i < 4; i++)
+        Assert(r.run[i] == want[i]);
+    Assert(strcmp(r.script_log, "hook|") == 0);
+    Assert(r.sa.Activity() == 0 && r.sa.Errors() == 0);
 }
