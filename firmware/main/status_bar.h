@@ -5,6 +5,7 @@
 #include "color.h"
 #include "port.h"
 #include "screen_layout.h"
+#include "clock_text.h"
 
 // Status bar, platform independent (host tested): its properties, drawing,
 // and the two buffers the bounce fill shows (screen_set_status_bar()).
@@ -26,7 +27,7 @@ typedef struct {
 typedef struct {
     char left[STATUS_BAR_TEXT_MAX];     // left aligned text (UTF-8)
     char right[STATUS_BAR_TEXT_MAX];    // right aligned text
-    int  pill_count;                    // pager pills; 0 for none
+    int  pill_count;                    // pager pills; none drawn for 0 or 1
     int  selected_pill;                 // highlighted pill (none if out of range)
 } status_bar_content_t;
 
@@ -54,18 +55,26 @@ public:
     // Two buffers of STATUS_BAR_PIXELS. Nothing is drawn until a property is set.
     void Init(uint16_t *buffer0, uint16_t *buffer1);
 
-    // Each returns true if the value changed (the bar needs drawing)
+    // Each returns true if the value changed (the bar needs drawing). The
+    // texts are templates, kept as set: `{clock}` in them shows the clock.
     bool SetLeft(const char *text);
     bool SetRight(const char *text);
     bool SetPillCount(int count);
     bool SetSelectedPill(int index);
 
+    // The clock's text ("" while the time isn't known). Returns true only if
+    // it changed and a text shows it.
+    bool SetClock(const char *text);
+
+    // A text holds `{clock}` (the drawing task wakes each minute)
+    bool HasClock();
+
     // A change hasn't been drawn yet
     bool Pending() const { return m_pending; }
 
     // If there's a change to draw and the back buffer is free, copy the
-    // properties to `out` and return the back buffer to draw them into;
-    // otherwise NULL. The back buffer is free once the bounce fill has
+    // properties to `out` (texts expanded) and return the back buffer to draw
+    // them into; otherwise NULL. The back buffer is free once the bounce fill has
     // latched the front one: `shown` is what it latched
     // (screen_status_bar_shown()).
     uint16_t *BeginDraw(const uint16_t *shown, status_bar_content_t *out);
@@ -79,9 +88,11 @@ public:
 private:
     bool SetText(char *dst, const char *text);
     bool SetInt(int *dst, int value);
+    bool HasClockLocked() const;
 
     port::SpinLock       m_lock;
-    status_bar_content_t m_content = {};
+    status_bar_content_t m_content = {};        // texts as templates
+    char                 m_clock[CLOCK_TEXT_MAX] = {};
     volatile bool        m_pending = false;
     uint16_t            *m_buffers[2] = {};
     uint16_t            *m_front = nullptr;

@@ -2,13 +2,14 @@
 
 // Wi-Fi credentials: the validation rules, the stored blob format, and
 // set/get/clear over an injected storage (docs/wifi.md). Platform
-// independent: the device supplies the NVS blob through WifiStorage
-// (wifi.cpp). Protocol and the device layer share these rules.
+// independent: the device supplies the NVS blob through BlobStorage
+// (nvs_blob.cpp). Protocol and the device layer share these rules.
 //
 // Not thread safe: the protocol task calls everything after Init.
 
 #include <stddef.h>
 #include <stdint.h>
+#include "blob_storage.h"
 
 #define WIFI_SSID_MAX      32
 #define WIFI_PASS_MIN      8
@@ -43,19 +44,7 @@ bool wifi_credentials_equal(const WifiCredentials &a, const WifiCredentials &b);
 uint32_t wifi_blob_encode(const WifiCredentials &c, uint8_t *out);
 bool     wifi_blob_decode(const uint8_t *blob, uint32_t len, WifiCredentials *out);
 
-// What the config needs from the device: one blob, written whole (NVS makes
-// that atomic: a power loss leaves the old blob or the new, never a mix)
-struct WifiStorage
-{
-    // Read the blob into buf (cap bytes). False if there is none or it can't
-    // be read.
-    bool (*load)(void *buf, uint32_t cap, uint32_t *len, void *ctx);
-    bool (*save)(const void *blob, uint32_t len, void *ctx);
-    bool (*erase)(void *ctx);
-    void *ctx;
-};
-
-enum class WifiResult { Ok, BadArg, IoError };
+using WifiResult = SettingResult;
 
 class WifiConfig
 {
@@ -63,7 +52,7 @@ public:
     // Load the stored credentials. A blob that fails to decode counts as none
     // and is erased; a blob that can't be read counts as none and is left.
     // Never a failure.
-    void Init(const WifiStorage &storage);
+    void Init(const BlobStorage &storage);
 
     // Told after each real change (a set that differs, a clear of something
     // stored), from the caller of Set, with the new credentials (ssid_len 0
@@ -83,7 +72,7 @@ public:
     const WifiCredentials &Get() const { return m_creds; }
 
 private:
-    WifiStorage     m_storage = {};
+    BlobStorage     m_storage = {};
     WifiCredentials m_creds = {};
     void          (*m_changed)(const WifiCredentials &, void *) = nullptr;
     void           *m_changed_ctx = nullptr;

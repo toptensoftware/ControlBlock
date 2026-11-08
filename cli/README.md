@@ -1,6 +1,6 @@
 # ControlBlock command line
 
-Bakes and uploads standalone-mode layouts, and sets up the device's Wi-Fi. It is a thin
+Bakes and uploads standalone-mode layouts, and sets up the device's Wi-Fi and clock. It is a thin
 wrapper: argument parsing and output only. Everything it does is the library's
 (`../host`: `bakeFile`, `uploadBlob`, `ControlBlock`), imported by relative path, so there
 is nothing to install here beyond `npm install` in `host/`.
@@ -50,10 +50,41 @@ The device's Wi-Fi network ([`docs/wifi.md`](../docs/wifi.md)):
 
 A password that starts with `-` goes after `--`: `wifi set Home -- -secret-`.
 
+### `time [action] [--serial S]`
+
+The device's clock, shown by `{clock}` in the status bar (standalone, the right text;
+[`docs/protocol.md`](../docs/protocol.md#clock)). None of these take control of the
+device: they work while it runs its standalone layout.
+
+| Action | |
+|---|---|
+| `set` (or no action) | set the device's clock from this computer's; prints `clock set to <UTC time>` |
+| `get` | show the device's time (UTC) and who set it (the host or NTP), its time zone and NTP server |
+| `zone <posix TZ>` / `zone --default` | store the time zone, a POSIX TZ string (default `UTC0`); applies at once, daylight saving by the string's rules |
+| `server <host>` / `server --default` | store the NTP server (default `pool.ntp.org`); used from the next sync |
+
+The time zone is a POSIX TZ string, not a name like `Australia/Sydney`: standard name,
+offset **west** of UTC (so east is negative), then the daylight saving name and its start
+and end rules. For example:
+
+| Place | TZ string |
+|---|---|
+| Sydney, Melbourne | `AEST-10AEDT,M10.1.0,M4.1.0/3` |
+| Brisbane (no DST) | `AEST-10` |
+| New York | `EST5EDT,M3.2.0,M11.1.0` |
+| London | `GMT0BST,M3.5.0/1,M10.5.0` |
+
+With Wi-Fi the device sets its clock by NTP (hourly). Without it, the clock is lost at
+power-off (the board has no battery-backed clock) and stays blank until something sets
+it: run `node cli/cli.js time` after each power-up, for example at logon from Windows Task
+Scheduler (it fails while another app has the device open: WinUSB is exclusive). A host
+app can do the same on connect with the library's `ControlBlock.open({ setTime: true })`.
+
 ### Options
 
 - `--serial S`: the device to use, by serial number (default: the first one found).
 - `--force`: upload even if the device already has the blob.
+- `--default`: (`time zone`, `time server`) put the setting back to the device's default.
 
 ## Exit codes
 
@@ -72,11 +103,14 @@ node cli/cli.js upload examples/activity-test.mjs                   # bake in me
 node cli/cli.js upload scratch/a.bin --serial 3C84279E1D50 --force
 node cli/cli.js wifi set MyNetwork "my password"
 node cli/cli.js wifi status
+node cli/cli.js time zone AEST-10AEDT,M10.1.0,M4.1.0/3             # Sydney
+node cli/cli.js time                                                # set the clock from this PC
+node cli/cli.js time get
 ```
 
 ## Tests
 
-`npm test` in `cli/` (no device: the upload and wifi commands run against the library's
+`npm test` in `cli/` (no device: the upload, wifi and time commands run against the library's
 `FakeDevice`; the bake runs the real renderer). `cli.js` exports
 `main(argv, { open, reconnect, stdout, stderr })`, which resolves the exit code, and only
 runs itself when executed directly. `args.js` (`parseArgs`, `USAGE`, `UsageError`) is the

@@ -11,6 +11,7 @@
 #include "status_bar.h"
 #include "ui_assets.h"
 #include "status.h"
+#include "clock.h"
 
 static const char *TAG = "status";
 
@@ -38,6 +39,31 @@ static TaskHandle_t       s_task;
 static fill_gap_client_t  s_gap_client = { NULL, WAKE_GAP, false };
 static uint16_t          *s_scratch;        // SCREEN_W x STATUS_BAR_BAND_ROWS_MAX, internal RAM
 
+// Ticks to just after the next minute boundary: rounded up, so never early
+// and never 0 (the tick is 10 ms)
+static TickType_t clock_wait_ticks(void)
+{
+    int64_t ms = clock_wait_ms(clock_now_ms());
+    return (TickType_t)((ms + portTICK_PERIOD_MS - 1) / portTICK_PERIOD_MS);
+}
+
+// Bring the clock's text up to date (a redraw only if a text shows it and it
+// changed). Logs the task's stack headroom once, after the first time the
+// local time was worked out (newlib's TZ code runs on this stack).
+static void refresh_clock(void)
+{
+    char text[CLOCK_TEXT_MAX];
+    clock_local_text(text);
+    s_bar.SetClock(text);
+#ifndef NDEBUG
+    static bool logged;
+    if (text[0] && !logged) {
+        logged = true;
+        ESP_LOGI(TAG, "stack: %u bytes free", (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    }
+#endif
+}
+
 static void status_task(void *arg)
 {
     status_bar_content_t content;
@@ -48,6 +74,7 @@ static void status_task(void *arg)
 
     while (1) {
         if (!back) {
+            refresh_clock();                    // between draws: each wake, the minute one included
             back = s_bar.BeginDraw(screen_status_bar_shown(), &content);
             row = rendered = 0;
         }
@@ -83,9 +110,15 @@ static void status_task(void *arg)
         }
 
         // Wait for a change or a gap, or, if a change waits on the last swap,
-        // for the next frame start (a tick is at least one frame)
+        // for the next frame start (a tick is at least one frame); while a
+        // text shows the clock, at most until the minute turns over
+        TickType_t wait = portMAX_DELAY;
+        if (!back && s_bar.Pending())
+            wait = 1;
+        else if (s_bar.HasClock())
+            wait = clock_wait_ticks();
         bits = 0;
-        xTaskNotifyWait(0, ULONG_MAX, &bits, !back && s_bar.Pending() ? 1 : portMAX_DELAY);
+        xTaskNotifyWait(0, ULONG_MAX, &bits, wait);
     }
 }
 
@@ -140,3 +173,4 @@ void status_set_left(const char *text)    { changed(s_bar.SetLeft(text)); }
 void status_set_right(const char *text)   { changed(s_bar.SetRight(text)); }
 void status_set_pill_count(int count)     { changed(s_bar.SetPillCount(count)); }
 void status_set_selected_pill(int index)  { changed(s_bar.SetSelectedPill(index)); }
+void status_clock_changed(void)           { changed(true); }

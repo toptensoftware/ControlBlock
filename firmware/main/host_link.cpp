@@ -10,6 +10,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "waveshare_rgb_lcd_port.h"
+#include "clock.h"
 #include "compositor.h"
 #include "layout_boot.h"
 #include "layout_flash.h"
@@ -79,6 +80,11 @@ static void   cf_busy(bool busy, void *)
     display_enable_backlight(busy ? false : s_backlight);
 }
 static void   ph_wifi_status(WifiStatus *out, void *)          { wifi_get_status(out); }
+static void   ph_set_time(int64_t unix_ms, void *)             { clock_set_unix_ms(unix_ms, ClockSource::Host); }
+static void   ph_get_time(int64_t *unix_ms, ClockSource *source, bool *known, void *)
+{
+    clock_get(unix_ms, source, known);
+}
 static void   ph_restart(void *)
 {
     ESP_LOGI(TAG, "layout saved: restarting");
@@ -201,13 +207,15 @@ esp_err_t host_link_init(void)
     h.mode_changed     = ph_mode_changed;
     h.restart          = ph_restart;
     h.wifi_status      = ph_wifi_status;
+    h.set_time         = ph_set_time;
+    h.get_time         = ph_get_time;
     h.fw_version       = esp_app_get_description()->version;
     h.serial           = s_serial;
     LayoutFlash cf = {};
     layout_flash_open(&cf);
     cf.busy = cf_busy;
     s_layout_store.Init(cf);
-    s_proto.Init(model_store(), model_layout(), &s_layout_store, wifi_config(), h);
+    s_proto.Init(model_store(), model_layout(), &s_layout_store, wifi_config(), clock_config(), h);
     s_proto.SetHome(layout_summary(), layout_blob());
 
     if (xTaskCreatePinnedToCore(protocol_task, "protocol", PROTOCOL_TASK_STACK, nullptr,

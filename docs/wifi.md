@@ -184,7 +184,7 @@ Each step: write or adjust the tests first, see them fail, then implement. Steps
 
 Steps 1 to 7 of the plan are done. Step 6 (`wifi.cpp`) connects on the board; credentials survive a reboot and a reflash, and the NVS write doesn't glitch the display. Not yet confirmed: wrong password stopping (built, host tested) and router restart recovery. Power save is for later (battery use).
 
-- **Files:** `wifi_credentials.cpp/.h`, `wifi_state.cpp/.h` (pure, host tested), `wifi.cpp/.h` (device), `heap_log.h` (the heap log line, shared with `main.cpp`). Tests: `TestWifiCredentials.cpp`, `TestWifiState.cpp`, the Wi-Fi facts at the end of `TestProtocol.cpp`, with `wifi_env.h` (a fake storage). Host library: `setWifi`, `clearWifi`, `getWifi`, `wifiStatus`, the `wifiState` event and `waitWifiConnected`; the command line is `cli/cli.js wifi`.
+- **Files:** `wifi_credentials.cpp/.h`, `wifi_state.cpp/.h` (pure, host tested), `wifi.cpp/.h` (device), `nvs_blob.cpp/.h` (the NVS blob, shared with the clock settings), `heap_log.h` (the heap log line, shared with `main.cpp`). Tests: `TestWifiCredentials.cpp`, `TestWifiState.cpp`, the Wi-Fi facts at the end of `TestProtocol.cpp`, with `blob_env.h` (a fake storage, shared with the clock settings). Host library: `setWifi`, `clearWifi`, `getWifi`, `wifiStatus`, the `wifiState` event and `waitWifiConnected`; the command line is `cli/cli.js wifi`.
 - **Set and get are not `ProtocolHost` callbacks.** `Protocol` is given the `WifiConfig` (as it is given the `LayoutStore`) and calls `Set` / `Get` / `Stored` itself, so the rules and the storage logic exist once. Only `wifi_status` is a callback (the state lives in the Wi-Fi task). The change notification is `WifiConfig::SetChangedCallback`.
 - **Equality check against the in-memory copy**, loaded from NVS at boot, rather than reading the blob back before every write. Same result without the extra flash read.
 - **`RETRYING` stays `RETRYING` across the attempts** after the first failure, until it connects. This is what makes "events on state change, not on every retry" hold; `CONNECTING` is only the very first attempt (and the one after a new `WIFI_SET`, or after the IP is lost).
@@ -194,6 +194,17 @@ Steps 1 to 7 of the plan are done. Step 6 (`wifi.cpp`) connects on the board; cr
 - **NVS:** `nvs_flash_init()` is `init_nvs()` in `main.cpp`, early, with the erase-and-retry. A failure that remains is logged and the device boots without Wi-Fi settings (`WIFI_SET` answers `IO_ERROR`).
 - **sdkconfig (`sdkconfig.defaults`):** static RX buffers 6 (default 10), dynamic RX and TX 16 (32), AMPDU windows RX 6 and TX 4, SoftAP support off, `ESP_WIFI_IRAM_OPT` and `RX_IRAM_OPT` off (they default to on, and IRAM and internal RAM are one SRAM), lwIP's task on core 0 (`LWIP_TCPIP_TASK_AFFINITY_CPU0`; the driver's own task is core 0 by default). `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` stays off, so nothing here writes PSRAM. The numbers are a first guess; the heap left (below) shows there is room.
 - **Logging:** the SSID and the password length only. `wifi.cpp` logs the heap (free, largest block) with the driver up, down and connected.
+
+## NTP
+
+The status bar clock (`{clock}`, [`status-bar.md`](status-bar.md#clock)) takes its time from NTP while Wi-Fi is up. Built; **not yet run on the hardware.**
+
+- **Server:** one, configurable, default `pool.ntp.org`, kept in NVS with the time zone (namespace `cb_clock`, key `cfg`; `clock_config.cpp/.h`, pure, over the same `BlobStorage` / `nvs_blob.cpp` as the credentials). Set with `CLOCK_SET` ([`protocol.md`](protocol.md#clock)) or `node cli/cli.js time server <host>|--default`. DHCP-offered servers are not used (`CONFIG_LWIP_DHCP_GET_NTP_SRV` off, `LWIP_SNTP_MAX_SERVERS` 1).
+- **Start:** `esp_netif_sntp_*` from `wifi.cpp` (the "SNTP" section). On every GotIp, `sntp_up()` deinits SNTP if it is running and inits it again with the configured server (`start = true`, no `wait_for_sync`); `driver_down` deinits it. The first request goes out after a random delay of up to 5 s; then it resyncs hourly (`CONFIG_LWIP_SNTP_UPDATE_DELAY`) while Wi-Fi is up. A LostIp leaves it running (lwIP just retries).
+- **Server name lifetime:** lwIP keeps a pointer to the name (`sntp_setservername`), so it lives in a static in `wifi.cpp` and changes only while SNTP is down.
+- **Server change:** `clock.cpp`'s config callback calls `wifi_ntp_server_changed()`, which posts to the Wi-Fi task; SNTP restarts only if it is running and the server differs. While disconnected, the next GotIp picks it up.
+- **Sync:** lwIP sets the system time itself, then calls back on the tcpip task: `clock_ntp_synced()` marks the source NTP, logs `clock: ntp sync` and wakes the status bar. A host-set time (`TIME_SET`) and NTP both just set the clock: the latest wins.
+- **Logs:** `wifi: sntp started (<server>)` and a `heap with SNTP started` line straight after `heap with Wi-Fi connected`, so the two give SNTP's internal-RAM cost (expected well under 1 KB; to be read on the hardware).
 
 ## Internal RAM
 
@@ -234,7 +245,6 @@ The pixel clock can also be lowered (`-DCB_PIXEL_CLOCK_MHZ`, see CLAUDE.md) to g
 
 ## Open questions
 
-- Whether the right-hand status text should show the Wi-Fi state or the IP until NTP exists (the right text is blank for now).
 - Several saved networks, and a way to set credentials without a host (touch entry, a setup access point): later.
 - Whether `WIFI_GET` should stay in clear text (see Security).
 - Whether the Wi-Fi task should wait for the host's first message or for a quiet moment at boot, if the connect shows up as a display glitch.

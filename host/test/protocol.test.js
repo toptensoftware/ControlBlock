@@ -7,6 +7,7 @@ import {
     crc32, encodeLayoutBegin, encodeLayoutData, LAYOUT_DATA_PREFIX, HEARTBEAT_INTERVAL_MS,
     InfoFlags, Writer, WifiState, WIFI_SSID_MAX_BYTES, WIFI_PASS_MIN_BYTES, WIFI_PASS_MAX_BYTES,
     encodeWifiSet, decodeWifiCredentials, decodeWifiStatus,
+    ClockSource, TIME_VALID_FROM_MS, CLOCK_FIELD_MAX_BYTES, encodeTimeSet, decodeTime, encodeClockSet,
 } from "../src/protocol.js";
 import { infoPayload } from "./FakeDevice.js";
 
@@ -273,4 +274,84 @@ test("get info reports the mode, independent of the other flags", () => {
     assert.equal(all.wifiCredentials, true);
     assert.equal(all.backlight, false);
     assert.equal(all.maxPayload, 8192);                     // fields after the flags still line up
+});
+
+// --- Clock (docs/protocol.md, Clock) ---
+
+test("clock message types, the info flag and the sources", () => {
+    assert.equal(Msg.TIME_SET, 0x50);
+    assert.equal(Msg.TIME_GET, 0x51);
+    assert.equal(Msg.CLOCK_SET, 0x52);
+    assert.equal(InfoFlags.TIME_SET, 0x0008);
+    assert.deepEqual({ ...ClockSource }, { NONE: 0, HOST: 1, NTP: 2 });
+    assert.equal(TIME_VALID_FROM_MS, Date.UTC(2025, 0, 1));
+    assert.equal(CLOCK_FIELD_MAX_BYTES, 63);
+});
+
+test("get info reports whether the clock is set, independent of the other flags", () => {
+    assert.equal(decodeInfo(infoPayload()).timeSet, false);
+    const all = decodeInfo(infoPayload({ timeSet: true, hosted: true }));
+    assert.equal(all.timeSet, true);
+    assert.equal(all.hosted, true);
+    assert.equal(all.wifiCredentials, false);
+    assert.equal(all.maxPayload, 8192);
+});
+
+test("time set is an i64 of UTC milliseconds, from a Date or a number", () => {
+    const ms = Date.UTC(2026, 10, 8, 7, 59, 1, 234);
+    const bytes = encodeTimeSet(new Date(ms));
+    assert.equal(bytes.length, 8);
+    assert.equal(new DataView(bytes.buffer, bytes.byteOffset).getBigInt64(0, true), BigInt(ms));
+    assert.deepEqual([...encodeTimeSet(ms)], [...bytes]);
+    assert.equal(encodeTimeSet(TIME_VALID_FROM_MS).length, 8);
+});
+
+test("time set refuses what the device would refuse", () => {
+    assert.throws(() => encodeTimeSet(TIME_VALID_FROM_MS - 1), RangeError);       // before 2025: "not known"
+    assert.throws(() => encodeTimeSet(new Date(0)), RangeError);
+    assert.throws(() => encodeTimeSet(new Date(NaN)), RangeError);
+    assert.throws(() => encodeTimeSet("2026-01-01"), TypeError);
+});
+
+function timeGetPayload(known, source, ms, tz, server)
+{
+    const t = new TextEncoder().encode(tz), s = new TextEncoder().encode(server);
+    return new Writer(12 + t.length + s.length).u8(known).u8(source).i64(ms).u8(t.length).raw(t).u8(s.length).raw(s).done();
+}
+
+test("time get decodes", () => {
+    const ms = Date.UTC(2026, 10, 8, 7, 59);
+    assert.deepEqual(decodeTime(timeGetPayload(1, 2, ms, "AEST-10AEDT,M10.1.0,M4.1.0/3", "time.example.com")), {
+        known: true, source: ClockSource.NTP, sourceName: "NTP", time: new Date(ms),
+        timeZone: "AEST-10AEDT,M10.1.0,M4.1.0/3", ntpServer: "time.example.com",
+    });
+    const unknown = decodeTime(timeGetPayload(0, 0, 5000, "UTC0", "pool.ntp.org"));
+    assert.equal(unknown.known, false);
+    assert.equal(unknown.time, null);                   // meaningless while not known
+    assert.equal(unknown.sourceName, "NONE");
+    assert.equal(unknown.timeZone, "UTC0");
+    assert.equal(decodeTime(timeGetPayload(1, 1, ms, "UTC0", "x")).sourceName, "HOST");
+});
+
+test("clock set is a mask, then a length and text for each field given", () => {
+    const enc = s => [...new TextEncoder().encode(s)];
+    assert.deepEqual([...encodeClockSet({ timeZone: "UTC0" })], [1, 4, ...enc("UTC0")]);
+    assert.deepEqual([...encodeClockSet({ ntpServer: "pool.ntp.org" })], [2, 12, ...enc("pool.ntp.org")]);
+    assert.deepEqual([...encodeClockSet({ timeZone: "EST5EDT", ntpServer: "10.0.0.1" })], [3, 7, ...enc("EST5EDT"), 8, ...enc("10.0.0.1")]);
+    assert.deepEqual([...encodeClockSet({ ntpServer: "a", timeZone: "b" })], [3, 1, 98, 1, 97]);     // always tz first
+    assert.deepEqual([...encodeClockSet({ timeZone: "", ntpServer: "" })], [3, 0, 0]);             // the defaults
+    assert.deepEqual([...encodeClockSet({ timeZone: "<+0530>-5:30" })], [1, 12, ...enc("<+0530>-5:30")]);
+});
+
+test("clock set refuses what the device would refuse", () => {
+    assert.throws(() => encodeClockSet({}), TypeError);                                     // nothing to set
+    assert.throws(() => encodeClockSet({ zone: "UTC0" }), TypeError);                       // unknown field
+    assert.throws(() => encodeClockSet({ timeZone: 5 }), TypeError);
+    assert.throws(() => encodeClockSet({ timeZone: "x".repeat(CLOCK_FIELD_MAX_BYTES + 1) }), RangeError);
+    assert.equal(encodeClockSet({ timeZone: "x".repeat(CLOCK_FIELD_MAX_BYTES) }).length, 2 + CLOCK_FIELD_MAX_BYTES);
+    for (const tz of ["UTC 0", "UTC\t0", "é", "UTC\u007F"])
+        assert.throws(() => encodeClockSet({ timeZone: tz }), RangeError, tz);
+    for (const server of ["pool.ntp.org ", "a_b", "host:123", "é"])
+        assert.throws(() => encodeClockSet({ ntpServer: server }), RangeError, server);
+    assert.throws(() => encodeClockSet({ ntpServer: "x".repeat(CLOCK_FIELD_MAX_BYTES + 1) }), RangeError);
 });

@@ -1,10 +1,10 @@
 # Status Bar
 
-The fixed 800x40 band at the top of the screen. Status: **implemented and measured on the hardware**, empty at boot until the host sets its texts.
+The fixed 800x40 band at the top of the screen. Status: **implemented and measured on the hardware**, the left text empty and the right `{clock}` at boot (see Clock).
 
 ```
 +--------------------------------------------------------------------+
-| AppleTV                      ▬ ━━ ▬                        12.35am |
+| AppleTV                      ▬ ━━ ▬                           12:35 |
 +--------------------------------------------------------------------+
   left text                   pager pills                 right text
 ```
@@ -17,7 +17,7 @@ Four properties:
 |---|---|---|
 | Left text | `status_set_left()` | White, `STATUS_BAR_MARGIN` (16 px) from the left |
 | Right text | `status_set_right()` | White, right aligned, 16 px from the right |
-| Pill count | `status_set_pill_count()` | One pill per page, centred, `STATUS_BAR_PILL_GAP` (8 px) apart; 0 for none |
+| Pill count | `status_set_pill_count()` | One pill per page, centred, `STATUS_BAR_PILL_GAP` (8 px) apart; none for 0 or 1 page (one page has nothing to page between) |
 | Selected pill | `status_set_selected_pill()` | The wide white pill; the others are short and grey. Out of range: none selected |
 
 - Text is UTF-8, at most `STATUS_BAR_TEXT_MAX - 1` (47) bytes; longer is cut on a character boundary. NULL is the same as "".
@@ -27,7 +27,20 @@ Four properties:
 
 The setters are safe from any task (not ISRs). Setting a property to its current value does nothing.
 
-The host sets the two texts with `SET_STATUS_TEXT` ([protocol.md](protocol.md)); the protocol task calls `status_set_left/right()`, which only copy 48 bytes under a short spinlock and wake the status task. Drawing stays in that task (internal RAM only). `RESET` clears both. The device boots with both texts empty.
+The host sets the two texts with `SET_STATUS_TEXT` ([protocol.md](protocol.md)); the protocol task calls `status_set_left/right()`, which only copy 48 bytes under a short spinlock and wake the status task. Drawing stays in that task (internal RAM only). `RESET` and `TAKE_CONTROL` clear both. Standalone, the left text is the activity name and the right text is `{clock}` (set at boot, restored on release and disconnect; [standalone.md](standalone.md#status-bar)).
+
+## Clock
+
+Built and host tested; **not yet run on the hardware.**
+
+- **Placeholder:** every `{clock}` in the left or right text is replaced by the local time, `h:mm` on a 12 hour clock without am/pm ("2:05", "12:30"; hour 12 at noon and midnight, no leading zero). Only exactly `{clock}` is replaced; other braces stay as they are. The placeholder works whatever set the text (the host, an activity name).
+- **Templates:** `StatusBar` keeps the texts as set (templates, cut to 47 bytes) and the current clock text (`SetClock`); `BeginDraw` expands them into the content it hands out. `SetClock` asks for a redraw only when a template holds `{clock}` and the text changed. `{clock}` (7 bytes) always expands to at most 5, so expansion never makes a text longer; a `{clock}` cut by the 47-byte limit is lost.
+- **Blank until known:** `{clock}` expands to "" until the time is known, i.e. the clock reads 2025-01-01 UTC or later (`clock_time_valid`). After power-up the RTC timer starts at 1970; it keeps running over `esp_restart` (a layout commit), so the time survives a soft restart but not power-off (the board has no battery-backed RTC).
+- **Time sources:** NTP while Wi-Fi is up ([wifi.md](wifi.md#ntp)), or a host with `TIME_SET` ([protocol.md](protocol.md#clock); `node cli/cli.js time`), allowed while standalone. The latest wins.
+- **Time zone:** a POSIX TZ string (default `UTC0`; e.g. Sydney `AEST-10AEDT,M10.1.0,M4.1.0/3`) stored in NVS with the NTP server (`clock_config.cpp`, namespace `cb_clock`), set with `CLOCK_SET` or `node cli/cli.js time zone <posix>`. Applied with `setenv("TZ")`/`tzset` and read with `localtime_r` in `clock.cpp`, under one mutex (the TZ is set on the protocol task and read on the status task). The C library is picolibc; DST rules (`M` rules) are its job. A malformed string is accepted and treated as UTC.
+- **Minute wake:** while a template holds `{clock}` (`HasClock()`), the status task waits until just after the next minute boundary (`clock_wait_ms`: ms to the next UTC minute + `CLOCK_WAKE_MARGIN_MS` 20 ms, rounded up to ticks); otherwise it waits for a change as before. Every zone offset is a whole number of minutes, so UTC and local minutes turn over together. On each wake it refreshes the clock text, so a new time or zone shows at once. A redraw takes 10-20 fill gaps, so the minute appears up to ~0.35 s late. Once a minute is far below the redraw rate tested in `RUN_STRESS`.
+- **Code:** `clock_text.cpp/.h` (pure, `TestClockText.cpp`: format, expand, next-minute wait, time-valid check, UTF-8 cut), `status_bar.cpp` (templates, `TestStatusBar.cpp`), `clock_config.cpp/.h` (pure, `TestClockConfig.cpp`), `clock.cpp/.h` and `status.cpp` (device only).
+- **Stack:** `localtime_r` runs on the status task's 3072-byte stack. Debug builds log `status: stack: N bytes free` once, after the first real local time; raise the stack if that is under ~512.
 
 ## Assets
 
@@ -55,8 +68,8 @@ Code:
 
 - **`status_bar.cpp/.h`** (platform independent, host tested in `firmware/test/TestStatusBar.cpp`):
   - `status_bar_render(px, style, content)`: draws the whole bar. `status_bar_render_rows(px, y0, rows, ...)` draws a band of it, identical pixels (host tested at several band sizes).
-  - `StatusBar`: the four properties and two buffers. Setters return whether the value changed. `BeginDraw(shown, &content)` copies the properties and returns the back buffer, or NULL if nothing changed or the fill hasn't latched the front yet; `EndDraw()` makes it the front.
-- **`status.cpp/.h`** (device): owns the `StatusBar`, its buffers in PSRAM, the scratch band in internal RAM and a task (core 1, priority 3, below the compositor and swipe) that waits for a change, renders a band, copies it in a fill gap, and swaps after the last. If a change is waiting on a swap, it polls once a tick.
+  - `StatusBar`: the four properties (texts as templates, see Clock), the clock text and two buffers. Setters return whether the value changed. `BeginDraw(shown, &content)` copies the properties and returns the back buffer, or NULL if nothing changed or the fill hasn't latched the front yet; `EndDraw()` makes it the front.
+- **`status.cpp/.h`** (device): owns the `StatusBar`, its buffers in PSRAM, the scratch band in internal RAM and a task (core 1, priority 3, below the compositor and swipe) that waits for a change (or the next minute while a text holds `{clock}`), renders a band, copies it in a fill gap, and swaps after the last. If a change is waiting on a swap, it polls once a tick.
 
 The host test writes `firmware/test/build/status_bar.bmp`, handy for checking the look without flashing.
 

@@ -5,7 +5,7 @@
 #include "UnitTesting.h"
 #include "Core.h"
 #include "wifi_credentials.h"
-#include "wifi_env.h"
+#include "blob_env.h"
 
 using namespace SimpleLib;
 
@@ -20,7 +20,7 @@ namespace
 
     struct Fixture
     {
-        FakeWifiStorage storage;
+        FakeBlobStorage storage;
         WifiConfig      config;
         int             changes = 0;
         WifiCredentials last = {};
@@ -260,7 +260,7 @@ Fact("Wifi Config Failed Erase Keeps The Old Credentials")
 
 Fact("Wifi Config Corrupt Stored Blob Is Erased And Ignored")
 {
-    FakeWifiStorage storage;
+    FakeBlobStorage storage;
     static const uint8_t junk[] = { 9, 9, 9, 9, 9 };
     storage.Preload(junk, sizeof(junk));
     WifiConfig config;
@@ -271,7 +271,7 @@ Fact("Wifi Config Corrupt Stored Blob Is Erased And Ignored")
 
 Fact("Wifi Config Unreadable Storage Is Treated As None")
 {
-    FakeWifiStorage storage;
+    FakeBlobStorage storage;
     WifiCredentials c;
     Make(&c, "Home", "password1");
     uint8_t blob[WIFI_BLOB_MAX];

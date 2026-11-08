@@ -1,13 +1,13 @@
 #pragma once
 
-// A fake NVS blob for WifiConfig (and what sits on it, the protocol): one
-// stored blob, with call counts and injected failures.
+// A fake NVS blob for the settings classes (WifiConfig, ClockConfig, and the
+// protocol over them): one stored blob, with call counts and injected failures.
 
 #include <stdint.h>
 #include <string.h>
-#include "wifi_credentials.h"
+#include "blob_storage.h"
 
-class FakeWifiStorage
+class FakeBlobStorage
 {
 public:
     uint8_t  blob[256];
@@ -17,11 +17,11 @@ public:
     int  loads = 0, saves = 0, erases = 0;
     bool fail_save = false, fail_erase = false, fail_load = false;
 
-    WifiStorage Host()
+    BlobStorage Host()
     {
-        WifiStorage s = {};
+        BlobStorage s = {};
         s.load = [](void *buf, uint32_t cap, uint32_t *len, void *c) {
-            FakeWifiStorage *f = (FakeWifiStorage *)c;
+            FakeBlobStorage *f = (FakeBlobStorage *)c;
             f->loads++;
             if (f->fail_load || !f->present || f->blob_len > cap)
                 return false;
@@ -30,7 +30,7 @@ public:
             return true;
         };
         s.save = [](const void *b, uint32_t len, void *c) {
-            FakeWifiStorage *f = (FakeWifiStorage *)c;
+            FakeBlobStorage *f = (FakeBlobStorage *)c;
             f->saves++;
             if (f->fail_save || len > sizeof(f->blob))
                 return false;
@@ -40,7 +40,7 @@ public:
             return true;
         };
         s.erase = [](void *c) {
-            FakeWifiStorage *f = (FakeWifiStorage *)c;
+            FakeBlobStorage *f = (FakeBlobStorage *)c;
             f->erases++;
             if (f->fail_erase)
                 return false;

@@ -61,7 +61,7 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: Ke
   - The device boots **standalone**, showing its own Home. In that mode it refuses every request that edits the screen (`reset`, `putImage`, `freeImages`, `setPageCount`, `setKeys`, `setPage`, `setStatusText`) with a `NOT_HOSTED` error, so call `takeControl()` first.
   - `takeControl()` clears the keys and images like `reset()`, and starts the `key` and `pageChanged` events. `info.hosted` says which mode the device is in.
   - `releaseControl()` gives the screen back: the device rebuilds its Home and turns the backlight on. Unplugging, closing the host or a USB suspend does the same by itself.
-  - `ping`, `getInfo`, `queryImages`, `setBacklight`, `uploadLayout` and the Wi-Fi calls work in both modes.
+  - `ping`, `getInfo`, `queryImages`, `setBacklight`, `uploadLayout`, the Wi-Fi calls and the clock calls work in both modes.
 - **Requests are pipelined:** every method returns a promise for its own response. A status other than OK throws a `ControlBlockError`.
 - **`putImage(id, data)`:**
   - It splits the image into chunks the device can take.
@@ -70,7 +70,7 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: Ke
 - **`setStatusText({ left, right })`:**
   - It sets the status bar's texts. Only the fields given change, and `""` clears one.
   - Each is at most 47 bytes of UTF-8 (the font is ASCII only for now). A longer or invalid text throws before anything is sent.
-  - The device has no clock: send the time yourself, e.g. `setStatusText({ right: "12:35" })`.
+  - `{clock}` in either text shows the device's clock (`2:05`, blank until the clock is set; see Clock below), e.g. `setStatusText({ right: "{clock}" })`.
 - **`uploadLayout(blob, { force, onProgress })`:**
   - It saves a standalone layout (the BPAK blob from the bake, below) in the device's flash ([`docs/protocol.md`](../docs/protocol.md#layout-upload)).
   - The device's screen goes dark while it writes, and the device **restarts** when it's done: the connection closes by itself (no `error` event). `reconnect()` waits for the same device (by serial) to come back and resolves to a new `ControlBlock`; its `info.layoutSize` and `info.layoutCrc` show what the device kept.
@@ -83,6 +83,12 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: Ke
   - `wifiStatus()` returns `{ state, stateName, reason, rssi, ip, mac }` (`ip` is null unless connected), and a `"wifiState"` event ({ state, stateName, lost, ip }) fires when it changes.
   - `waitWifiConnected({ timeoutMs, intervalMs, onStatus })` polls `wifiStatus()` until connected (`true`), or no network is stored or time runs out (`false`); `onStatus` gets each new status.
   - From the command line: `node cli/cli.js wifi set <ssid> [password] | get | clear | status | wait [seconds]` ([`cli/README.md`](../cli/README.md)).
+- **Clock** ([`docs/protocol.md`](../docs/protocol.md#clock)): works in any mode. NTP sets the clock while Wi-Fi is up; without Wi-Fi a host must set it after each power-up (the board has no battery-backed clock).
+  - `setTime(time = new Date())` sets the device's clock (UTC; a `Date` or ms). A time before 2025 throws before anything is sent. `info.timeSet` says whether the device knows the time.
+  - `ControlBlock.open({ setTime: true })` / `connect({ setTime: true })` also sets it from this machine's clock on connect (off by default).
+  - `getTime()` returns `{ known, source, sourceName, time, timeZone, ntpServer }` (`time` is a `Date`, null while not known; `source` is `ClockSource`: `NONE`, `HOST` or `NTP`).
+  - `setClock({ timeZone, ntpServer })` stores either or both: a POSIX TZ string (e.g. `AEST-10AEDT,M10.1.0,M4.1.0/3`) and the NTP server; `""` puts one back to its default (`UTC0`, `pool.ntp.org`). An invalid value throws before anything is sent.
+  - From the command line: `node cli/cli.js time [set] | get | zone <posix>|--default | server <host>|--default` ([`cli/README.md`](../cli/README.md)).
 - **`freeImages(ids)`:** the ID goes at once, and the memory once no key uses it.
 
 ## Bake

@@ -142,7 +142,7 @@ Fact("StatusBar Text Centred On Cap Height")
 
 Fact("StatusBar Pager Centred")
 {
-    for (int count = 1; count <= 5; count++) {
+    for (int count = 2; count <= 5; count++) {
         Render(nullptr, nullptr, 0, count);
         Box b = Drawn();
         Assert(b.any);
@@ -151,6 +151,13 @@ Fact("StatusBar Pager Centred")
         int above = b.y0, below = H - 1 - b.y1;
         Assert(above - below >= -1 && above - below <= 1);
     }
+}
+
+// One page (Home with no activity, or a host's single page) has nothing to page between
+Fact("StatusBar One Page Shows No Pager")
+{
+    Render(nullptr, nullptr, 0, 1);
+    Assert(!Drawn().any);
 }
 
 Fact("StatusBar Pager Highlights Page In View")
@@ -336,4 +343,136 @@ Fact("StatusBar Long Text Is Cut On A Character Boundary")
     size_t len = strlen(c.left);
     Assert(len < STATUS_BAR_TEXT_MAX && len % 2 == 0 && len >= STATUS_BAR_TEXT_MAX - 2);
     Assert(memcmp(c.left, text, len) == 0);
+}
+
+// ---------------------------------------------------------------------------
+// Templates and the clock: the texts are kept as set, and `{clock}` is
+// expanded when drawing
+
+Fact("StatusBar Keeps The Template And Expands The Clock")
+{
+    StatusBar bar;
+    bar.Init(buf0, buf1);
+    status_bar_content_t c;
+
+    Assert(!bar.HasClock());
+    Assert(bar.SetRight("{clock}"));
+    Assert(bar.HasClock());
+    Assert(!bar.SetRight("{clock}"));               // the template is what's compared
+
+    // Not known yet: blank
+    Assert(bar.BeginDraw(nullptr, &c) == buf0);
+    Assert(strcmp(c.right, "") == 0);
+    bar.EndDraw();
+
+    Assert(bar.SetClock("2:05"));
+    Assert(bar.Pending());
+    Assert(bar.BeginDraw(buf0, &c) == buf1);
+    Assert(strcmp(c.right, "2:05") == 0);
+    bar.EndDraw();
+
+    Assert(!bar.SetClock("2:05"));                  // unchanged
+    Assert(!bar.Pending());
+}
+
+Fact("StatusBar Clock Change Without A Template Is No Redraw")
+{
+    StatusBar bar;
+    bar.Init(buf0, buf1);
+    status_bar_content_t c;
+
+    Assert(!bar.SetClock("2:05"));
+    Assert(!bar.Pending());
+
+    // The clock is kept: a template set later shows it
+    Assert(bar.SetLeft("At {clock}"));
+    Assert(bar.HasClock());
+    Assert(bar.BeginDraw(nullptr, &c) == buf0);
+    Assert(strcmp(c.left, "At 2:05") == 0);
+    Assert(strcmp(c.right, "") == 0);
+    bar.EndDraw();
+
+    // A template change re-expands
+    Assert(bar.SetLeft("{clock} x"));
+    Assert(bar.BeginDraw(buf0, &c) == buf1);
+    Assert(strcmp(c.left, "2:05 x") == 0);
+    bar.EndDraw();
+
+    // Without a template the clock no longer matters
+    Assert(bar.SetLeft("Kitchen"));
+    Assert(!bar.HasClock());
+    Assert(!bar.SetClock("2:06"));
+}
+
+Fact("StatusBar Clock In Both Texts")
+{
+    StatusBar bar;
+    bar.Init(buf0, buf1);
+    status_bar_content_t c;
+
+    bar.SetClock("12:30");
+    bar.SetLeft("{clock}");
+    bar.SetRight("[{clock}]");
+    Assert(bar.BeginDraw(nullptr, &c) == buf0);
+    Assert(strcmp(c.left, "12:30") == 0);
+    Assert(strcmp(c.right, "[12:30]") == 0);
+    bar.EndDraw();
+
+    Assert(bar.SetClock(""));                       // forgotten: blank again
+    Assert(bar.BeginDraw(buf0, &c) == buf1);
+    Assert(strcmp(c.left, "") == 0);
+    Assert(strcmp(c.right, "[]") == 0);
+}
+
+Fact("StatusBar Expanded Clock Is Cut To Fit")
+{
+    StatusBar bar;
+    bar.Init(buf0, buf1);
+    status_bar_content_t c;
+
+    char tmpl[STATUS_BAR_TEXT_MAX];
+    memset(tmpl, 'a', 40);
+    strcpy(tmpl + 40, "{clock}");                   // 47 bytes: fits as a template
+    Assert(bar.SetLeft(tmpl));
+    bar.SetClock("12:30");
+    bar.BeginDraw(nullptr, &c);
+    Assert(strlen(c.left) == 45);
+    Assert(strcmp(c.left + 40, "12:30") == 0);
+    bar.EndDraw();
+
+    // The template is cut as it's set: a `{clock}` across the cut is lost
+    char longer[64];
+    memset(longer, 'b', 44);
+    strcpy(longer + 44, "{clock}");                 // 51 bytes
+    Assert(bar.SetLeft(longer));
+    Assert(!bar.HasClock());
+    bar.BeginDraw(buf0, &c);
+    Assert(strlen(c.left) == STATUS_BAR_TEXT_MAX - 1);
+    Assert(strcmp(c.left + 44, "{cl") == 0);
+}
+
+Fact("StatusBar Clock Renders Like Plain Text")
+{
+    static BLOBPACK *ui = LoadAsset("ui.bin");
+    static uint16_t a[W * H], b[W * H];
+    status_bar_style_t style = status_bar_style(ui);
+    status_bar_content_t c;
+
+    StatusBar bar;
+    bar.Init(a, b);
+    bar.SetClock("2:05");
+    bar.SetRight("{clock}");
+    bar.SetPillCount(3);
+    Assert(bar.BeginDraw(nullptr, &c) == a);
+    status_bar_render(a, &style, &c);
+    bar.EndDraw();
+
+    status_bar_content_t plain = {};
+    strcpy(plain.right, "2:05");
+    plain.pill_count = 3;
+    status_bar_render(px, &style, &plain);
+    Assert(memcmp(px, a, sizeof(px)) == 0);
+
+    RenderBanded(STATUS_BAR_BAND_ROWS_MAX, &c);
+    Assert(memcmp(px, banded, sizeof(px)) == 0);
 }

@@ -21,6 +21,8 @@
 #include "layout_apply.h"
 #include "wifi_credentials.h"
 #include "wifi_state.h"
+#include "clock_config.h"
+#include "clock_text.h"
 
 #define PROTO_VERSION        1
 #define PROTO_MAGIC          0x4243         // "CB" as bytes 43 42
@@ -57,6 +59,9 @@ enum : uint8_t
     MSG_WIFI_SET       = 0x40,
     MSG_WIFI_GET       = 0x41,
     MSG_WIFI_STATUS    = 0x42,
+    MSG_TIME_SET       = 0x50,
+    MSG_TIME_GET       = 0x51,
+    MSG_CLOCK_SET      = 0x52,
 
     EVT_KEY            = 0x80,
     EVT_PAGE_CHANGED   = 0x81,
@@ -77,6 +82,7 @@ enum : uint8_t
 #define INFO_FLAG_BACKLIGHT  0x0001         // the backlight is on
 #define INFO_FLAG_WIFI_CREDENTIALS 0x0002   // Wi-Fi credentials are stored
 #define INFO_FLAG_HOSTED     0x0004         // a host has taken control (else standalone)
+#define INFO_FLAG_TIME_SET   0x0008         // the clock is set (reads 2025 or later)
 
 // Response status
 enum : uint16_t
@@ -108,6 +114,9 @@ enum : uint16_t
 #define STATUS_TEXT_LEFT     0
 #define STATUS_TEXT_RIGHT    1
 #define STATUS_TEXT_MAX      48
+
+// The right text while standalone (boot, release, disconnect): the clock
+#define STATUS_TEXT_STANDALONE_RIGHT  "{clock}"
 
 // What the protocol needs from the device
 struct ProtocolHost
@@ -152,6 +161,12 @@ struct ProtocolHost
     // WifiConfig's). Called without the lock.
     void (*wifi_status)(WifiStatus *out, void *ctx);
 
+    // TIME_SET: set the clock (UTC; already checked to be 2025 or later).
+    // TIME_GET, GET_INFO: the time now, where it came from (None while not
+    // known) and whether it is known. Called without the lock.
+    void (*set_time)(int64_t unix_ms, void *ctx);
+    void (*get_time)(int64_t *unix_ms, ClockSource *source, bool *known, void *ctx);
+
     const char *fw_version;
     const char *serial;
     void       *ctx;
@@ -160,7 +175,8 @@ struct ProtocolHost
 class Protocol
 {
 public:
-    void Init(ImageStore *store, KeyLayout *keys, LayoutStore *layout_store, WifiConfig *wifi, const ProtocolHost &host);
+    void Init(ImageStore *store, KeyLayout *keys, LayoutStore *layout_store, WifiConfig *wifi,
+              ClockConfig *clock, const ProtocolHost &host);
 
     // Bytes from the host (bulk OUT), in order, in any pieces. Complete
     // messages are handled as they arrive and their responses flushed.
@@ -259,6 +275,9 @@ private:
     void OnWifiSet();
     void OnWifiGet();
     void OnWifiStatus();
+    void OnTimeSet();
+    void OnTimeGet();
+    void OnClockSet();
     bool ReadIds(uint16_t *count);
     void PostEvent(const Event &e);
     void DropEvents(bool all);          // all, or just the hosted-only KEY and PAGE_CHANGED
@@ -270,6 +289,7 @@ private:
     KeyLayout   *m_keys = nullptr;
     LayoutStore *m_layout_store = nullptr;
     WifiConfig  *m_wifi = nullptr;
+    ClockConfig *m_clock = nullptr;
     ProtocolHost m_host = {};
 
     // Mode (atomics: read from any task)

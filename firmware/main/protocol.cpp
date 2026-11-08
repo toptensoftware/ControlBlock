@@ -33,6 +33,13 @@ namespace
             uint32_t lo = U16();
             return lo | U16() << 16;
         }
+        uint64_t U64(uint64_t def = 0)
+        {
+            if (!Has(8))
+                return def;
+            uint64_t lo = U32();
+            return lo | (uint64_t)U32() << 32;
+        }
     };
 
     struct Writer
@@ -43,6 +50,7 @@ namespace
         void U8(uint32_t v)  { if (len < cap) p[len++] = (uint8_t)v; }
         void U16(uint32_t v) { U8(v); U8(v >> 8); }
         void U32(uint32_t v) { U16(v); U16(v >> 16); }
+        void U64(uint64_t v) { U32((uint32_t)v); U32((uint32_t)(v >> 32)); }
         void Str(const char *s)
         {
             size_t n = s ? strlen(s) : 0;
@@ -107,6 +115,17 @@ namespace
         return ST_BAD_ARG;
     }
 
+    // The settings classes (WifiConfig, ClockConfig)
+    uint16_t status_of(SettingResult r)
+    {
+        switch (r) {
+        case SettingResult::Ok:      return ST_OK;
+        case SettingResult::BadArg:  return ST_BAD_ARG;
+        case SettingResult::IoError: return ST_IO_ERROR;
+        }
+        return ST_BAD_ARG;
+    }
+
     uint16_t status_of(KeyLayoutResult r)
     {
         switch (r) {
@@ -132,9 +151,11 @@ namespace
     void put32(uint8_t *p, uint32_t v) { put16(p, v); put16(p + 2, v >> 16); }
 }
 
-void Protocol::Init(ImageStore *store, KeyLayout *keys, LayoutStore *layout_store, WifiConfig *wifi, const ProtocolHost &host)
+void Protocol::Init(ImageStore *store, KeyLayout *keys, LayoutStore *layout_store, WifiConfig *wifi,
+                    ClockConfig *clock, const ProtocolHost &host)
 {
     m_wifi   = wifi;
+    m_clock  = clock;
     m_store  = store;
     m_keys   = keys;
     m_layout_store = layout_store;
@@ -385,6 +406,9 @@ void Protocol::Dispatch()
     case MSG_WIFI_SET:       OnWifiSet();      break;
     case MSG_WIFI_GET:       OnWifiGet();      break;
     case MSG_WIFI_STATUS:    OnWifiStatus();   break;
+    case MSG_TIME_SET:       OnTimeSet();      break;
+    case MSG_TIME_GET:       OnTimeGet();      break;
+    case MSG_CLOCK_SET:      OnClockSet();     break;
     default:                 Respond(ST_UNKNOWN_TYPE); break;
     }
 }
@@ -402,12 +426,18 @@ void Protocol::OnGetInfo()
     int pages = m_keys->PageCount();
     Unlock();
 
+    int64_t now;
+    ClockSource source;
+    bool time_known;
+    m_host.get_time(&now, &source, &time_known, m_host.ctx);
+
     uint8_t out[64 + 2 * 256];
     Writer w = { out, sizeof(out), 0 };
     w.U16(PROTO_VERSION);
     w.U16((m_host.backlight_on(m_host.ctx) ? INFO_FLAG_BACKLIGHT : 0)
           | (m_wifi->Stored() ? INFO_FLAG_WIFI_CREDENTIALS : 0)
-          | (Hosted() ? INFO_FLAG_HOSTED : 0));
+          | (Hosted() ? INFO_FLAG_HOSTED : 0)
+          | (time_known ? INFO_FLAG_TIME_SET : 0));
     w.U32(PROTO_MAX_PAYLOAD);
     w.U32(st.capacity);
     w.U32(st.used);
@@ -451,7 +481,7 @@ void Protocol::ResetModel(bool home)
     Unlock();
     m_host.set_page_count(1, m_host.ctx);
     m_host.set_status_text(STATUS_TEXT_LEFT, "", m_host.ctx);
-    m_host.set_status_text(STATUS_TEXT_RIGHT, "", m_host.ctx);
+    m_host.set_status_text(STATUS_TEXT_RIGHT, home ? STATUS_TEXT_STANDALONE_RIGHT : "", m_host.ctx);
 }
 
 void Protocol::OnReset()
@@ -664,12 +694,7 @@ void Protocol::OnWifiSet()
     if (!r.Has(ssid_len + pass_len))
         return Respond(ST_BAD_LENGTH);
 
-    switch (m_wifi->Set(m_buf + 2, ssid_len, m_buf + 2 + ssid_len, pass_len)) {
-    case WifiResult::Ok:      return Respond(ST_OK);
-    case WifiResult::BadArg:  return Respond(ST_BAD_ARG);
-    case WifiResult::IoError: return Respond(ST_IO_ERROR);
-    }
-    Respond(ST_BAD_ARG);
+    Respond(status_of(m_wifi->Set(m_buf + 2, ssid_len, m_buf + 2 + ssid_len, pass_len)));
 }
 
 void Protocol::OnWifiGet()
@@ -701,6 +726,64 @@ void Protocol::OnWifiStatus()
     for (int i = 0; i < 6; i++)
         w.U8(st.mac[i]);
     Respond(ST_OK, out, w.len);
+}
+
+// i64 unix_ms (UTC). Refused before 2025: the clock would read "not known".
+void Protocol::OnTimeSet()
+{
+    Reader r = { m_buf, m_len, 0 };
+    if (!r.Has(8))
+        return Respond(ST_BAD_LENGTH);
+    int64_t ms = (int64_t)r.U64();
+    if (!clock_time_valid(ms))
+        return Respond(ST_BAD_ARG);
+    m_host.set_time(ms, m_host.ctx);
+    Respond(ST_OK);
+}
+
+// u8 known, u8 source, i64 unix_ms, u8 tz_len, tz, u8 server_len, server
+void Protocol::OnTimeGet()
+{
+    int64_t now;
+    ClockSource source;
+    bool known;
+    m_host.get_time(&now, &source, &known, m_host.ctx);
+    const ClockSettings &c = m_clock->Get();
+
+    uint8_t out[12 + 2 * CLOCK_FIELD_MAX];
+    Writer w = { out, sizeof(out), 0 };
+    w.U8(known ? 1 : 0);
+    w.U8((uint8_t)source);
+    w.U64((uint64_t)now);
+    w.Str(c.tz);
+    w.Str(c.server);
+    Respond(ST_OK, out, w.len);
+}
+
+// u8 mask (CLOCK_SET_TZ, CLOCK_SET_SERVER), then u8 len + text for each bit
+// set, in that order. An empty text is the default.
+void Protocol::OnClockSet()
+{
+    Reader r = { m_buf, m_len, 0 };
+    if (!r.Has(1))
+        return Respond(ST_BAD_LENGTH);
+    uint32_t mask = r.U8();
+    const uint8_t *text[2] = {};
+    uint32_t len[2] = {};
+    for (int i = 0; i < 2; i++) {
+        if (!(mask & (1u << i)))
+            continue;
+        if (!r.Has(1))
+            return Respond(ST_BAD_LENGTH);
+        len[i] = r.U8();
+        if (!r.Has(len[i]))
+            return Respond(ST_BAD_LENGTH);
+        text[i] = m_buf + r.pos;
+        r.pos += len[i];
+    }
+    if (mask & ~(uint32_t)(CLOCK_SET_TZ | CLOCK_SET_SERVER))
+        return Respond(ST_BAD_ARG);
+    Respond(status_of(m_clock->Set((uint8_t)mask, text[0], len[0], text[1], len[1])));
 }
 
 // ===========================================================================

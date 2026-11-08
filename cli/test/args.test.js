@@ -78,3 +78,27 @@ test("args: wifi mistakes are reported with the usage", () => {
     usage(["wifi", "wait", "0"], /seconds/);
     usage(["wifi", "wait", "1", "2"], /seconds/);
 });
+
+test("args: time set (the default), get, zone and server", () => {
+    assert.deepEqual(parseArgs(["time"]), { command: "time", action: "set", serial: undefined });
+    assert.deepEqual(parseArgs(["time", "set", "--serial", "S1"]), { command: "time", action: "set", serial: "S1" });
+    assert.deepEqual(parseArgs(["time", "--serial", "S1"]), { command: "time", action: "set", serial: "S1" });
+    assert.deepEqual(parseArgs(["time", "get"]), { command: "time", action: "get", serial: undefined });
+    assert.deepEqual(parseArgs(["time", "zone", "AEST-10AEDT,M10.1.0,M4.1.0/3"]), { command: "time", action: "zone", serial: undefined, value: "AEST-10AEDT,M10.1.0,M4.1.0/3" });
+    assert.deepEqual(parseArgs(["time", "zone", "--default"]), { command: "time", action: "zone", serial: undefined, value: "" });
+    assert.deepEqual(parseArgs(["time", "server", "time.example.com", "--serial", "S2"]), { command: "time", action: "server", serial: "S2", value: "time.example.com" });
+    assert.equal(parseArgs(["time", "--default", "server"]).value, "");
+});
+
+test("args: time mistakes are reported with the usage", () => {
+    usage(["time", "sync"], /unknown time command sync/);
+    usage(["time", "get", "now"], /takes no arguments/);
+    usage(["time", "set", "12:00"], /takes no arguments/);
+    usage(["time", "zone"], /time zone needs/);
+    usage(["time", "zone", "UTC0", "EST5"], /time zone needs/);
+    usage(["time", "zone", "UTC0", "--default"], /time zone needs/);
+    usage(["time", "server"], /time server needs/);
+    usage(["time", "get", "--default"], /--default/);
+    usage(["time", "--default"], /--default/);
+    usage(["time", "zone", "UTC0", "--force"], /unknown option --force/);
+});

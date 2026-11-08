@@ -26,6 +26,8 @@
 #include "screen.h"
 #include "swipe.h"
 #include "status.h"
+#include "clock.h"
+#include "protocol.h"
 
 static const char *TAG = "controlblock";
 
@@ -512,8 +514,8 @@ static void run_stress(void)
 
 // ---------------------------------------------------------------------------
 
-// Load ui.bin and start the status bar, empty: the host sets the texts, and
-// the swipe task sets the pills from the page count
+// Load ui.bin and start the status bar, empty: the boot sets the standalone
+// texts (the host its own), and the swipe task sets the pills from the page count
 static esp_err_t init_status_bar(void)
 {
     s_ui = load_pack(ui_start, ui_end);
@@ -522,7 +524,7 @@ static esp_err_t init_status_bar(void)
     return status_init(s_ui);
 }
 
-// NVS holds the Wi-Fi credentials (and the driver's PHY calibration). If it is
+// NVS holds the Wi-Fi credentials, the clock settings (and the driver's PHY calibration). If it is
 // full or from a newer version, it is erased (the credentials are lost; the
 // host can set them again). A failure that remains only costs Wi-Fi: the
 // credentials can't be stored then, and the device boots as usual.
@@ -551,6 +553,7 @@ extern "C" void app_main(void)
     log_heap(TAG, "at start");
 
     init_nvs();
+    clock_init();                           // the time zone, before the status bar reads the clock
     log_heap(TAG, "after NVS");
     i2c_init();
     ESP_ERROR_CHECK(ch422g_init());
@@ -576,6 +579,7 @@ extern "C" void app_main(void)
     screen_set_page_count(NUM_PAGES);
     run_stress();
 #endif
+    status_set_right(STATUS_TEXT_STANDALONE_RIGHT);     // standalone at boot: the clock (blank until set)
 
     ESP_ERROR_CHECK(swipe_init());
     log_heap(TAG, "after swipe");

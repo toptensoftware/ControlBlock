@@ -10,12 +10,13 @@
 // lost, ip }: the Wi-Fi connection changed; docs/wifi.md), "error" (the read loop failed), "close".
 // takeControl() / releaseControl() switch the device between standalone and hosted mode (docs/standalone.md).
 // uploadLayout() saves a standalone layout in the device's flash (docs/protocol.md).
+// setTime() / getTime() / setClock() run the device's clock (docs/protocol.md, Clock).
 
 import { Emitter } from "./Emitter.js";
 import {
     USB_VID, USB_PID, INTERFACE, ENDPOINT, USB_PACKET_SIZE, PROTOCOL_VERSION, REQ_RESET_STREAM,
     PUT_IMAGE_PREFIX, LAYOUT_DATA_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
-    encodeWifiSet, decodeWifiCredentials, decodeWifiStatus, WifiState,
+    encodeWifiSet, decodeWifiCredentials, decodeWifiStatus, WifiState, encodeTimeSet, decodeTime, encodeClockSet,
     encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeLayoutBegin, encodeLayoutData, crc32,
     decodeInfo, decodeQuery, decodeEvent, statusName, HEARTBEAT_INTERVAL_MS,
 } from "./protocol.js";
@@ -71,8 +72,8 @@ export class ControlBlock extends Emitter
     }
 
     // Node: find a ControlBlock (by serial, or the first with our VID/PID),
-    // connect and return it
-    static async open({ serial, vendorId = USB_VID, productId = USB_PID, ...options } = {})
+    // connect and return it. `setTime` is passed on to connect().
+    static async open({ serial, vendorId = USB_VID, productId = USB_PID, setTime, ...options } = {})
     {
         const { usb } = await import("usb");
         const device = serial
@@ -81,12 +82,14 @@ export class ControlBlock extends Emitter
         if (!device)
             throw new Error("No ControlBlock found");
         const cb = new ControlBlock(device, options);
-        await cb.connect();
+        await cb.connect({ setTime });
         return cb;
     }
 
-    // Claim the interface, reset the stream and read the device's info
-    async connect()
+    // Claim the interface, reset the stream and read the device's info.
+    // `setTime: true` also sets the device's clock from this machine's
+    // (setTime()), so a host app keeps it right without Wi-Fi; off by default.
+    async connect({ setTime = false } = {})
     {
         const d = this.device;
         if (!d.opened)
@@ -103,6 +106,8 @@ export class ControlBlock extends Emitter
         this.info = await this.getInfo();
         if (this.info.protocolVersion !== PROTOCOL_VERSION)
             throw new Error(`Device speaks protocol ${this.info.protocolVersion}, expected ${PROTOCOL_VERSION}`);
+        if (setTime)
+            await this.setTime();
         return this.info;
     }
 
@@ -280,6 +285,33 @@ export class ControlBlock extends Emitter
                 return false;
             await new Promise(resolve => setTimeout(resolve, intervalMs));
         }
+    }
+
+    // Clock (docs/protocol.md, Clock). Independent of the operating mode.
+    // Set the device's clock (UTC) to `time` (a Date or ms; default now). It
+    // shows in the status bar's {clock} in the device's time zone. Throws
+    // before sending anything for a time before 2025.
+    async setTime(time = new Date())
+    {
+        await this.call(Msg.TIME_SET, encodeTimeSet(time));
+        if (this.info)
+            this.info.timeSet = true;
+    }
+
+    // { known, source, sourceName, time, timeZone, ntpServer }: `time` is a
+    // Date, null while the device doesn't know the time; `source` is ClockSource
+    async getTime()
+    {
+        return decodeTime(await this.call(Msg.TIME_GET));
+    }
+
+    // Store the clock settings: { timeZone, ntpServer }, either or both.
+    // timeZone is a POSIX TZ string (e.g. "AEST-10AEDT,M10.1.0,M4.1.0/3");
+    // "" puts a setting back to its default (UTC0, pool.ntp.org). Throws
+    // before sending anything if the device would refuse.
+    async setClock(settings)
+    {
+        await this.call(Msg.CLOCK_SET, encodeClockSet(settings));
     }
 
     // Upload (or replace) an rle565 image under `id`, in pipelined chunks

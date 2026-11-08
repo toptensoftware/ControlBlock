@@ -25,8 +25,8 @@ static int text_baseline(const FONT *font)
 // All drawing is relative to `y0`, the bar row at the top of `buf`
 static void draw_pager(IMAGE_BUFFER *buf, int y0, const status_bar_style_t *style, int selected, int count)
 {
-    if (count <= 0)
-        return;
+    if (count <= 1)
+        return;                         // one page: nothing to page between
 
     int total = (count - 1) * STATUS_BAR_PILL_GAP;
     for (int i = 0; i < count; i++)
@@ -71,6 +71,7 @@ void status_bar_render(uint16_t *px, const status_bar_style_t *style, const stat
 void StatusBar::Init(uint16_t *buffer0, uint16_t *buffer1)
 {
     m_content    = {};
+    m_clock[0]   = 0;
     m_pending    = false;
     m_buffers[0] = buffer0;
     m_buffers[1] = buffer1;
@@ -78,19 +79,21 @@ void StatusBar::Init(uint16_t *buffer0, uint16_t *buffer1)
     m_drawing    = nullptr;
 }
 
+// Copy `text` (NULL = "") into `dst` (size bytes), cut to fit without
+// splitting a UTF-8 sequence; returns its length
+static size_t copy_cut(char *dst, size_t size, const char *text)
+{
+    size_t len = utf8_cut_len(text, size - 1);
+    if (len)
+        memcpy(dst, text, len);
+    dst[len] = 0;
+    return len;
+}
+
 bool StatusBar::SetText(char *dst, const char *text)
 {
-    // Cut to fit, without splitting a UTF-8 sequence
     char t[STATUS_BAR_TEXT_MAX];
-    size_t len = text ? strlen(text) : 0;
-    if (len >= STATUS_BAR_TEXT_MAX) {
-        len = STATUS_BAR_TEXT_MAX - 1;
-        while (len > 0 && ((uint8_t)text[len] & 0xC0) == 0x80)
-            len--;
-    }
-    if (len)
-        memcpy(t, text, len);
-    t[len] = 0;
+    size_t len = copy_cut(t, sizeof(t), text);
 
     m_lock.Enter();
     bool changed = strcmp(dst, t) != 0;
@@ -119,16 +122,48 @@ bool StatusBar::SetRight(const char *text)  { return SetText(m_content.right, te
 bool StatusBar::SetPillCount(int count)     { return SetInt(&m_content.pill_count, count); }
 bool StatusBar::SetSelectedPill(int index)  { return SetInt(&m_content.selected_pill, index); }
 
+bool StatusBar::HasClockLocked() const
+{
+    return clock_text_has_clock(m_content.left) || clock_text_has_clock(m_content.right);
+}
+
+bool StatusBar::HasClock()
+{
+    m_lock.Enter();
+    bool has = HasClockLocked();
+    m_lock.Exit();
+    return has;
+}
+
+bool StatusBar::SetClock(const char *text)
+{
+    char t[CLOCK_TEXT_MAX];
+    size_t len = copy_cut(t, sizeof(t), text);
+
+    m_lock.Enter();
+    bool redraw = strcmp(m_clock, t) != 0 && HasClockLocked();
+    memcpy(m_clock, t, len + 1);
+    if (redraw)
+        m_pending = true;
+    m_lock.Exit();
+    return redraw;
+}
+
 uint16_t *StatusBar::BeginDraw(const uint16_t *shown, status_bar_content_t *out)
 {
     // Until the fill latches the front buffer it may still read the other
     if (!m_pending || shown != m_front)
         return nullptr;
 
+    char clock[CLOCK_TEXT_MAX];
     m_lock.Enter();
     *out = m_content;
+    memcpy(clock, m_clock, sizeof(clock));
     m_pending = false;
     m_lock.Exit();
+
+    clock_text_expand(out->left, sizeof(out->left), out->left, clock);
+    clock_text_expand(out->right, sizeof(out->right), out->right, clock);
 
     m_drawing = m_front == m_buffers[0] ? m_buffers[1] : m_buffers[0];
     return m_drawing;

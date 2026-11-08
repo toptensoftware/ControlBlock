@@ -15,12 +15,14 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "lwip/ip_addr.h"
 #include "ping/ping_sock.h"
-#include "nvs.h"
+#include "nvs_blob.h"
 #include "heap_log.h"
+#include "clock.h"
 #include "port.h"
 #include "wifi.h"
 
@@ -37,8 +39,8 @@ static const char *TAG = "wifi";
 #define WIFI_TASK_STACK  5120
 #define WIFI_QUEUE_LEN   8
 
-#define NVS_NAMESPACE    "cb_wifi"
-#define NVS_KEY          "cred"
+// Where the credentials live in NVS. Don't change: boards already hold them here.
+static const NvsBlob s_nvs = { "cb_wifi", "cred", "the credentials" };
 
 // The machine's reason numbers are esp_wifi's (it can't include the header: host tests)
 static_assert(CB_WIFI_REASON_LEAVE == WIFI_REASON_ASSOC_LEAVE, "wifi_state.h reason");
@@ -52,52 +54,6 @@ static_assert(CB_WIFI_REASON_AUTH_FAIL == WIFI_REASON_AUTH_FAIL, "wifi_state.h r
 
 static WifiConfig s_config;
 
-static bool nvs_load(void *buf, uint32_t cap, uint32_t *len, void *)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK)
-        return false;                       // no namespace yet: nothing stored
-    size_t n = cap;
-    esp_err_t err = nvs_get_blob(h, NVS_KEY, buf, &n);
-    nvs_close(h);
-    if (err != ESP_OK)
-        return false;
-    *len = (uint32_t)n;
-    return true;
-}
-
-static bool nvs_save(const void *blob, uint32_t len, void *)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
-    if (err == ESP_OK) {
-        err = nvs_set_blob(h, NVS_KEY, blob, len);
-        if (err == ESP_OK)
-            err = nvs_commit(h);
-        nvs_close(h);
-    }
-    if (err != ESP_OK)
-        ESP_LOGE(TAG, "saving the credentials failed: %s", esp_err_to_name(err));
-    return err == ESP_OK;
-}
-
-static bool nvs_erase(void *)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
-    if (err == ESP_OK) {
-        err = nvs_erase_key(h, NVS_KEY);
-        if (err == ESP_ERR_NVS_NOT_FOUND)
-            err = ESP_OK;
-        if (err == ESP_OK)
-            err = nvs_commit(h);
-        nvs_close(h);
-    }
-    if (err != ESP_OK)
-        ESP_LOGE(TAG, "erasing the credentials failed: %s", esp_err_to_name(err));
-    return err == ESP_OK;
-}
-
 WifiConfig *wifi_config(void)
 {
     return &s_config;
@@ -107,7 +63,7 @@ WifiConfig *wifi_config(void)
 // The Wi-Fi task
 // ---------------------------------------------------------------------------
 
-enum class Ev : uint8_t { Credentials, Disconnected, GotIp, LostIp };
+enum class Ev : uint8_t { Credentials, Disconnected, GotIp, LostIp, NtpServer };
 
 struct Msg
 {
@@ -226,8 +182,11 @@ static void driver_up(void)
     log_heap(TAG, "with the Wi-Fi driver up");
 }
 
+static void sntp_down(void);
+
 static void driver_down(void)
 {
+    sntp_down();
     esp_wifi_stop();
     esp_wifi_deinit();
     if (s_netif) {
@@ -339,6 +298,57 @@ static void log_link(int pings)
     }
 }
 
+// ---- SNTP ----
+// Started on each GotIp, stopped with the driver, restarted when the server
+// changes while connected. lwIP keeps a pointer to the server name, so it
+// lives here and only changes while SNTP is down. lwIP sets the system time
+// itself and resyncs every CONFIG_LWIP_SNTP_UPDATE_DELAY (an hour).
+
+static char s_ntp_server[CLOCK_FIELD_MAX + 1];   // what lwIP points at: the Wi-Fi task only
+static bool s_sntp_on;
+
+// On the tcpip task, after lwIP has set the time
+static void on_ntp_sync(struct timeval *tv)
+{
+    clock_ntp_synced(tv);
+}
+
+static void sntp_down(void)
+{
+    if (!s_sntp_on)
+        return;
+    esp_netif_sntp_deinit();
+    s_sntp_on = false;
+}
+
+static void sntp_up(void)
+{
+    sntp_down();
+    clock_ntp_server(s_ntp_server);
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(s_ntp_server);
+    cfg.wait_for_sync = false;              // nothing waits: no semaphore
+    cfg.sync_cb       = on_ntp_sync;
+    esp_err_t err = esp_netif_sntp_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "sntp start failed: %s", esp_err_to_name(err));
+        return;
+    }
+    s_sntp_on = true;
+    ESP_LOGI(TAG, "sntp started (%s)", s_ntp_server);
+    log_heap(TAG, "with SNTP started");
+}
+
+// The clock settings changed: restart only for a new server, and only while connected
+static void sntp_server_changed(void)
+{
+    if (!s_sntp_on)
+        return;                             // the next GotIp reads the new server
+    char now[CLOCK_FIELD_MAX + 1];
+    clock_ntp_server(now);
+    if (strcmp(now, s_ntp_server) != 0)
+        sntp_up();
+}
+
 static void publish(void)
 {
     s_snap_lock.Enter();
@@ -374,6 +384,7 @@ static void apply(const WifiAction &a)
             const uint8_t *ip = s_machine.Ip();
             ESP_LOGI(TAG, "got IP %u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
             log_heap(TAG, "with Wi-Fi connected");
+            sntp_up();
             log_link(GATEWAY_PINGS_AT_CONNECT);
         }
         if (s_state_cb)
@@ -396,6 +407,9 @@ static void handle(const Msg &m)
         break;
     case Ev::LostIp:
         apply(s_machine.OnLostIp());
+        break;
+    case Ev::NtpServer:
+        sntp_server_changed();
         break;
     }
 }
@@ -441,17 +455,20 @@ static void on_credentials_changed(const WifiCredentials &now, void *)
     post(m);
 }
 
+void wifi_ntp_server_changed(void)
+{
+    Msg m = {};
+    m.ev = Ev::NtpServer;
+    post(m);
+}
+
 void wifi_init(void)
 {
     // The queue exists from here on: a host can set credentials before wifi_start()
     s_queue = xQueueCreate(WIFI_QUEUE_LEN, sizeof(Msg));
     if (!s_queue)
         ESP_LOGE(TAG, "no memory for the event queue");
-    WifiStorage st = {};
-    st.load  = nvs_load;
-    st.save  = nvs_save;
-    st.erase = nvs_erase;
-    s_config.Init(st);
+    s_config.Init(nvs_blob_storage(&s_nvs));
     s_config.SetChangedCallback(on_credentials_changed, nullptr);
     if (s_config.Stored())
         ESP_LOGI(TAG, "credentials stored for \"%s\"", s_config.Get().ssid);

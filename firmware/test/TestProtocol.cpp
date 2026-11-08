@@ -7,7 +7,7 @@
 #include "protocol.h"
 #include "store_env.h"
 #include "flash_env.h"
-#include "wifi_env.h"
+#include "blob_env.h"
 #include "crc32_table.h"
 #include "layout_env.h"
 
@@ -22,6 +22,7 @@ namespace
         Bytes &U8(uint32_t v)  { b.Add((uint8_t)v); return *this; }
         Bytes &U16(uint32_t v) { return U8(v).U8(v >> 8); }
         Bytes &U32(uint32_t v) { return U16(v).U16(v >> 16); }
+        Bytes &U64(uint64_t v) { return U32((uint32_t)v).U32((uint32_t)(v >> 32)); }
         Bytes &Raw(const void *p, size_t n) { for (size_t i = 0; i < n; i++) U8(((const uint8_t *)p)[i]); return *this; }
         Bytes &Add(const Bytes &o) { return Raw(o.b.GetBuffer(), o.b.GetCount()); }
         int Count() const { return b.GetCount(); }
@@ -47,6 +48,7 @@ namespace
         uint32_t U8At(int i) const  { return data[i]; }
         uint32_t U16At(int i) const { return data[i] | data[i + 1] << 8; }
         uint32_t U32At(int i) const { return U16At(i) | U16At(i + 2) << 16; }
+        uint64_t U64At(int i) const { return U32At(i) | (uint64_t)U32At(i + 4) << 32; }
     };
 
     struct Fixture
@@ -56,8 +58,10 @@ namespace
         KeyLayout  layout;
         FakeFlash  flash;
         LayoutStore layout_store;
-        FakeWifiStorage wifi_storage;
+        FakeBlobStorage wifi_storage;
         WifiConfig wifi;
+        FakeBlobStorage clock_storage;
+        ClockConfig clock;
         Protocol   proto;
 
         List<uint8_t> out;
@@ -69,6 +73,10 @@ namespace
         int  restarts = 0;
         WifiStatus wifi_st = {};                // what the device layer reports
         int  wifi_changes = 0;                  // credential changes the device layer was told of
+        int  clock_changes = 0;                 // clock setting changes
+        int64_t time_ms = 0;                    // the device clock (1970 at power-up: not known)
+        ClockSource time_source = ClockSource::None;
+        int  time_sets = 0;
         List<int> changed_pages;
         List<int> mode_changes;                 // 1 = hosted, 0 = standalone, per mode_changed call
         List<uint8_t> home_blob;                // UseHome(): the sample layout
@@ -81,6 +89,8 @@ namespace
             layout_store.Init(flash.Host());
             wifi.Init(wifi_storage.Host());
             wifi.SetChangedCallback([](const WifiCredentials &, void *c) { ((Fixture *)c)->wifi_changes++; }, this);
+            clock.Init(clock_storage.Host());
+            clock.SetChangedCallback([](const ClockSettings &, void *c) { ((Fixture *)c)->clock_changes++; }, this);
 
             store.Init(env.Host(), capacity, COMP_KEY_SIZE, COMP_KEY_SIZE);
             store.SetListener(&layout);
@@ -113,10 +123,23 @@ namespace
             h.mode_changed     = [](bool hosted, void *c) { ((Fixture *)c)->mode_changes.Add(hosted ? 1 : 0); };
             h.restart          = [](void *c) { ((Fixture *)c)->restarts++; };
             h.wifi_status      = [](WifiStatus *st, void *c) { *st = ((Fixture *)c)->wifi_st; };
+            h.set_time         = [](int64_t ms, void *c) {
+                Fixture *f = (Fixture *)c;
+                Check(f->lock_depth == 0);
+                f->time_ms = ms;
+                f->time_source = ClockSource::Host;
+                f->time_sets++;
+            };
+            h.get_time         = [](int64_t *ms, ClockSource *source, bool *known, void *c) {
+                Fixture *f = (Fixture *)c;
+                *ms = f->time_ms;
+                *known = clock_time_valid(f->time_ms);
+                *source = *known ? f->time_source : ClockSource::None;
+            };
             h.fw_version       = "1.2.3";
             h.serial           = "ABCDEF";
             h.ctx              = this;
-            proto.Init(&store, &layout, &layout_store, &wifi, h);
+            proto.Init(&store, &layout, &layout_store, &wifi, &clock, h);
 
             if (hosted) {
                 Request(MSG_TAKE_CONTROL);
@@ -1189,7 +1212,7 @@ Fact("Protocol Wifi Get Info Flag Follows The Credentials")
 
 Fact("Protocol Wifi Get Info Flag Is Set For Credentials Stored Before Boot")
 {
-    FakeWifiStorage storage;
+    FakeBlobStorage storage;
     WifiCredentials c;
     Assert(wifi_credentials_make(&c, (const uint8_t *)"Home", 4, (const uint8_t *)"password1", 9));
     uint8_t blob[WIFI_BLOB_MAX];
@@ -1458,7 +1481,7 @@ Fact("Protocol Release Rebuilds Home And Goes Standalone")
     Assert(f.comp_resets == 1);
     Assert(f.page_count == 1 && f.layout.PageCount() == 1);
     Assert(f.page_set == 0 && !f.animate);
-    Assert(f.status_text[0][0] == 0 && f.status_text[1][0] == 0);
+    Assert(f.status_text[0][0] == 0 && !strcmp(f.status_text[1], STATUS_TEXT_STANDALONE_RIGHT));
     Assert(!f.store.IsLive(1));
     Assert(f.ShowsHome(0) && f.layout.IsActive(0, 0) && !f.layout.IsActive(0, 3));
     Assert(f.store.Find(f.home.home[0][KEY_SLOT_BG].offset) != nullptr);
@@ -1537,6 +1560,7 @@ Fact("Protocol Disconnect Releases Like The Message")
     Assert(!f.proto.Hosted() && f.backlight);
     Assert(f.ShowsHome(0) && !f.store.IsLive(1));
     Assert(f.mode_changes.GetCount() == 1 && f.mode_changes[0] == 0);
+    Assert(f.status_text[0][0] == 0 && !strcmp(f.status_text[1], STATUS_TEXT_STANDALONE_RIGHT));
 
     // Once per post
     f.mode_changes.Clear();
@@ -1606,4 +1630,250 @@ Fact("Protocol Release Drops Queued Key And Page Events But Keeps The Others")
     f.proto.SendEvents();
     List<Msg> e = f.Read();
     Assert(e.GetCount() == 2 && e[0].type == EVT_WAKE && e[1].type == EVT_WIFI_STATE);
+}
+
+// ===========================================================================
+// Clock (TIME_SET, TIME_GET, CLOCK_SET)
+// ===========================================================================
+
+namespace
+{
+    const int64_t SOME_TIME_MS = 1762560000123LL;       // 2025-11-08 00:00:00.123 UTC
+
+    Bytes TimeSet(int64_t ms)
+    {
+        Bytes p;
+        p.U64((uint64_t)ms);
+        return p;
+    }
+
+    // u8 mask, then u8 len + text for the time zone (bit 0) and server (bit 1)
+    Bytes ClockSet(uint32_t mask, const char *tz, const char *server)
+    {
+        Bytes p;
+        p.U8(mask);
+        if (mask & CLOCK_SET_TZ)
+            p.U8((uint32_t)strlen(tz)).Raw(tz, strlen(tz));
+        if (mask & CLOCK_SET_SERVER)
+            p.U8((uint32_t)strlen(server)).Raw(server, strlen(server));
+        return p;
+    }
+
+    // TIME_GET read back
+    struct TimeInfo
+    {
+        uint32_t known, source;
+        int64_t  ms;
+        char     tz[64], server[64];
+    };
+
+    TimeInfo TimeGet(Fixture &f)
+    {
+        Msg m = f.Request(MSG_TIME_GET);
+        Check(m.Status() == ST_OK);
+        TimeInfo t = {};
+        t.known  = m.U8At(4);
+        t.source = m.U8At(5);
+        t.ms     = (int64_t)m.U64At(6);
+        int i = 14;
+        uint32_t n = m.U8At(i++);
+        Check(n < sizeof(t.tz));
+        memcpy(t.tz, m.data + i, n);
+        i += (int)n;
+        uint32_t s = m.U8At(i++);
+        Check(s < sizeof(t.server));
+        memcpy(t.server, m.data + i, s);
+        i += (int)s;
+        Check(i == m.len);
+        return t;
+    }
+}
+
+Fact("Protocol Clock Message Types")
+{
+    Assert(MSG_TIME_SET == 0x50 && MSG_TIME_GET == 0x51 && MSG_CLOCK_SET == 0x52);
+    Assert(INFO_FLAG_TIME_SET == 0x0008);
+}
+
+Fact("Protocol Time Set Sets The Clock")
+{
+    Fixture f;
+    Assert(f.Request(MSG_TIME_SET, TimeSet(SOME_TIME_MS)).Status() == ST_OK);
+    Assert(f.time_sets == 1 && f.time_ms == SOME_TIME_MS);
+
+    // The earliest time accepted
+    Assert(f.Request(MSG_TIME_SET, TimeSet(CLOCK_VALID_FROM_MS)).Status() == ST_OK);
+    Assert(f.time_ms == CLOCK_VALID_FROM_MS);
+
+    // Trailing bytes are ignored; pieces work
+    Bytes p = TimeSet(SOME_TIME_MS + 1);
+    p.U32(0xDEADBEEF);
+    Assert(f.Request(MSG_TIME_SET, p, 3).Status() == ST_OK && f.time_ms == SOME_TIME_MS + 1);
+}
+
+Fact("Protocol Time Set Errors Change Nothing")
+{
+    Fixture f;
+    Bytes shortp;
+    shortp.U32(1).U16(2).U8(3);                         // 7 bytes
+    Assert(f.Request(MSG_TIME_SET, shortp).Status() == ST_BAD_LENGTH);
+    Assert(f.Request(MSG_TIME_SET).Status() == ST_BAD_LENGTH);
+    Assert(f.Request(MSG_TIME_SET, TimeSet(CLOCK_VALID_FROM_MS - 1)).Status() == ST_BAD_ARG);   // before 2025
+    Assert(f.Request(MSG_TIME_SET, TimeSet(0)).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_TIME_SET, TimeSet(-1)).Status() == ST_BAD_ARG);
+    Assert(f.time_sets == 0 && f.time_ms == 0);
+}
+
+Fact("Protocol Time Get Layout")
+{
+    Fixture f;
+    Msg m = f.Request(MSG_TIME_GET);
+    Assert(m.Status() == ST_OK);
+    Assert(m.len == 4 + 1 + 1 + 8 + 1 + 4 + 1 + 12);   // known, source, ms, "UTC0", "pool.ntp.org"
+    TimeInfo t = TimeGet(f);
+    Assert(t.known == 0 && t.source == 0 && t.ms == 0);
+    Assert(!strcmp(t.tz, CLOCK_TZ_DEFAULT) && !strcmp(t.server, CLOCK_SERVER_DEFAULT));
+
+    f.Request(MSG_TIME_SET, TimeSet(SOME_TIME_MS));
+    t = TimeGet(f);
+    Assert(t.known == 1 && t.source == (uint32_t)ClockSource::Host && t.ms == SOME_TIME_MS);
+
+    // Shows what the device layer reports (NTP set it)
+    f.time_source = ClockSource::Ntp;
+    t = TimeGet(f);
+    Assert(t.known == 1 && t.source == 2);
+
+    // A payload is ignored
+    Bytes p;
+    p.U32(1);
+    Assert(f.Request(MSG_TIME_GET, p).Status() == ST_OK);
+}
+
+Fact("Protocol Clock Set Mask Combinations")
+{
+    Fixture f;
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_TZ, "AEST-10AEDT,M10.1.0,M4.1.0/3", "")).Status() == ST_OK);
+    TimeInfo t = TimeGet(f);
+    Assert(!strcmp(t.tz, "AEST-10AEDT,M10.1.0,M4.1.0/3") && !strcmp(t.server, CLOCK_SERVER_DEFAULT));
+    Assert(f.clock_changes == 1 && f.clock_storage.saves == 1);
+
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_SERVER, "", "time.example.com")).Status() == ST_OK);
+    t = TimeGet(f);
+    Assert(!strcmp(t.tz, "AEST-10AEDT,M10.1.0,M4.1.0/3") && !strcmp(t.server, "time.example.com"));
+
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_TZ | CLOCK_SET_SERVER, "EST5EDT", "10.0.0.1")).Status() == ST_OK);
+    t = TimeGet(f);
+    Assert(!strcmp(t.tz, "EST5EDT") && !strcmp(t.server, "10.0.0.1"));
+    Assert(f.clock_changes == 3);
+
+    // Nothing masked, or nothing different: no change
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(0, "", "")).Status() == ST_OK);
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_TZ, "EST5EDT", "")).Status() == ST_OK);
+    Assert(f.clock_changes == 3 && f.clock_storage.saves == 3);
+
+    // Trailing bytes and pieces
+    Bytes p = ClockSet(CLOCK_SET_SERVER, "", "a.b");
+    p.U8(9);
+    Assert(f.Request(MSG_CLOCK_SET, p, 2).Status() == ST_OK && !strcmp(TimeGet(f).server, "a.b"));
+}
+
+Fact("Protocol Clock Set Empty Means The Default")
+{
+    Fixture f;
+    f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_TZ | CLOCK_SET_SERVER, "EST5EDT", "a.b"));
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_TZ, "", "")).Status() == ST_OK);
+    TimeInfo t = TimeGet(f);
+    Assert(!strcmp(t.tz, CLOCK_TZ_DEFAULT) && !strcmp(t.server, "a.b"));
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_SERVER, "", "")).Status() == ST_OK);
+    t = TimeGet(f);
+    Assert(!strcmp(t.tz, CLOCK_TZ_DEFAULT) && !strcmp(t.server, CLOCK_SERVER_DEFAULT));
+}
+
+Fact("Protocol Clock Set Errors Change Nothing")
+{
+    Fixture f;
+    f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_TZ | CLOCK_SET_SERVER, "EST5EDT", "a.b"));
+    int changes = f.clock_changes;
+
+    char longest[80];
+    memset(longest, 'a', sizeof(longest));
+    longest[CLOCK_FIELD_MAX + 1] = 0;                                                              // 64 bytes
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_TZ, longest, "")).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_SERVER, "", longest)).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_TZ, "UTC 0", "")).Status() == ST_BAD_ARG);      // space
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_SERVER, "", "a_b")).Status() == ST_BAD_ARG);    // server chars
+    // All or nothing: a good time zone with a bad server changes neither
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_TZ | CLOCK_SET_SERVER, "UTC0", "a b")).Status() == ST_BAD_ARG);
+    // Unknown mask bits
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(0x04, "", "")).Status() == ST_BAD_ARG);
+
+    // Lengths
+    Assert(f.Request(MSG_CLOCK_SET).Status() == ST_BAD_LENGTH);                                      // no mask
+    Bytes noLen;
+    noLen.U8(CLOCK_SET_TZ);
+    Assert(f.Request(MSG_CLOCK_SET, noLen).Status() == ST_BAD_LENGTH);
+    Bytes shortTz;
+    shortTz.U8(CLOCK_SET_TZ).U8(5).Raw("UTC", 3);
+    Assert(f.Request(MSG_CLOCK_SET, shortTz).Status() == ST_BAD_LENGTH);
+    Bytes noServer;
+    noServer.U8(CLOCK_SET_TZ | CLOCK_SET_SERVER).U8(4).Raw("UTC0", 4);
+    Assert(f.Request(MSG_CLOCK_SET, noServer).Status() == ST_BAD_LENGTH);
+
+    TimeInfo t = TimeGet(f);
+    Assert(!strcmp(t.tz, "EST5EDT") && !strcmp(t.server, "a.b"));
+    Assert(f.clock_changes == changes);
+}
+
+Fact("Protocol Clock Set Reports A Storage Failure")
+{
+    Fixture f;
+    f.clock_storage.fail_save = true;
+    Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_TZ, "EST5EDT", "")).Status() == ST_IO_ERROR);
+    Assert(!strcmp(TimeGet(f).tz, CLOCK_TZ_DEFAULT) && f.clock_changes == 0);
+}
+
+Fact("Protocol Clock Requests Work Standalone And Hosted")
+{
+    for (int hosted = 0; hosted < 2; hosted++) {
+        Fixture f(1u << 20, hosted != 0);
+        Assert(f.proto.Hosted() == (hosted != 0));
+        Assert(f.Request(MSG_TIME_SET, TimeSet(SOME_TIME_MS)).Status() == ST_OK);
+        Assert(f.Request(MSG_TIME_GET).Status() == ST_OK);
+        Assert(f.Request(MSG_CLOCK_SET, ClockSet(CLOCK_SET_TZ, "EST5EDT", "")).Status() == ST_OK);
+        Assert(f.time_ms == SOME_TIME_MS && f.clock_changes == 1);
+        Assert(f.proto.Hosted() == (hosted != 0));                  // the mode is left alone
+        Assert(f.comp_resets == 0 && f.status_sets == 0);
+    }
+}
+
+Fact("Protocol Get Info Time Flag Follows The Clock")
+{
+    Fixture f;
+    Assert((InfoFlags(f) & INFO_FLAG_TIME_SET) == 0);
+    f.Request(MSG_TIME_SET, TimeSet(SOME_TIME_MS));
+    Assert(InfoFlags(f) == (INFO_FLAG_BACKLIGHT | INFO_FLAG_TIME_SET));
+    f.time_ms = 1000;                                                   // power cycled: 1970 again
+    Assert((InfoFlags(f) & INFO_FLAG_TIME_SET) == 0);
+}
+
+Fact("Protocol Standalone Right Text Is The Clock After Release And Cleared By A Takeover")
+{
+    Fixture f;
+    Bytes t;
+    t.U8(STATUS_TEXT_RIGHT).U8(3).Raw("abc", 3);
+    f.Request(MSG_SET_STATUS_TEXT, t);
+    f.Request(MSG_RELEASE_CONTROL);
+    Assert(!strcmp(f.status_text[1], STATUS_TEXT_STANDALONE_RIGHT) && f.status_text[0][0] == 0);
+
+    f.Request(MSG_TAKE_CONTROL);
+    Assert(f.status_text[0][0] == 0 && f.status_text[1][0] == 0);
+    f.Request(MSG_SET_STATUS_TEXT, t);
+    Assert(f.Request(MSG_RESET).Status() == ST_OK);
+    Assert(f.status_text[1][0] == 0);
+
+    // A disconnect is a release too
+    f.Request(MSG_SET_STATUS_TEXT, t);
+    f.proto.PostDisconnect();
+    f.proto.ServiceDisconnect();
+    Assert(!strcmp(f.status_text[1], STATUS_TEXT_STANDALONE_RIGHT));
 }

@@ -62,22 +62,12 @@ bool wifi_blob_decode(const uint8_t *blob, uint32_t len, WifiCredentials *out)
     return wifi_credentials_make(out, blob + WIFI_BLOB_HEADER, ssid_len, blob + WIFI_BLOB_HEADER + ssid_len, pass_len);
 }
 
-void WifiConfig::Init(const WifiStorage &storage)
+void WifiConfig::Init(const BlobStorage &storage)
 {
     m_storage = storage;
     memset(&m_creds, 0, sizeof(m_creds));
-    if (!m_storage.load)
-        return;
-
-    uint8_t  blob[WIFI_BLOB_MAX];
-    uint32_t len = 0;
-    if (!m_storage.load(blob, sizeof(blob), &len, m_storage.ctx))
-        return;
-    if (!wifi_blob_decode(blob, len, &m_creds)) {
-        memset(&m_creds, 0, sizeof(m_creds));
-        if (m_storage.erase)
-            m_storage.erase(m_storage.ctx);
-    }
+    uint8_t blob[WIFI_BLOB_MAX];
+    blob_storage_load(m_storage, blob, sizeof(blob), wifi_blob_decode, &m_creds);
 }
 
 WifiResult WifiConfig::Set(const uint8_t *ssid, uint32_t ssid_len, const uint8_t *pass, uint32_t pass_len)
@@ -88,15 +78,10 @@ WifiResult WifiConfig::Set(const uint8_t *ssid, uint32_t ssid_len, const uint8_t
     if (wifi_credentials_equal(next, m_creds))
         return WifiResult::Ok;                  // no flash write, no reconnect
 
-    if (next.ssid_len) {
-        uint8_t blob[WIFI_BLOB_MAX];
-        uint32_t n = wifi_blob_encode(next, blob);
-        if (!m_storage.save || !m_storage.save(blob, n, m_storage.ctx))
-            return WifiResult::IoError;
-    } else {
-        if (!m_storage.erase || !m_storage.erase(m_storage.ctx))
-            return WifiResult::IoError;
-    }
+    uint8_t blob[WIFI_BLOB_MAX];
+    uint32_t n = next.ssid_len ? wifi_blob_encode(next, blob) : 0;
+    if (!blob_storage_write(m_storage, next.ssid_len ? blob : nullptr, n))   // a clear erases
+        return WifiResult::IoError;
 
     m_creds = next;
     if (m_changed)

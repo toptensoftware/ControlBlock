@@ -15,6 +15,10 @@ export const USAGE = `usage: node cli/cli.js <command> ...
       the device's Wi-Fi network: set stores one (no password: an open network) and
       waits for the connection; get shows it (password in clear text); clear forgets
       it; wait waits until connected (default ${WIFI_WAIT_S} s)
+  time [set] | get | zone <posix TZ>|--default | server <host>|--default  [--serial S]
+      the device's clock: set (the default) sets it from this computer's clock; get
+      shows it; zone and server store the time zone (a POSIX TZ string, default UTC0)
+      and the NTP server (default pool.ntp.org); --default puts one back
   --serial S picks the device by serial number (default: the first one found)`;
 
 export class UsageError extends Error
@@ -86,17 +90,45 @@ function parseUpload(argv)
     return { command: "upload", input, binary: isBlob(input), serial: opts.serial, force: !!opts.force };
 }
 
-// wifi <action> ...: each action's positional arguments, checked and named
-const WIFI_ACTIONS = {
+// An action that takes no arguments (or options beyond --serial)
+function none(name)
+{
+    return (pos, opts) => {
+        if (pos.length)
+            throw new UsageError(`${name} takes no arguments`);
+        if (opts.default)
+            throw new UsageError(`--default only applies to time zone and time server`);
+        return {};
+    };
+}
+
+// A command made of actions (`wifi set ...`): `actions` maps each action to a function of
+// its positional arguments and the options, which checks them and returns them named.
+// `scanOptions` are scan()'s beyond --serial; `defaultAction` is used when none is given.
+function actionCommand(command, actions, { scanOptions = {}, defaultAction } = {})
+{
+    return argv => {
+        const { opts, pos } = scan(argv, { ...scanOptions, values: { ...SERIAL, ...scanOptions.values } });
+        const [action = defaultAction, ...rest] = pos;
+        if (action === undefined)
+            throw new UsageError(`${command} needs one of ${Object.keys(actions).join(", ")}`);
+        if (!Object.hasOwn(actions, action))
+            throw new UsageError(`unknown ${command} command ${action}`);
+        return { command, action, serial: opts.serial, ...actions[action](rest, opts) };
+    };
+}
+
+// wifi <action> ...
+const parseWifi = actionCommand("wifi", {
     set(pos)
     {
         if (pos.length < 1 || pos.length > 2)
             throw new UsageError("wifi set needs an ssid and, unless the network is open, a password");
         return { ssid: pos[0], password: pos[1] ?? "", seconds: WIFI_WAIT_S };
     },
-    get: none("get"),
-    clear: none("clear"),
-    status: none("status"),
+    get: none("wifi get"),
+    clear: none("wifi clear"),
+    status: none("wifi status"),
     wait(pos)
     {
         const seconds = Number(pos[0] ?? WIFI_WAIT_S);
@@ -104,29 +136,27 @@ const WIFI_ACTIONS = {
             throw new UsageError("wifi wait takes a number of seconds (more than 0)");
         return { seconds };
     },
-};
+});
 
-function none(action)
+// time zone/server: one value, or --default ("": the device's default)
+function setting(name, what)
 {
-    return pos => {
-        if (pos.length)
-            throw new UsageError(`wifi ${action} takes no arguments`);
-        return {};
+    return (pos, opts) => {
+        if (pos.length !== (opts.default ? 0 : 1))
+            throw new UsageError(`${name} needs ${what} or --default`);
+        return { value: opts.default ? "" : pos[0] };
     };
 }
 
-function parseWifi(argv)
-{
-    const { opts, pos } = scan(argv, { values: SERIAL });
-    const [action, ...rest] = pos;
-    if (action === undefined)
-        throw new UsageError("wifi needs one of set, get, clear, status, wait");
-    if (!Object.hasOwn(WIFI_ACTIONS, action))
-        throw new UsageError(`unknown wifi command ${action}`);
-    return { command: "wifi", action, serial: opts.serial, ...WIFI_ACTIONS[action](rest) };
-}
+// time [<action>] ...
+const parseTime = actionCommand("time", {
+    set: none("time set"),
+    get: none("time get"),
+    zone: setting("time zone", "a POSIX TZ string"),
+    server: setting("time server", "a host name"),
+}, { scanOptions: { flags: { "--default": "default" } }, defaultAction: "set" });
 
-const COMMANDS = { bake: parseBake, upload: parseUpload, wifi: parseWifi };
+const COMMANDS = { bake: parseBake, upload: parseUpload, wifi: parseWifi, time: parseTime };
 
 export function parseArgs(argv)
 {

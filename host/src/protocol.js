@@ -25,6 +25,12 @@ export const WIFI_PASS_MIN_BYTES = 8;
 export const WIFI_PASS_MAX_BYTES = 63;
 export const WifiState = Object.freeze({ NO_CREDENTIALS: 0, CONNECTING: 1, CONNECTED: 2, RETRYING: 3 });
 
+// Clock (docs/protocol.md, Clock)
+export const TIME_VALID_FROM_MS = Date.UTC(2025, 0, 1);    // earlier reads as "not known"; TIME_SET refuses it
+export const CLOCK_FIELD_MAX_BYTES = 63;                   // CLOCK_SET: the time zone and the NTP server
+export const ClockSource = Object.freeze({ NONE: 0, HOST: 1, NTP: 2 });
+const ClockSetMask = Object.freeze({ TZ: 0x01, SERVER: 0x02 });
+
 export const Flags = Object.freeze({
     RESPONSE: 0x01,
     EVENT:    0x02,
@@ -50,7 +56,10 @@ export const Msg = Object.freeze({
     WIFI_SET:       0x40,
     WIFI_GET:       0x41,
     WIFI_STATUS:    0x42,
-    KEY:            0x80,       // events
+    TIME_SET:       0x50,
+    TIME_GET:       0x51,
+    CLOCK_SET:      0x52,
+    KEY:           0x80,       // events
     PAGE_CHANGED:   0x81,
     WAKE:           0x82,
     HEARTBEAT:      0x83,
@@ -58,7 +67,7 @@ export const Msg = Object.freeze({
 });
 
 // GET_INFO flags
-export const InfoFlags = Object.freeze({ BACKLIGHT: 0x0001, WIFI_CREDENTIALS: 0x0002, HOSTED: 0x0004 });
+export const InfoFlags = Object.freeze({ BACKLIGHT: 0x0001, WIFI_CREDENTIALS: 0x0002, HOSTED: 0x0004, TIME_SET: 0x0008 });
 
 export const Status = Object.freeze({
     OK:           0,
@@ -80,10 +89,7 @@ export const KeyFlags  = Object.freeze({ EMPTY: 0x0001, DISABLED: 0x0002 });
 
 export function statusName(status)
 {
-    for (const [name, value] of Object.entries(Status))
-        if (value === status)
-            return name;
-    return `STATUS_${status}`;
+    return enumName(Status, status, "STATUS");
 }
 
 // A request (or any message): header + payload
@@ -186,6 +192,7 @@ export class Writer
     u8(v)  { this.view.setUint8(this.pos, v); this.pos += 1; return this; }
     u16(v) { this.view.setUint16(this.pos, v, true); this.pos += 2; return this; }
     u32(v) { this.view.setUint32(this.pos, v >>> 0, true); this.pos += 4; return this; }
+    i64(v) { this.view.setBigInt64(this.pos, BigInt(v), true); this.pos += 8; return this; }
     raw(b) { this.bytes.set(b, this.pos); this.pos += b.length; return this; }
     done() { return this.bytes.subarray(0, this.pos); }
 }
@@ -204,6 +211,7 @@ export class Reader
     u8(def = 0)  { if (!this.has(1)) return def; const v = this.view.getUint8(this.pos); this.pos += 1; return v; }
     u16(def = 0) { if (!this.has(2)) return def; const v = this.view.getUint16(this.pos, true); this.pos += 2; return v; }
     u32(def = 0) { if (!this.has(4)) return def; const v = this.view.getUint32(this.pos, true); this.pos += 4; return v; }
+    i64(def = 0) { if (!this.has(8)) return def; const v = Number(this.view.getBigInt64(this.pos, true)); this.pos += 8; return v; }
     str()
     {
         const n = this.u8();
@@ -259,6 +267,55 @@ export function encodeWifiSet(ssid, password = "")
     return new Writer(2 + ssidBytes.length + pass.length).u8(ssidBytes.length).u8(pass.length).raw(ssidBytes).raw(pass).done();
 }
 
+// TIME_SET: a Date or UTC milliseconds. Throws for a time the device would
+// refuse (before 2025, when its clock reads "not known").
+export function encodeTimeSet(time)
+{
+    const ms = time instanceof Date ? time.getTime() : time;
+    if (typeof ms !== "number")
+        throw new TypeError("The time must be a Date or milliseconds");
+    if (!(ms >= TIME_VALID_FROM_MS) || !Number.isSafeInteger(Math.trunc(ms)))
+        throw new RangeError(`The time must be 2025-01-01 or later (got ${time})`);
+    return new Writer(8).i64(Math.trunc(ms)).done();
+}
+
+// CLOCK_SET: { timeZone, ntpServer }, either or both; "" sets one back to the
+// device's default (UTC0, pool.ntp.org). Throws rather than send what the
+// device would refuse.
+const CLOCK_FIELDS = [
+    // name, mask bit, allowed characters (all ASCII, so length = bytes) and how to say them
+    ["timeZone",  ClockSetMask.TZ,     /^[\x21-\x7E]*$/,     "printable ASCII without spaces"],
+    ["ntpServer", ClockSetMask.SERVER, /^[A-Za-z0-9.-]*$/,  "A-Z a-z 0-9 . -"],
+];
+
+export function encodeClockSet(settings)
+{
+    for (const name of Object.keys(settings))
+        if (!CLOCK_FIELDS.some(([field]) => field === name))
+            throw new TypeError(`Unknown clock setting "${name}" (timeZone or ntpServer)`);
+    let mask = 0;
+    const parts = [];
+    for (const [name, bit, chars, charsText] of CLOCK_FIELDS) {
+        const value = settings[name];
+        if (value === undefined)
+            continue;
+        if (typeof value !== "string")
+            throw new TypeError(`${name} must be a string`);
+        if (!chars.test(value))
+            throw new RangeError(`${name} "${value}" must be ${charsText}`);
+        if (value.length > CLOCK_FIELD_MAX_BYTES)
+            throw new RangeError(`${name} is ${value.length} bytes; the limit is ${CLOCK_FIELD_MAX_BYTES}`);
+        mask |= bit;
+        parts.push(new TextEncoder().encode(value));
+    }
+    if (!mask)
+        throw new TypeError("Nothing to set: give timeZone and/or ntpServer");
+    const w = new Writer(1 + parts.reduce((n, p) => n + 1 + p.length, 0)).u8(mask);
+    for (const p of parts)
+        w.u8(p.length).raw(p);
+    return w.done();
+}
+
 // One PUT_IMAGE chunk
 export function encodePutImage(id, total, offset, chunk)
 {
@@ -300,6 +357,7 @@ export function decodeInfo(data)
     info.backlight         = (flags & InfoFlags.BACKLIGHT) !== 0;
     info.wifiCredentials   = (flags & InfoFlags.WIFI_CREDENTIALS) !== 0;
     info.hosted            = (flags & InfoFlags.HOSTED) !== 0;
+    info.timeSet           = (flags & InfoFlags.TIME_SET) !== 0;
     info.maxPayload        = r.u32();
     info.imageCapacity     = r.u32();
     info.imageUsed         = r.u32();
@@ -334,10 +392,13 @@ export function decodeWifiCredentials(data)
     return { ssid: new TextDecoder().decode(ssidBytes), password: new TextDecoder().decode(pass), ssidBytes };
 }
 
-function wifiStateName(state)
+// The name of `value` in an enum table, or `${prefix}_${value}` for one it doesn't have
+function enumName(table, value, prefix)
 {
-    return Object.keys(WifiState).find(k => WifiState[k] === state) ?? `STATE_${state}`;
+    return Object.keys(table).find(k => table[k] === value) ?? `${prefix}_${value}`;
 }
+
+const wifiStateName = state => enumName(WifiState, state, "STATE");
 
 function ipString(state, ip)
 {
@@ -354,6 +415,19 @@ export function decodeWifiStatus(data)
     const ip = data.subarray(r.pos, r.pos + 4);
     const mac = [...data.subarray(r.pos + 4, r.pos + 10)].map(b => b.toString(16).padStart(2, "0")).join(":");
     return { state, stateName: wifiStateName(state), reason, rssi, ip: ipString(state, ip), mac };
+}
+
+// TIME_GET response data: { known, source, sourceName, time, timeZone, ntpServer }.
+// `time` (a Date) is null while the clock isn't known; `source` is ClockSource.
+export function decodeTime(data)
+{
+    const r = new Reader(data);
+    const known = r.u8() !== 0, source = r.u8(), ms = r.i64();
+    return {
+        known, source, sourceName: enumName(ClockSource, source, "SOURCE"),
+        time: known ? new Date(ms) : null,
+        timeZone: r.str(), ntpServer: r.str(),
+    };
 }
 
 // QUERY_IMAGES response data: one bool per ID asked about

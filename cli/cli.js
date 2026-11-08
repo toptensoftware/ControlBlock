@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ControlBlock, BakeError, WifiState, bakeFile, formatEntries, uploadBlob } from "../host/index.js";
+import { ControlBlock, BakeError, WifiState, ClockSource, bakeFile, formatEntries, uploadBlob } from "../host/index.js";
 import { parseArgs, UsageError } from "./args.js";
 
 // Bake a layout file; prints its warnings. Resolves the blob.
@@ -54,19 +54,24 @@ const COMMANDS = {
         return 0;
     },
 
-    async wifi(a, io)
-    {
-        const cb = await io.open({ serial: a.serial });
-        try
-        {
-            return await WIFI[a.action](cb, a, io);
-        }
-        finally
-        {
-            await cb.close();
-        }
-    },
+    wifi: (a, io) => runAction(WIFI, a, io),
+    time: (a, io) => runAction(TIME, a, io),
 };
+
+// Opens the device, runs the command's action from `actions` and closes it again;
+// resolves the action's exit code
+async function runAction(actions, a, io)
+{
+    const cb = await io.open({ serial: a.serial });
+    try
+    {
+        return await actions[a.action](cb, a, io);
+    }
+    finally
+    {
+        await cb.close();
+    }
+}
 
 // A Wi-Fi status on one line: state, address and signal once connected, the last
 // disconnect reason while retrying, and the MAC once there's a network to join
@@ -115,6 +120,44 @@ const WIFI = {
     },
     wait: (cb, a, io) => waitConnected(cb, a.seconds, io),
 };
+
+const SOURCE_TEXT = { [ClockSource.HOST]: " (set by the host)", [ClockSource.NTP]: " (set by NTP)" };
+
+// The device's clock settings, one line each, as `time get` shows them
+const clockLines = {
+    zone: t => `time zone: ${t.timeZone}`,
+    server: t => `ntp server: ${t.ntpServer}`,
+};
+
+// time actions (docs/protocol.md, Clock): resolve the exit code. None needs control of
+// the device: they work while it runs standalone.
+const TIME = {
+    async set(cb, a, io)
+    {
+        const now = new Date();
+        await cb.setTime(now);
+        io.stdout(`clock set to ${now.toISOString()}`);
+        return 0;
+    },
+    async get(cb, a, io)
+    {
+        const t = await cb.getTime();
+        io.stdout(t.known ? `time: ${t.time.toISOString()}${SOURCE_TEXT[t.source] ?? ""}` : "time: not set");
+        for (const line of Object.values(clockLines))
+            io.stdout(line(t));
+        return 0;
+    },
+    zone: (cb, a, io) => setClock(cb, "zone", { timeZone: a.value }, io),
+    server: (cb, a, io) => setClock(cb, "server", { ntpServer: a.value }, io),
+};
+
+// Store one clock setting, then show what the device now uses (the default, after --default)
+async function setClock(cb, action, settings, io)
+{
+    await cb.setClock(settings);
+    io.stdout(clockLines[action](await cb.getTime()));
+    return 0;
+}
 
 // Runs a command line; resolves the exit code. `open(options)` opens a device (default
 // ControlBlock.open) and `reconnect` ({ timeoutMs, intervalMs }) tunes the wait for a

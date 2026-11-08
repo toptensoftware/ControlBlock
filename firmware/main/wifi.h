@@ -30,5 +30,11 @@ void wifi_set_state_cb(wifi_state_cb_t cb);
 // WIFI_STATUS: the state now, with the signal and MAC from the driver
 void wifi_get_status(WifiStatus *out);
 
+// The clock settings changed (clock.cpp; any task, doesn't block): the Wi-Fi
+// task restarts SNTP if the NTP server differs and Wi-Fi is connected. SNTP
+// itself starts on each GotIp (server from clock_ntp_server()) and stops with
+// the driver; a sync calls clock_ntp_synced().
+void wifi_ntp_server_changed(void);
+
 // Has an IP (cheap, any task): what the network ops check before sending
 bool wifi_is_connected(void);

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ControlBlock, ControlBlockError } from "../src/ControlBlock.js";
-import { Msg, Status, Reader, encodeIds, crc32, HEARTBEAT_INTERVAL_MS, WifiState, encodeWifiSet } from "../src/protocol.js";
+import { Msg, Status, Reader, encodeIds, crc32, HEARTBEAT_INTERVAL_MS, WifiState, encodeWifiSet, encodeTimeSet, ClockSource } from "../src/protocol.js";
 import { imageId, keyImage, encodeImage } from "../src/images.js";
 import { readRleHeader } from "rle565/unpack.js";
 import { FakeDevice } from "./FakeDevice.js";
@@ -536,5 +536,86 @@ test("a refused releaseControl throws and leaves info alone", async () => {
 test("a reconnecting host learns the device is still hosted", async () => {
     const { cb } = await connected({ hosted: true });
     assert.equal(cb.info.hosted, true);
+    await cb.close();
+});
+
+// --- Clock (docs/protocol.md, Clock) ---
+
+const ms2026 = Date.UTC(2026, 10, 8, 7, 59, 1, 234);
+
+test("setTime sends the time given (default now) and info follows; no takeControl needed", async () => {
+    const { dev, cb } = await connected({ hosted: false, clock: {} });
+    assert.equal(cb.info.timeSet, false);
+    await cb.setTime(new Date(ms2026));
+    assert.equal(cb.info.timeSet, true);
+    const sent = dev.requests.filter(m => m.type === Msg.TIME_SET);
+    assert.deepEqual([...sent[0].payload], [...encodeTimeSet(ms2026)]);
+    assert.equal((await cb.getInfo()).timeSet, true);
+
+    const before = Date.now();
+    await cb.setTime();
+    const at = Number(new DataView(dev.requests.filter(m => m.type === Msg.TIME_SET)[1].payload.buffer).getBigInt64(0, true));
+    assert.ok(at >= before && at <= Date.now());
+    await cb.close();
+});
+
+test("getTime reads the clock, the time zone and the NTP server", async () => {
+    const { dev, cb } = await connected({ hosted: false, clock: {} });
+    assert.deepEqual(await cb.getTime(), { known: false, source: ClockSource.NONE, sourceName: "NONE", time: null, timeZone: "UTC0", ntpServer: "pool.ntp.org" });
+    await cb.setTime(new Date(ms2026));
+    const t = await cb.getTime();
+    assert.equal(t.known, true);
+    assert.equal(t.sourceName, "HOST");
+    assert.ok(Math.abs(t.time.getTime() - ms2026) < 1000);         // the fake's clock runs on
+    dev.clock.source = ClockSource.NTP;
+    assert.equal((await cb.getTime()).source, ClockSource.NTP);
+    await cb.close();
+});
+
+test("setClock sets either or both settings; empty is the default", async () => {
+    const { dev, cb } = await connected({ hosted: false, clock: {} });
+    await cb.setClock({ timeZone: "AEST-10AEDT,M10.1.0,M4.1.0/3" });
+    assert.deepEqual([dev.clock.tz, dev.clock.server], ["AEST-10AEDT,M10.1.0,M4.1.0/3", "pool.ntp.org"]);
+    await cb.setClock({ ntpServer: "time.example.com" });
+    assert.deepEqual([dev.clock.tz, dev.clock.server], ["AEST-10AEDT,M10.1.0,M4.1.0/3", "time.example.com"]);
+    assert.equal((await cb.getTime()).ntpServer, "time.example.com");
+    await cb.setClock({ timeZone: "", ntpServer: "" });
+    assert.deepEqual([dev.clock.tz, dev.clock.server], ["UTC0", "pool.ntp.org"]);
+    await cb.close();
+});
+
+test("setTime and setClock refuse bad values before sending anything", async () => {
+    const { dev, cb } = await connected({ clock: {} });
+    await assert.rejects(cb.setTime(new Date(0)), RangeError);
+    await assert.rejects(cb.setClock({ timeZone: "UTC 0" }), RangeError);
+    await assert.rejects(cb.setClock({}), TypeError);
+    assert.equal(dev.requests.filter(m => m.type === Msg.TIME_SET || m.type === Msg.CLOCK_SET).length, 0);
+    assert.equal(cb.info.timeSet, false);
+    await cb.close();
+});
+
+test("a device that refuses the time throws a ControlBlockError and info is left alone", async () => {
+    const { cb } = await connected({ handler: () => ({ status: Status.BAD_ARG, data: new Uint8Array(0) }) });
+    await assert.rejects(cb.setTime(new Date(ms2026)), err => err instanceof ControlBlockError && err.status === Status.BAD_ARG);
+    assert.equal(cb.info.timeSet, false);
+    await assert.rejects(cb.setClock({ timeZone: "UTC0" }), err => err.status === Status.BAD_ARG);
+    await cb.close();
+});
+
+test("connect sends the PC's time only when asked to", async () => {
+    const plain = new FakeDevice({ clock: {} });
+    const cb1 = new ControlBlock(plain, { timeoutMs: 300 });
+    await cb1.connect();
+    assert.equal(plain.requests.filter(m => m.type === Msg.TIME_SET).length, 0);
+    assert.equal(cb1.info.timeSet, false);
+    await cb1.close();
+
+    const dev = new FakeDevice({ clock: {} });
+    const cb = new ControlBlock(dev, { timeoutMs: 300 });
+    const before = Date.now();
+    const info = await cb.connect({ setTime: true });
+    assert.deepEqual(dev.requests.map(m => m.type), [Msg.GET_INFO, Msg.TIME_SET]);
+    assert.equal(info.timeSet, true);
+    assert.ok(dev.clock.offset !== null && Math.abs(dev.clock.offset) <= Date.now() - before + 5);
     await cb.close();
 });

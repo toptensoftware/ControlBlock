@@ -76,7 +76,7 @@ Notes for the order: step 1 doesn't depend on HID, so hosted mode keeps working 
 ### Status bar
 
 - **Left text:** always the selected activity's name, or its optional `displayName` if set. With no activity selected, it is empty.
-- **Right text:** blank for now. It will show the time once Wi-Fi and NTP are set up.
+- **Right text:** fixed `{clock}` (`STATUS_TEXT_STANDALONE_RIGHT` in `protocol.h`): the time, 12 h without am/pm ("2:05"), blank until NTP or a host has set it ([`status-bar.md`](status-bar.md#clock)). Set at boot and restored on release and disconnect; a takeover clears it like the left text, and the host sets its own (which may hold `{clock}`). No layout field.
 - **Pager pills:** one pill per page, including Home.
 
 ### Wi-Fi

@@ -121,6 +121,9 @@ Any data specific to that response follows these two fields.
 | `0x40` | WIFI_SET | Store Wi-Fi credentials and connect; an empty ssid clears |
 | `0x41` | WIFI_GET | Read the stored Wi-Fi credentials |
 | `0x42` | WIFI_STATUS | Wi-Fi connection state, IP, signal |
+| `0x50` | TIME_SET | Set the device clock (UTC) |
+| `0x51` | TIME_GET | Read the device clock, time zone and NTP server |
+| `0x52` | CLOCK_SET | Set the time zone and/or the NTP server |
 
 ### `0x00` PING
 
@@ -135,7 +138,7 @@ Any data specific to that response follows these two fields.
 | Type | Field | Notes |
 |---|---|---|
 | u16 | protocol_version | `1` |
-| u16 | flags | Bit 0: backlight is on (see [`backlight.md`](backlight.md)). Bit 1: Wi-Fi credentials are stored (see [`wifi.md`](wifi.md)). Bit 2: hosted (a host has taken control; clear = standalone). Other bits 0 |
+| u16 | flags | Bit 0: backlight is on (see [`backlight.md`](backlight.md)). Bit 1: Wi-Fi credentials are stored (see [`wifi.md`](wifi.md)). Bit 2: hosted (a host has taken control; clear = standalone). Bit 3: the clock is set (see [Clock](#clock)). Other bits 0 |
 | u32 | max_payload | Largest payload the device accepts, for every message type (8192 in v1) |
 | u32 | image_capacity | Bytes available for images |
 | u32 | image_used | Bytes in use, counting memory not yet released (retired or mid-replace images) |
@@ -176,14 +179,16 @@ Clears all pages (the page count goes to 1 and every key becomes empty), abandon
 | u8 | len | Bytes of text, 0..47 |
 | u8[len] | text | UTF-8, no NUL |
 
-Sets one of the two texts in the [status bar](status-bar.md) (left aligned and right aligned). The host decides what they say; the device has no clock. To change both, send two requests (they may be pipelined).
+Sets one of the two texts in the [status bar](status-bar.md) (left aligned and right aligned). The host decides what they say. To change both, send two requests (they may be pipelined).
+
+- **Clock:** every `{clock}` in either text is replaced by the device's local time, `h:mm` on a 12 hour clock without am/pm (`2:05`, `12:30`), kept current each minute. It is blank until the clock is set ([Clock](#clock)). Only exactly `{clock}` is replaced; other braces are shown as they are. The 47-byte limit applies to the text as sent.
 
 - **Empty text** (`len = 0`) clears the text.
 - **Setting the current text** changes nothing on screen.
 - **Fixed buffers:** each text is held in a 48-byte buffer on the device, so the limit is 47 bytes (not characters).
 - **Rejected texts:** the text is not cut. The request fails and the bar keeps what it had. `BAD_LENGTH` if `len` runs past the payload; `BAD_ARG` for a `field` other than 0 or 1, more than 47 bytes, or text that isn't well-formed UTF-8 (bad or truncated sequences, overlongs, surrogates, code points above U+10FFFF, or a NUL).
 - **Characters:** the current font covers ASCII 32–126 only, so send ASCII for now.
-- **Lifetime:** the texts stay until changed, or until `RESET`. They're drawn by the device's status task, not at once: the new text appears within a frame or two of the response.
+- **Lifetime:** the texts stay until changed, or until `RESET` or `TAKE_CONTROL` (which clear both). Releasing control (or a disconnect) clears the left text and sets the right one to `{clock}`, the standalone default. They're drawn by the device's status task, not at once: the new text appears within a frame or two of the response.
 
 ### `0x05` SET_BACKLIGHT
 
@@ -218,7 +223,7 @@ Switches the device from standalone to hosted mode ([`standalone.md`](standalone
 | Request or event | Standalone | Hosted |
 |---|---|---|
 | `RESET`, `SET_STATUS_TEXT`, `PUT_IMAGE`, `FREE_IMAGES`, `SET_PAGE_COUNT`, `SET_KEYS`, `SET_PAGE` | **`NOT_HOSTED`** (a refused `PUT_IMAGE`'s data is skipped, so the stream stays in step) | accepted |
-| `PING`, `GET_INFO`, `QUERY_IMAGES`, `SET_BACKLIGHT`, `LAYOUT_*`, `WIFI_*`, `TAKE_CONTROL`, `RELEASE_CONTROL` | accepted | accepted |
+| `PING`, `GET_INFO`, `QUERY_IMAGES`, `SET_BACKLIGHT`, `LAYOUT_*`, `WIFI_*`, `TIME_SET`, `TIME_GET`, `CLOCK_SET`, `TAKE_CONTROL`, `RELEASE_CONTROL` | accepted | accepted |
 | `KEY` and `PAGE_CHANGED` events | none | sent |
 
 There is no implicit takeover: a host that forgets `TAKE_CONTROL` gets `NOT_HOSTED` rather than half-editing Home.
@@ -232,7 +237,7 @@ There is no implicit takeover: a host that forgets `TAKE_CONTROL` gets `NOT_HOST
 
 **Request:** No payload.
 
-Hands the screen back. The device goes to standalone: the keys, images and status texts are cleared and **Home is rebuilt** from the stored layout (an empty Home if there is none, or if it can't be shown), the screen goes to page 0, the backlight is turned **on**, and the `KEY` / `PAGE_CHANGED` stream stops (ones still queued are dropped; `WAKE`, `HEARTBEAT` and `WIFI_STATE` events are unaffected). The response is sent after that. Releasing while standalone does nothing and answers `OK`.
+Hands the screen back. The device goes to standalone: the keys, images and status texts are cleared (the right text then shows `{clock}`, the standalone default) and **Home is rebuilt** from the stored layout (an empty Home if there is none, or if it can't be shown), the screen goes to page 0, the backlight is turned **on**, and the `KEY` / `PAGE_CHANGED` stream stops (ones still queued are dropped; `WAKE`, `HEARTBEAT` and `WIFI_STATE` events are unaffected). The response is sent after that. Releasing while standalone does nothing and answers `OK`.
 
 The device also releases by itself when the host goes away: a **USB unmount** (unplug) or a **USB suspend**, with the same result. The stream state is reset too (a partial message and any layout upload are dropped), exactly as for `RESET_STREAM`. A host that hangs without disconnecting is not detected yet (a heartbeat timeout may be added).
 
@@ -445,6 +450,57 @@ The host sets the Wi-Fi credentials; the device keeps them in NVS and connects i
 | 2 | `CONNECTED` | Has an IP |
 | 3 | `RETRYING` | An attempt failed or the link dropped. It stays `RETRYING` across the retries (1 s, doubling to 30 s; at once to 30 s after an authentication failure) until it connects. After an authentication failure it stays `RETRYING` but stops retrying (the reason says why) until new credentials are set or the device reboots |
 
+## Clock
+
+The device keeps a clock for the status bar's `{clock}` ([`SET_STATUS_TEXT`](#0x03-set_status_text)). It is set by NTP while Wi-Fi is connected (resynced hourly), or by a host with `TIME_SET`; whichever came last wins. The board has no battery-backed clock: the time survives a restart (such as after a layout upload) but not a power-off, after which it is unknown until set again. The time zone and the NTP server are stored in NVS. These messages work in every mode (no `TAKE_CONTROL` needed), and `RESET`, `RESET_STREAM`, taking control and releasing leave the clock and its settings alone.
+
+**Known:** the clock counts as set when it reads 2025-01-01 or later (it starts at 1970 at power-up). `GET_INFO` `flags` bit 3 and `TIME_GET`'s `known` report it.
+
+### `0x50` TIME_SET
+
+**Request:**
+
+| Type | Field | Notes |
+|---|---|---|
+| i64 | unix_ms | UTC milliseconds since 1970-01-01 |
+
+- `BAD_LENGTH` if the payload is shorter than 8 bytes. Trailing bytes are ignored.
+- `BAD_ARG` for a time before 2025-01-01 00:00 UTC. The clock is left alone.
+- On `OK` the clock is set and its source becomes "host". The status bar shows the new time within a frame or two.
+
+### `0x51` TIME_GET
+
+**Request:** No payload (any payload is ignored).
+
+**Response** (after the status field):
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | known | `1` if the clock is set (see above) |
+| u8 | source | Who set it last: `0` none (or not known), `1` host, `2` NTP. Kept in RAM only: after a restart it is `0` even if the time is still known |
+| i64 | unix_ms | The device clock now, UTC milliseconds (meaningless while `known` is 0) |
+| u8 | tz_len | Followed by `tz`: the POSIX TZ string in use (default `UTC0`) |
+| u8 | server_len | Followed by `server`: the NTP server in use (default `pool.ntp.org`) |
+
+### `0x52` CLOCK_SET
+
+**Request:**
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | mask | Bit 0: time zone follows. Bit 1: NTP server follows. Other bits 0 |
+| u8 | tz_len | Only if bit 0: 0..63 |
+| u8[tz_len] | tz | A POSIX TZ string, e.g. `AEST-10AEDT,M10.1.0,M4.1.0/3` (Sydney) or `EST5EDT,M3.2.0,M11.1.0`. Empty = the default `UTC0` |
+| u8 | server_len | Only if bit 1: 0..63 |
+| u8[server_len] | server | A host name or IPv4 address. Empty = the default `pool.ntp.org` |
+
+- Fields not in `mask` are left as they are.
+- `BAD_LENGTH` if the payload runs out before a field `mask` says follows. Trailing bytes are ignored.
+- `BAD_ARG` for an unknown mask bit, a time zone that isn't printable ASCII without spaces (0x21-0x7E), a server with characters other than `A-Z a-z 0-9 . -`, or either over 63 bytes. All or nothing: nothing changes. The time zone isn't checked as POSIX; the C runtime treats one it can't parse as UTC.
+- `IO_ERROR` if the NVS write fails. The previous settings stay.
+- Setting what is already in use does nothing (no flash write) and responds `OK`.
+- On `OK` a new time zone applies at once (the clock text is redrawn, DST by the zone's rules), and a new server restarts NTP at once if Wi-Fi is connected (otherwise it is used from the next connect).
+
 ## Device → host events
 
 Events have the `EVENT` flag set, and `seq` is the device's event counter.
@@ -553,5 +609,5 @@ And for a host-controlled session:
 
 ## Open questions
 
-- Status bar: the left and right texts are host-settable (`SET_STATUS_TEXT`). Still open: whether the device gets a clock, other status bar content, and the pager bar (disabled for now). Message type `0x04` is reserved for them.
+- Status bar: the left and right texts are host-settable (`SET_STATUS_TEXT`), and the device has a clock (`{clock}`, [Clock](#clock)). Still open: other status bar content and the pager bar (disabled for now). Message type `0x04` is reserved for them.
 - Icon size: Somewhere from 80 to 96 px, to be decided by trying it on the hardware. The device reports the sizes in `GET_INFO`, so hosts shouldn't hard-code them.

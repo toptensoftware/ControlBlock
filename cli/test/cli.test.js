@@ -7,7 +7,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { unpack } from "../../binpack/index.js";
-import { ROOT_TYPE, crc32, WifiState } from "../../host/index.js";
+import { ROOT_TYPE, crc32, WifiState, ClockSource } from "../../host/index.js";
 import { FakeDevice, fakeOpener } from "../../host/test/FakeDevice.js";
 import { exampleDir } from "../../host/test/bake/fixtures.js";
 import { main } from "../cli.js";
@@ -145,4 +145,52 @@ test("cli: wifi wait gives up after the time and exits 1; no device exits 1", as
     const none = await run(["wifi", "status"], { open: async () => { throw new Error("No ControlBlock found"); } });
     assert.equal(none.code, 1);
     assert.deepEqual(none.err, ["error: No ControlBlock found"]);
+});
+
+// --- time (docs/protocol.md, Clock) ---
+
+test("cli: time sets the device clock from this machine's, standalone, and exits 0", async () => {
+    const dev = new FakeDevice({ clock: {} });
+    const opened = [];
+    const before = Date.now();
+    const r = await run(["time", "--serial", "S3"], { open: fakeOpener(dev, { opened }) });
+    assert.equal(r.code, 0, r.err.join("\n"));
+    assert.equal(dev.hosted, false);                            // no takeover
+    assert.ok(dev.clock.offset !== null && Math.abs(dev.clock.offset) <= Date.now() - before + 5);
+    assert.equal(opened[0].serial, "S3");
+    assert.equal(r.out.length, 1);
+    assert.match(r.out[0], /^clock set to \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+    assert.equal((await run(["time", "set"], { open: fakeOpener(dev) })).code, 0);
+});
+
+test("cli: time get shows the clock, its source, the zone and the server", async () => {
+    const dev = new FakeDevice({ clock: {} });
+    const open = fakeOpener(dev);
+    assert.deepEqual((await run(["time", "get"], { open })).out, ["time: not set", "time zone: UTC0", "ntp server: pool.ntp.org"]);
+    Object.assign(dev.clock, { offset: Date.UTC(2026, 10, 8, 7, 59) - Date.now(), source: ClockSource.NTP, tz: "EST5EDT", server: "10.0.0.1" });
+    const r = await run(["time", "get"], { open });
+    assert.match(r.out[0], /^time: 2026-11-08T07:59:\d\d\.\d{3}Z \(set by NTP\)$/);
+    assert.deepEqual(r.out.slice(1), ["time zone: EST5EDT", "ntp server: 10.0.0.1"]);
+    dev.clock.source = ClockSource.HOST;
+    assert.match((await run(["time", "get"], { open })).out[0], /\(set by the host\)$/);
+    dev.clock.source = ClockSource.NONE;                        // known, but from before a restart
+    assert.match((await run(["time", "get"], { open })).out[0], /^time: \S+Z$/);
+});
+
+test("cli: time zone and server store a setting, or put back the default", async () => {
+    const dev = new FakeDevice({ clock: {} });
+    const open = fakeOpener(dev);
+    assert.deepEqual((await run(["time", "zone", "AEST-10AEDT,M10.1.0,M4.1.0/3"], { open })).out, ["time zone: AEST-10AEDT,M10.1.0,M4.1.0/3"]);
+    assert.deepEqual((await run(["time", "server", "time.example.com"], { open })).out, ["ntp server: time.example.com"]);
+    assert.deepEqual([dev.clock.tz, dev.clock.server], ["AEST-10AEDT,M10.1.0,M4.1.0/3", "time.example.com"]);
+    assert.deepEqual((await run(["time", "zone", "--default"], { open })).out, ["time zone: UTC0"]);
+    assert.deepEqual((await run(["time", "server", "--default"], { open })).out, ["ntp server: pool.ntp.org"]);
+});
+
+test("cli: a bad time zone exits 1 without sending it", async () => {
+    const dev = new FakeDevice({ clock: {} });
+    const r = await run(["time", "zone", "UTC 0"], { open: fakeOpener(dev) });
+    assert.equal(r.code, 1);
+    assert.match(r.err[0], /^error: timeZone "UTC 0" must be printable ASCII without spaces/);
+    assert.equal(dev.clock.tz, "UTC0");
 });

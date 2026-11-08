@@ -3,12 +3,13 @@
 // { status, data } for a request, or null to stay silent.
 
 import { ControlBlock } from "../src/ControlBlock.js";
-import { MessageParser, encodeMessage, Writer, Reader, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION, USB_PACKET_SIZE, crc32 } from "../src/protocol.js";
+import { MessageParser, encodeMessage, Writer, Reader, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION, USB_PACKET_SIZE, crc32, ClockSource, TIME_VALID_FROM_MS } from "../src/protocol.js";
 
-export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true, wifiCredentials = false, hosted = false, layout } = {})
+export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true, wifiCredentials = false, hosted = false, timeSet = false, layout } = {})
 {
     const w = new Writer(128);
-    w.u16(PROTOCOL_VERSION).u16((backlight ? InfoFlags.BACKLIGHT : 0) | (wifiCredentials ? InfoFlags.WIFI_CREDENTIALS : 0) | (hosted ? InfoFlags.HOSTED : 0)).u32(maxPayload).u32(5000000).u32(1234).u32(3).u32(4000000);
+    const flags = (backlight ? InfoFlags.BACKLIGHT : 0) | (wifiCredentials ? InfoFlags.WIFI_CREDENTIALS : 0) | (hosted ? InfoFlags.HOSTED : 0) | (timeSet ? InfoFlags.TIME_SET : 0);
+    w.u16(PROTOCOL_VERSION).u16(flags).u32(maxPayload).u32(5000000).u32(1234).u32(3).u32(4000000);
     w.u16(800).u16(480).u8(5).u8(3).u8(8).u8(pageCount);
     w.u16(128).u16(128).u16(80).u16(80).u8(0);
     for (const s of ["1.0", "SERIAL1"]) {
@@ -37,8 +38,11 @@ export class FakeDevice
     //   standalone, requests that edit the screen get NOT_HOSTED; TAKE_CONTROL clears `model` ("home"
     //   standalone, "empty" hosted) and RELEASE_CONTROL puts Home back and the backlight on.
     //   controlStatus: if not OK, TAKE_CONTROL and RELEASE_CONTROL answer with it and change nothing.
-    constructor({ maxPayload = 8192, handler, backlight = true, layout, wifi, hosted = false, controlStatus = Status.OK } = {})
+    // clock: emulate the clock messages (docs/protocol.md, Clock): { offset, source, tz, server }.
+    //   offset: device time minus Date.now() in ms, null while the time isn't known (the default).
+    constructor({ maxPayload = 8192, handler, backlight = true, layout, wifi, clock, hosted = false, controlStatus = Status.OK } = {})
     {
+        this.clock = clock ? { offset: null, source: 0, tz: "UTC0", server: "pool.ntp.org", ...clock } : null;
         this.hosted = hosted;
         this.model = hosted ? "empty" : "home";
         this.controlStatus = controlStatus;
@@ -114,9 +118,11 @@ export class FakeDevice
                 : !this.hosted && HOSTED_REQUESTS.includes(msg.type)
                     ? { status: Status.NOT_HOSTED, data: new Uint8Array(0) }
                 : msg.type === Msg.GET_INFO
-                ? { status: Status.OK, data: infoPayload({ maxPayload: this.maxPayload, backlight: this.backlight, hosted: this.hosted, wifiCredentials: !!this.wifi?.ssid, layout: this.layout && { capacity: this.layout.capacity, size: this.layout.stored?.size ?? 0, crc: this.layout.stored?.crc ?? 0 } }) }
+                ? { status: Status.OK, data: infoPayload({ maxPayload: this.maxPayload, backlight: this.backlight, hosted: this.hosted, wifiCredentials: !!this.wifi?.ssid, timeSet: this.clock?.offset != null, layout: this.layout && { capacity: this.layout.capacity, size: this.layout.stored?.size ?? 0, crc: this.layout.stored?.crc ?? 0 } }) }
                 : this.wifi && msg.type >= Msg.WIFI_SET && msg.type <= Msg.WIFI_STATUS
                     ? this._wifi(msg)
+                : this.clock && msg.type >= Msg.TIME_SET && msg.type <= Msg.CLOCK_SET
+                    ? this._clock(msg)
                 : msg.type === Msg.PING
                     ? { status: Status.OK, data: msg.payload }
                     : this.handler(msg);
@@ -158,6 +164,36 @@ export class FakeDevice
         }
         const st = w.status;
         return { status: Status.OK, data: new Writer(14).u8(st.state).u8(st.reason).u8(st.rssi & 0xFF).u8(0).raw(Uint8Array.from(st.ip)).raw(Uint8Array.from(st.mac)).done() };
+    }
+
+    // The clock messages, as the firmware does them (the rules are checked by the firmware's own tests)
+    _clock(msg)
+    {
+        const c = this.clock, r = new Reader(msg.payload);
+        const reply = (status, data = new Uint8Array(0)) => ({ status, data });
+        if (msg.type === Msg.TIME_SET) {
+            if (!r.has(8))
+                return reply(Status.BAD_LENGTH);
+            const ms = r.i64();
+            if (ms < TIME_VALID_FROM_MS)
+                return reply(Status.BAD_ARG);
+            c.offset = ms - Date.now();
+            c.source = ClockSource.HOST;
+            return reply(Status.OK);
+        }
+        if (msg.type === Msg.TIME_GET) {
+            const tz = new TextEncoder().encode(c.tz), server = new TextEncoder().encode(c.server);
+            const known = c.offset != null;
+            return reply(Status.OK, new Writer(12 + tz.length + server.length)
+                .u8(known ? 1 : 0).u8(known ? c.source : ClockSource.NONE).i64(Date.now() + (c.offset ?? 0))
+                .u8(tz.length).raw(tz).u8(server.length).raw(server).done());
+        }
+        const mask = r.u8();            // CLOCK_SET: the time zone, then the server; "" = the default
+        if (mask & 1)
+            c.tz = r.str() || "UTC0";
+        if (mask & 2)
+            c.server = r.str() || "pool.ntp.org";
+        return reply(Status.OK);
     }
 
     // The layout upload, as the firmware does it. Answers (possibly later) itself.

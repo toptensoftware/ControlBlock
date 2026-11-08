@@ -14,3 +14,8 @@ void status_set_left(const char *text);     // UTF-8, cut to STATUS_BAR_TEXT_MAX
 void status_set_right(const char *text);
 void status_set_pill_count(int count);
 void status_set_selected_pill(int index);
+
+// The clock was set or its time zone changed: the task re-reads the clock's
+// text (clock.h) now rather than at the next minute. A text holding
+// `{clock}` (status_bar.h) shows it; the task wakes each minute while one does.
+void status_clock_changed(void);
