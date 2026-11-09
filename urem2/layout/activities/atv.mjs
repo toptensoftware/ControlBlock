@@ -11,6 +11,7 @@ export function atv(ctx)
     const tapHold = name => ({ tap: k(name), long: ctx.ops.atvKey(name, "hold") });
 
     return defineActivity(ctx, "atv", {
+        padPage: true,
         pages: [{
             ...transportKeys({ previous: k("previous"), next: k("next"), rewind: k("left"), forward: k("right"),
                                play: k("play"), pause: k("pause"), stop: k("menu") }, { repeat: 100 }),

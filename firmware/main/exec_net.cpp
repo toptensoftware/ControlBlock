@@ -2,22 +2,27 @@
 #include "net_host.h"
 #include <string.h>
 
+// The request can't go out: an external failure (the error icon), and the op ends in Error
+static OpStatus net_refused(NetHost *net, OpTask &task, const char *why)
+{
+    task.error = why;
+    if (net->external_error)
+        net->external_error(net->ctx);
+    return OpStatus::Error;
+}
+
 // The checks and hand-over every network op shares
 OpStatus NetSend(ExecCtx &exec, NetRequest &req, OpTask &task, bool wait)
 {
     NetHost *net = exec.net;
     if (!net)
         return OpStatus::Done;
-    if (!net->connected(net->ctx)) {
-        task.error = "wi-fi not connected";
-        return OpStatus::Error;
-    }
+    if (!net->connected(net->ctx))
+        return net_refused(net, task, "wi-fi not connected");
     req.wait       = wait;
     req.generation = task.generation;
-    if (!net->submit(req, net->ctx)) {
-        task.error = "net queue full";
-        return OpStatus::Error;
-    }
+    if (!net->submit(req, net->ctx))
+        return net_refused(net, task, "net queue full");
     return OpStatus::Done;
 }
 

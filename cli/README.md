@@ -80,11 +80,21 @@ it: run `node cli/cli.js time` after each power-up, for example at logon from Wi
 Scheduler (it fails while another app has the device open: WinUSB is exclusive). A host
 app can do the same on connect with the library's `ControlBlock.open({ setTime: true })`.
 
+### `name [action] [--serial S]`
+
+The device's name on the network: its mDNS name (`<name>.local`) and DHCP hostname
+([`docs/protocol.md`](../docs/protocol.md#device-name)). Works while standalone.
+
+| Action | |
+|---|---|
+| `get` (or no action) | show the name, e.g. `name: controlblock-a1b2c3 (default)` |
+| `set <name>` / `set --default` | store a name (`a-z 0-9 -`, up to 32, not starting or ending with `-`; capitals are lowercased), or put back the default `controlblock-` + the MAC's last three bytes |
+
 ### Options
 
 - `--serial S`: the device to use, by serial number (default: the first one found).
 - `--force`: upload even if the device already has the blob.
-- `--default`: (`time zone`, `time server`) put the setting back to the device's default.
+- `--default`: (`time zone`, `time server`, `name set`) put the setting back to the device's default.
 
 ## Exit codes
 
@@ -106,11 +116,12 @@ node cli/cli.js wifi status
 node cli/cli.js time zone AEST-10AEDT,M10.1.0,M4.1.0/3             # Sydney
 node cli/cli.js time                                                # set the clock from this PC
 node cli/cli.js time get
+node cli/cli.js name set den-tv                                     # den-tv.local
 ```
 
 ## Tests
 
-`npm test` in `cli/` (no device: the upload, wifi and time commands run against the library's
+`npm test` in `cli/` (no device: the upload, wifi, time and name commands run against the library's
 `FakeDevice`; the bake runs the real renderer). `cli.js` exports
 `main(argv, { open, reconnect, stdout, stderr })`, which resolves the exit code, and only
 runs itself when executed directly. `args.js` (`parseArgs`, `USAGE`, `UsageError`) is the

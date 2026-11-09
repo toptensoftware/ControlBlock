@@ -255,3 +255,33 @@ Fact("ExecNet Ops Still Report Started And Poll Done")
     Assert(started == 1);
     Assert(OpPoll(r.exec, &g.base, r.task) == OpStatus::Done);
 }
+
+Fact("ExecNet Wi-Fi Down And A Refused Submit Report An External Error")
+{
+    Rig r;
+    layoutdata::httpGetOp g = {};
+    g.base.op = OP_HTTP_GET;
+    g.url     = OK_URL;
+    Assert(OpStart(r.exec, &g.base, r.task) == OpStatus::Done);
+    Assert(r.net.external_errors == 0);
+
+    r.net.is_connected = false;
+    Assert(OpStart(r.exec, &g.base, r.task) == OpStatus::Error);
+    Assert(r.net.external_errors == 1);
+
+    r.net.is_connected = true;
+    r.net.accepts      = false;
+    Assert(OpStart(r.exec, &g.base, r.task) == OpStatus::Error);
+    Assert(r.net.external_errors == 2);
+}
+
+Fact("ExecNet Without An External Error Callback Errors Still End The Op")
+{
+    Rig r;
+    r.net.host.external_error = nullptr;
+    r.net.is_connected = false;
+    layoutdata::sendWolOp w = {};
+    w.base.op = OP_SEND_WOL;
+    Assert(OpStart(r.exec, &w.base, r.task) == OpStatus::Error);
+    Assert(r.net.external_errors == 0);
+}

@@ -19,6 +19,10 @@ export const USAGE = `usage: node cli/cli.js <command> ...
       the device's clock: set (the default) sets it from this computer's clock; get
       shows it; zone and server store the time zone (a POSIX TZ string, default UTC0)
       and the NTP server (default pool.ntp.org); --default puts one back
+  name [get] | set <name>|--default  [--serial S]
+      the device's network name (<name>.local, DHCP hostname): get (the default)
+      shows it; set stores one (a-z 0-9 -, up to 32); --default puts back
+      controlblock-xxxxxx
   --serial S picks the device by serial number (default: the first one found)`;
 
 export class UsageError extends Error
@@ -97,7 +101,7 @@ function none(name)
         if (pos.length)
             throw new UsageError(`${name} takes no arguments`);
         if (opts.default)
-            throw new UsageError(`--default only applies to time zone and time server`);
+            throw new UsageError(`--default doesn't apply to ${name}`);
         return {};
     };
 }
@@ -138,7 +142,9 @@ const parseWifi = actionCommand("wifi", {
     },
 });
 
-// time zone/server: one value, or --default ("": the device's default)
+const DEFAULT_FLAG = { flags: { "--default": "default" } };
+
+// time zone/server, name set: one value, or --default ("": the device's default)
 function setting(name, what)
 {
     return (pos, opts) => {
@@ -154,9 +160,15 @@ const parseTime = actionCommand("time", {
     get: none("time get"),
     zone: setting("time zone", "a POSIX TZ string"),
     server: setting("time server", "a host name"),
-}, { scanOptions: { flags: { "--default": "default" } }, defaultAction: "set" });
+}, { scanOptions: DEFAULT_FLAG, defaultAction: "set" });
 
-const COMMANDS = { bake: parseBake, upload: parseUpload, wifi: parseWifi, time: parseTime };
+// name [<action>] ...
+const parseName = actionCommand("name", {
+    get: none("name get"),
+    set: setting("name set", "a name"),
+}, { scanOptions: DEFAULT_FLAG, defaultAction: "get" });
+
+const COMMANDS = { bake: parseBake, upload: parseUpload, wifi: parseWifi, time: parseTime, name: parseName };
 
 export function parseArgs(argv)
 {

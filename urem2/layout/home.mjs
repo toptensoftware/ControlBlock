@@ -19,7 +19,7 @@ export function home(ctx)
     return { keys: grid({
         1: activityKey(icon("#playstation"), "playstation"),
         2: activityKey(icon("#steam"), "steam"),
-        4: key(icon("#power", { color: COLORS.red, scale: 0.7 }), [switchTo(null)]),
+        4: activityKey(icon("#power", { color: COLORS.red, scale: 0.7 }), null),     // long: everything off again
         6: activityKey(icon("#apple-tv", { color: COLORS.grey }), "atv"),
         7: appKey("netflix", "Netflix"),
         8: appKey("prime", "Prime Video"),

@@ -6,9 +6,9 @@ import assert from "node:assert/strict";
 import { atv } from "./atv.mjs";
 import { makeContext } from "../context.mjs";
 import { activityMeta } from "../devices.mjs";
-import { key, sevenChKey, muteKey } from "../keys.mjs";
+import { key, grid, sevenChKey, muteKey } from "../keys.mjs";
 import { icon, COLORS } from "../look.mjs";
-import { volumeBindings } from "../pad.mjs";
+import { volumeBindings, padPage } from "../pad.mjs";
 import { targets } from "../../targets.mjs";
 import { assertSlots, layoutWith } from "../../test/slots.mjs";
 import { cleanLayout } from "../../test/resolve.mjs";
@@ -19,15 +19,15 @@ for (const [name, target] of Object.entries(targets))
     const k = n => ctx.ops.atvKey(n);
     const white = { color: COLORS.white }, orange = { color: COLORS.orange };
 
-    test(`${name}: atv meta and one page`, () => {
+    test(`${name}: atv meta, the pad page and one page`, () => {
         const a = atv(ctx);
         const { pages, bindings, ...meta } = a;
         assert.deepEqual(meta, activityMeta(ctx, "atv"));
-        assert.equal(pages.length, 1);
+        assert.equal(pages.length, 2);
     });
 
     test(`${name}: atv's 15 slots match urem`, () => {
-        assertSlots(atv(ctx).pages[0].keys, {
+        assertSlots(atv(ctx).pages[1].keys, {
             // 0 Home toggle, 5 clock: not ported
             1: key(icon("#previous-track", white), k("previous")),
             2: key(icon("#next-track", white), k("next")),
@@ -57,6 +57,23 @@ for (const [name, target] of Object.entries(targets))
 
     test(`${name}: atv resolves clean`, async () => {
         const tree = await cleanLayout(layoutWith(ctx, { activities: { atv: atv(ctx) } }));
-        assert.equal(tree.activities[0].pages[0].keys.filter(k => k.normalFg).length, 9);
+        assert.equal(tree.activities[0].pages[1].keys.filter(k => k.normalFg).length, 9);
+    });
+}
+
+for (const [name, target] of Object.entries(targets))
+{
+    const ctx = makeContext(target);
+    const k = n => ctx.ops.atvKey(n);
+    const hold = n => ctx.ops.atvKey(n, "hold");
+
+    test(`${name}: atv pad page: cross menu/hold, tick select/hold, arrows on tap`, () => {
+        const page = atv(ctx).pages[0].keys;
+        assert.deepEqual(page, grid(padPage(ctx, {
+            key1: { tap: k("menu"), long: hold("menu") }, key3: { tap: k("select"), long: hold("select") },
+            key2: { tap: k("up") }, key4: { tap: k("left") }, key5: { tap: k("down") }, key6: { tap: k("right") },
+        })));
+        assert.deepEqual([page[1].tap, page[1].long, page[3].tap, page[3].long],
+                         [k("menu"), hold("menu"), k("select"), hold("select")]);
     });
 }

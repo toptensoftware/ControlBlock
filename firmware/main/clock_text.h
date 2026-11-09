@@ -18,6 +18,10 @@ enum class ClockSource : uint8_t { None = 0, Host = 1, Ntp = 2 };
 // Bytes of `text` that fit in `max` bytes without splitting a UTF-8 sequence
 size_t utf8_cut_len(const char *text, size_t max);
 
+// Bytes of `text` (len bytes, not NUL terminated) without a cut-off UTF-8
+// sequence at the end (one whose last bytes are missing)
+size_t utf8_complete_len(const char *text, size_t len);
+
 // Local time (hour 0-23, minute) as "h:mm", 12 hour, no am/pm: "12:05", "2:30".
 // `dst` holds CLOCK_TEXT_MAX bytes.
 void clock_format(char *dst, int hour24, int minute);

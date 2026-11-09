@@ -42,6 +42,16 @@ dependencies:
     - esp32p4
     - esp32h4
     version: 2.1.1
+  espressif/mdns:
+    component_hash: 1ebe3bd675bb9d1c58f52bc0b609b32f74e572b01c328f9e61282040c775495c
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.11.0
   espressif/tinyusb:
     component_hash: 5ea9d3b6d6b0734a0a0b3491967aa0e1bece2974132294dbda5dd2839b247bfa
     dependencies:
@@ -64,7 +74,8 @@ dependencies:
 direct_dependencies:
 - espressif/esp_lcd_touch_gt911
 - espressif/esp_tinyusb
+- espressif/mdns
 - idf
-manifest_hash: 9afe3198917e32048977403dc3f371ff18bd9a5eba7b86212ed9dc570cabefb9
+manifest_hash: c47f438775f9587a17323d82bc0041f08b5fed3bfb368c38f1b2324e073b235e
 target: esp32s3
 version: 3.0.0

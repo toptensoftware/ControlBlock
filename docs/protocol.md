@@ -124,6 +124,8 @@ Any data specific to that response follows these two fields.
 | `0x50` | TIME_SET | Set the device clock (UTC) |
 | `0x51` | TIME_GET | Read the device clock, time zone and NTP server |
 | `0x52` | CLOCK_SET | Set the time zone and/or the NTP server |
+| `0x60` | NAME_SET | Set the device name (mDNS/DHCP hostname) |
+| `0x61` | NAME_GET | Read the device name |
 
 ### `0x00` PING
 
@@ -188,6 +190,7 @@ Sets one of the two texts in the [status bar](status-bar.md) (left aligned and r
 - **Fixed buffers:** each text is held in a 48-byte buffer on the device, so the limit is 47 bytes (not characters).
 - **Rejected texts:** the text is not cut. The request fails and the bar keeps what it had. `BAD_LENGTH` if `len` runs past the payload; `BAD_ARG` for a `field` other than 0 or 1, more than 47 bytes, or text that isn't well-formed UTF-8 (bad or truncated sequences, overlongs, surrogates, code points above U+10FFFF, or a NUL).
 - **Characters:** the current font covers ASCII 32–126 only, so send ASCII for now.
+- **Icons:** the status icons, just left of the right text ([status-bar.md](status-bar.md#icons)) are firmware owned: no request sets or hides them. While hosted only the Wi-Fi icon shows.
 - **Lifetime:** the texts stay until changed, or until `RESET` or `TAKE_CONTROL` (which clear both). Releasing control (or a disconnect) clears the left text and sets the right one to `{clock}`, the standalone default. They're drawn by the device's status task, not at once: the new text appears within a frame or two of the response.
 
 ### `0x05` SET_BACKLIGHT
@@ -223,7 +226,7 @@ Switches the device from standalone to hosted mode ([`standalone.md`](standalone
 | Request or event | Standalone | Hosted |
 |---|---|---|
 | `RESET`, `SET_STATUS_TEXT`, `PUT_IMAGE`, `FREE_IMAGES`, `SET_PAGE_COUNT`, `SET_KEYS`, `SET_PAGE` | **`NOT_HOSTED`** (a refused `PUT_IMAGE`'s data is skipped, so the stream stays in step) | accepted |
-| `PING`, `GET_INFO`, `QUERY_IMAGES`, `SET_BACKLIGHT`, `LAYOUT_*`, `WIFI_*`, `TIME_SET`, `TIME_GET`, `CLOCK_SET`, `TAKE_CONTROL`, `RELEASE_CONTROL` | accepted | accepted |
+| `PING`, `GET_INFO`, `QUERY_IMAGES`, `SET_BACKLIGHT`, `LAYOUT_*`, `WIFI_*`, `TIME_SET`, `TIME_GET`, `CLOCK_SET`, `NAME_*`, `TAKE_CONTROL`, `RELEASE_CONTROL` | accepted | accepted |
 | `KEY` and `PAGE_CHANGED` events | none | sent |
 
 There is no implicit takeover: a host that forgets `TAKE_CONTROL` gets `NOT_HOSTED` rather than half-editing Home.
@@ -500,6 +503,35 @@ The device keeps a clock for the status bar's `{clock}` ([`SET_STATUS_TEXT`](#0x
 - `IO_ERROR` if the NVS write fails. The previous settings stay.
 - Setting what is already in use does nothing (no flash write) and responds `OK`.
 - On `OK` a new time zone applies at once (the clock text is redrawn, DST by the zone's rules), and a new server restarts NTP at once if Wi-Fi is connected (otherwise it is used from the next connect).
+
+## Device name
+
+The device's name on the network: its mDNS name (`<name>.local`) and DHCP hostname. Stored in NVS; the default (nothing stored) is `controlblock-` and the last three bytes of the Wi-Fi MAC in hex, e.g. `controlblock-a1b2c3`. These messages work in every mode (no `TAKE_CONTROL` needed), and `RESET`, `RESET_STREAM`, taking control and releasing leave the name alone.
+
+### `0x60` NAME_SET
+
+**Request:**
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | len | 0..32 |
+| u8[len] | name | A hostname label: `a-z 0-9 -` (`A-Z` are lowercased), not starting or ending with `-`. Empty = back to the default |
+
+- `BAD_LENGTH` unless the payload is exactly `1 + len` bytes.
+- `BAD_ARG` for a name that breaks the rules above or is over 32 bytes. Nothing changes.
+- `IO_ERROR` if the NVS write fails. The previous name stays.
+- Setting the name in use does nothing (no flash write) and responds `OK`. Setting the default name explicitly stores it (it no longer follows the MAC).
+
+### `0x61` NAME_GET
+
+**Request:** No payload (any payload is ignored).
+
+**Response** (after the status field):
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | is_default | `1` if no name is stored (the MAC-based default is in use) |
+| u8 | len | Followed by `name`: the name in use (lowercase) |
 
 ## Device → host events
 

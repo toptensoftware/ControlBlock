@@ -476,3 +476,131 @@ Fact("StatusBar Clock Renders Like Plain Text")
     RenderBanded(STATUS_BAR_BAND_ROWS_MAX, &c);
     Assert(memcmp(px, banded, sizeof(px)) == 0);
 }
+
+// ---------------------------------------------------------------------------
+// Status icons: just left of the right text (the clock), right to left:
+// Wi-Fi, then busy or error. They move with the text's width.
+
+namespace
+{
+    // Render `content` whole into px
+    void RenderContent(const status_bar_content_t *content)
+    {
+        static BLOBPACK *ui = LoadAsset("ui.bin");
+        status_bar_style_t style = status_bar_style(ui);
+        status_bar_render(px, &style, content);
+    }
+
+    const int RIGHT_END = W - STATUS_BAR_MARGIN;            // the right text ends here
+    // The x where icon slot n (0 = nearest the text) starts, for text starting at text_x0
+    int SlotX0(int text_x0, int slot) { return text_x0 - STATUS_ICON_TEXT_GAP - (slot + 1) * STATUS_ICON_SLOT_W; }
+
+    // Draws `right` alone and returns where its ink starts
+    int TextX0(const char *right)
+    {
+        status_bar_content_t content = {};
+        strcpy(content.right, right);
+        RenderContent(&content);
+        return Drawn().x0;
+    }
+}
+
+Fact("StatusBar Icons Sit Left Of The Clock: Error Or Busy, Then Wifi")
+{
+    struct { int bits, slot; } cases[] = {
+        { STATUS_ICON_WIFI_CONNECTED, 0 }, { STATUS_ICON_WIFI_OFF, 0 },
+        { STATUS_ICON_WIFI_OFF | STATUS_ICON_BUSY, 1 }, { STATUS_ICON_WIFI_OFF | STATUS_ICON_ERROR, 1 },
+    };
+    // The text's ink can start a pixel or two right of its pen position
+    int text_x = TextX0("12:35");
+    for (auto c : cases) {
+        status_bar_content_t content = {};
+        strcpy(content.right, "12:35");
+        content.icons = c.bits;
+        RenderContent(&content);
+        int x0 = SlotX0(text_x, c.slot) - 2, x1 = SlotX0(text_x, c.slot) + STATUS_ICON_SLOT_W;
+        Box b = Drawn(x0, x1 - 1);
+        Assert(b.any);
+        // Nothing else between the slots and the text, or left of the outermost slot
+        int outer = c.bits & (STATUS_ICON_BUSY | STATUS_ICON_ERROR) ? 1 : 0;
+        Assert(!Drawn(W / 2, SlotX0(text_x, outer) - 3).any);
+    }
+}
+
+Fact("StatusBar Icons Follow The Clock's Width")
+{
+    status_bar_content_t content = {};
+    content.icons = STATUS_ICON_WIFI_CONNECTED;
+    strcpy(content.right, "1:05");
+    RenderContent(&content);
+    int narrow = Drawn().x0;
+    strcpy(content.right, "12:35");
+    RenderContent(&content);
+    int wide = Drawn().x0;
+    Assert(wide < narrow);
+}
+
+Fact("StatusBar Icons Without Right Text End At The Margin")
+{
+    status_bar_content_t content = {};
+    content.icons = STATUS_ICON_WIFI_CONNECTED;
+    RenderContent(&content);
+    Box b = Drawn();
+    Assert(b.any && b.x1 < RIGHT_END && b.x1 >= RIGHT_END - STATUS_ICON_SLOT_W);
+}
+
+// Connected is the Wi-Fi waves (wide), not connected a small dot
+Fact("StatusBar Wifi Connected Is The Waves, Off The Dot")
+{
+    status_bar_content_t content = {};
+    content.icons = STATUS_ICON_WIFI_CONNECTED;
+    RenderContent(&content);
+    Box waves = Drawn();
+    content.icons = STATUS_ICON_WIFI_OFF;
+    RenderContent(&content);
+    Box dot = Drawn();
+    Assert(waves.any && dot.any);
+    Assert(waves.x1 - waves.x0 > 2 * (dot.x1 - dot.x0));
+}
+
+Fact("StatusBar Right Text Stays At The Margin With Icons")
+{
+    status_bar_content_t content = {};
+    strcpy(content.right, "12:35");
+    RenderContent(&content);
+    static uint16_t plain[W * H];
+    memcpy(plain, px, sizeof(px));
+    int text_x = Drawn().x0;
+
+    content.icons = STATUS_ICON_WIFI_OFF | STATUS_ICON_ERROR;
+    RenderContent(&content);
+    for (int y = 0; y < H; y++)
+        Assert(memcmp(plain + y * W + text_x, px + y * W + text_x, (W - text_x) * sizeof(uint16_t)) == 0);
+}
+
+Fact("StatusBar Bands Match With Icons")
+{
+    status_bar_content_t content = {};
+    strcpy(content.left, "AppleTV");
+    strcpy(content.right, "12:35");
+    content.pill_count = 3;
+    content.icons = STATUS_ICON_WIFI_OFF | STATUS_ICON_BUSY | STATUS_ICON_ERROR;
+    RenderContent(&content);
+    WritePreview("build/status_bar_icons.bmp");
+    int sizes[] = { 1, 2, 3, STATUS_BAR_BAND_ROWS_MAX };
+    for (int rows : sizes) {
+        RenderBanded(rows, &content);
+        Assert(memcmp(px, banded, sizeof(px)) == 0);
+    }
+}
+
+Fact("StatusBar SetIcons Reports Only Real Changes")
+{
+    StatusBar bar;
+    bar.Init(buf0, buf1);
+    status_bar_content_t c;
+    Assert(bar.SetIcons(STATUS_ICON_WIFI_OFF));
+    Assert(!bar.SetIcons(STATUS_ICON_WIFI_OFF));
+    Assert(bar.BeginDraw(nullptr, &c) == buf0);
+    Assert(c.icons == STATUS_ICON_WIFI_OFF);
+}

@@ -7,9 +7,9 @@ import assert from "node:assert/strict";
 import { hdd } from "./hdd.mjs";
 import { makeContext } from "../context.mjs";
 import { activityMeta } from "../devices.mjs";
-import { key, muteKey } from "../keys.mjs";
+import { key, grid, muteKey } from "../keys.mjs";
 import { icon, label, COLORS } from "../look.mjs";
-import { volumeBindings } from "../pad.mjs";
+import { volumeBindings, padPage } from "../pad.mjs";
 import { targets } from "../../targets.mjs";
 import { assertSlots, layoutWith } from "../../test/slots.mjs";
 import { cleanLayout } from "../../test/resolve.mjs";
@@ -23,14 +23,14 @@ for (const [name, target] of Object.entries(targets))
     const num = n => key(label(String(n), { font: "bold 24px sans-serif", offset: { y: -3 } }), ir(`btn${n}`));
     const square = color => icon("#square", { color, scale: 0.6 });
 
-    test(`${name}: hdd meta and three pages`, () => {
+    test(`${name}: hdd meta, the pad page and three pages`, () => {
         const { pages, bindings, ...meta } = hdd(ctx);
         assert.deepEqual(meta, activityMeta(ctx, "hdd"));
-        assert.equal(pages.length, 3);
+        assert.equal(pages.length, 4);
     });
 
     test(`${name}: hdd page 1 matches urem`, () => {
-        assertSlots(hdd(ctx).pages[0].keys, {
+        assertSlots(hdd(ctx).pages[1].keys, {
             1: key(icon("#previous-track", white), ir("previousTrack")),
             2: key(icon("#next-track", white), ir("nextTrack")),
             3: key(label("-10"), ir("skipBack10")),
@@ -47,7 +47,7 @@ for (const [name, target] of Object.entries(targets))
     });
 
     test(`${name}: hdd page 2 (numbers, last channel, guide) matches urem`, () => {
-        assertSlots(hdd(ctx).pages[1].keys, {
+        assertSlots(hdd(ctx).pages[2].keys, {
             1: num(1), 2: num(2), 3: num(3),
             6: num(4), 7: num(5), 8: num(6),
             11: num(7), 12: num(8), 13: num(9),
@@ -59,7 +59,7 @@ for (const [name, target] of Object.entries(targets))
     });
 
     test(`${name}: hdd page 3 (colours, subtitles, channel, record) matches urem`, () => {
-        assertSlots(hdd(ctx).pages[2].keys, {
+        assertSlots(hdd(ctx).pages[3].keys, {
             1: key(square(COLORS.red), ir("red")),
             2: key(square(COLORS.green), ir("green")),
             3: key(square(COLORS.yellow), ir("yellow")),
@@ -90,6 +90,20 @@ for (const [name, target] of Object.entries(targets))
 
     test(`${name}: hdd resolves clean`, async () => {
         const tree = await cleanLayout(layoutWith(ctx, { activities: { hdd: hdd(ctx) } }));
-        assert.deepEqual(tree.activities[1].pages.map(p => p.keys.filter(k => k.normalFg).length), [12, 12, 10]);
+        assert.deepEqual(tree.activities[1].pages.map(p => p.keys.filter(k => k.normalFg).length), [9, 12, 12, 10]);
+    });
+}
+
+for (const [name, target] of Object.entries(targets))
+{
+    const ctx = makeContext(target);
+    const ir = code => ctx.ops.ir(`pana.${code}`);
+
+    test(`${name}: hdd pad page: cross return, tick ok, Panasonic arrows`, () => {
+        const page = hdd(ctx).pages[0].keys;
+        assert.deepEqual([1, 2, 3, 6, 7, 8].map(s => page[s].tap),
+                         ["return", "up", "ok", "left", "down", "right"].map(ir));
+        assert.deepEqual(page, grid(padPage(ctx, { key1: { tap: ir("return") }, key2: { tap: ir("up") },
+            key3: { tap: ir("ok") }, key4: { tap: ir("left") }, key5: { tap: ir("down") }, key6: { tap: ir("right") } })));
     });
 }

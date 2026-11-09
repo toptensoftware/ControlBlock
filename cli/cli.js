@@ -56,6 +56,7 @@ const COMMANDS = {
 
     wifi: (a, io) => runAction(WIFI, a, io),
     time: (a, io) => runAction(TIME, a, io),
+    name: (a, io) => runAction(NAME, a, io),
 };
 
 // Opens the device, runs the command's action from `actions` and closes it again;
@@ -158,6 +159,21 @@ async function setClock(cb, action, settings, io)
     io.stdout(clockLines[action](await cb.getTime()));
     return 0;
 }
+
+// name actions (docs/protocol.md, Device name): resolve the exit code. Standalone is fine.
+const showName = async (cb, io) => {
+    const n = await cb.getName();
+    io.stdout(`name: ${n.name}${n.isDefault ? " (default)" : ""}`);
+    return 0;
+};
+const NAME = {
+    get: (cb, a, io) => showName(cb, io),
+    async set(cb, a, io)
+    {
+        await cb.setName(a.value);
+        return showName(cb, io);
+    },
+};
 
 // Runs a command line; resolves the exit code. `open(options)` opens a device (default
 // ControlBlock.open) and `reconnect` ({ timeoutMs, intervalMs }) tunes the wait for a

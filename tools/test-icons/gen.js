@@ -158,6 +158,7 @@ console.log(`\n${keysOutFile}: ${FACES.length * 2} faces + ${names.length} icons
 //   blob 0     status bar font: Inter SemiBold (fonts/, SIL OFL 1.1)
 //   blob 1     pager pill for the current page (white)
 //   blob 2     pager pill for the other pages (grey)
+//   blobs 3-6  status icons: Wi-Fi connected, Wi-Fi off, busy, error
 
 const STATUS_FONT = { file: "fonts/Inter-SemiBold.ttf", size: 20, subpixel: 4 };
 
@@ -182,6 +183,37 @@ for (const [name, w, h, color] of PAGER_PILLS)
     </svg>`;
     const rgba = await sharp(Buffer.from(svg)).ensureAlpha().raw().toBuffer();
     const packed = await packRle({ data: rgba, info: { width: w, height: h, channels: 4 } }, {});
+    uiBlobs.push(pad4(packed.data));
+    console.log(`${name.padEnd(14)} ${String(packed.packedSize).padStart(6)} bytes`);
+}
+
+// Status icons (blobs 3..6, in STATUS_ICON_* bit order: status_icons.h).
+// Placeholders: to replace one, change its SVG here (any ~20 px square SVG
+// with alpha) and re-run the build.
+const STATUS_ICON = 20;
+const STATUS_ICONS = [
+    // Wi-Fi connected: the usual waves, white like the clock text
+    ["wifi-connected", `<g fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round">
+        <path d="M2 8 Q10 0 18 8"/><path d="M5 11.5 Q10 6 15 11.5"/></g>
+        <circle cx="10" cy="15.5" r="2.2" fill="#ffffff"/>`],
+    // Wi-Fi not connected: a small dot
+    ["wifi-off", `<circle cx="10" cy="14" r="3" fill="#a0a0a0"/>`],
+    // Busy: a small white hourglass
+    ["busy", `<g fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+        <path d="M5 2.5 H15"/><path d="M5 17.5 H15"/>
+        <path d="M6.5 2.5 Q6.5 7.5 10 10 Q13.5 7.5 13.5 2.5"/><path d="M6.5 17.5 Q6.5 12.5 10 10 Q13.5 12.5 13.5 17.5"/></g>
+        <path d="M7.8 17 Q8.3 13.8 10 12.8 Q11.7 13.8 12.2 17 Z" fill="#ffffff"/>`],
+    // Error: a red circle with a white x
+    ["error", `<circle cx="10" cy="10" r="8.5" fill="#e03030"/>
+        <g stroke="#ffffff" stroke-width="2.2" stroke-linecap="round"><path d="M6.8 6.8 L13.2 13.2"/><path d="M13.2 6.8 L6.8 13.2"/></g>`],
+];
+
+for (const [name, body] of STATUS_ICONS)
+{
+    const s = STATUS_ICON;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 20 20">${body}</svg>`;
+    const rgba = await sharp(Buffer.from(svg)).ensureAlpha().raw().toBuffer();
+    const packed = await packRle({ data: rgba, info: { width: s, height: s, channels: 4 } }, {});
     uiBlobs.push(pad4(packed.data));
     console.log(`${name.padEnd(14)} ${String(packed.packedSize).padStart(6)} bytes`);
 }

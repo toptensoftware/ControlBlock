@@ -25,7 +25,7 @@ for (const [name, target] of Object.entries(targets))
             // 0 Home toggle, 3 Moonraker, 5 clock: not ported
             1: activityKey(icon("#playstation"), "playstation"),
             2: activityKey(icon("#steam"), "steam"),
-            4: key(icon("#power", { color: COLORS.red, scale: 0.7 }), [switchTo(null)]),
+            4: activityKey(icon("#power", { color: COLORS.red, scale: 0.7 }), null),   // long: resync none
             6: activityKey(icon("#apple-tv", { color: COLORS.grey }), "atv"),
             7: key(icon("icons/netflix.svg"), [switchTo("atv"), ops.atvApp("Netflix")]),
             8: key(icon("icons/prime.svg"), [switchTo("atv"), ops.atvApp("Prime Video")]),
@@ -38,12 +38,12 @@ for (const [name, target] of Object.entries(targets))
         });
     });
 
-    test(`${name}: the app keys launch the right bundles; only the activity keys have a long press`, () => {
+    test(`${name}: the app keys launch the right bundles; only the activity and power keys have a long press`, () => {
         const keys = home(ctx).keys;
         assert.equal(keys[7].tap[1].data, "app com.netflix.Netflix");
         assert.equal(keys[8].tap[1].data, "app com.amazon.aiv.AIVApp");
         assert.equal(keys[9].tap[1].data, "app com.google.ios.youtube");
-        assert.deepEqual(keys.flatMap((k, i) => k?.long ? [i] : []), [1, 2, 6, 11]);
+        assert.deepEqual(keys.flatMap((k, i) => k?.long ? [i] : []), [1, 2, 4, 6, 11]);
         assert.deepEqual(Object.keys(home(ctx)), ["keys"]);
     });
 

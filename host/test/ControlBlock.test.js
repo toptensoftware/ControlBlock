@@ -619,3 +619,16 @@ test("connect sends the PC's time only when asked to", async () => {
     assert.ok(dev.clock.offset !== null && Math.abs(dev.clock.offset) <= Date.now() - before + 5);
     await cb.close();
 });
+
+test("setName and getName store and read the device name; empty is the default", async () => {
+    const { dev, cb } = await connected({ hosted: false, name: {} });
+    assert.deepEqual(await cb.getName(), { name: "controlblock-a1b2c3", isDefault: true });
+    await cb.setName("Den-TV");
+    assert.deepEqual(await cb.getName(), { name: "den-tv", isDefault: false });
+    assert.equal(dev.name.name, "den-tv");
+    await cb.setName("");
+    assert.deepEqual(await cb.getName(), { name: "controlblock-a1b2c3", isDefault: true });
+    await assert.rejects(cb.setName("a.b"), RangeError);
+    assert.equal(dev.requests.filter(m => m.type === Msg.NAME_SET).length, 2);
+    await cb.close();
+});

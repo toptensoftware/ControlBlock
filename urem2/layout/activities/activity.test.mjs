@@ -8,7 +8,7 @@ import { makeContext } from "../context.mjs";
 import { activityMeta } from "../devices.mjs";
 import { key, grid, muteKey } from "../keys.mjs";
 import { icon } from "../look.mjs";
-import { padBindings, volumeBindings } from "../pad.mjs";
+import { padBindings, volumeBindings, padPage } from "../pad.mjs";
 import { targets } from "../../targets.mjs";
 
 const ctx = makeContext(targets.test);
@@ -29,4 +29,12 @@ test("defineActivity: no pad spec gives the volume bindings only; no pages or an
     assert.throws(() => defineActivity(ctx, "playstation", { pages: [] }), /at least one page/);
     assert.throws(() => defineActivity(ctx, "xbox", { pages: [{}] }), /unknown activity/);
     assert.throws(() => defineActivity(ctx, "hdd", { pages: [{}], pad: { key7: { tap: [] } } }), /key7/);
+});
+
+test("defineActivity: padPage puts the pad page first, bindings unchanged", () => {
+    const a = key(icon("#play"), ops.ir("pana.play"));
+    const pad = { key3: { press: ops.ir("pana.ok") } };
+    const withPage = defineActivity(ctx, "hdd", { pages: [{ 11: a }], pad, padPage: true });
+    assert.deepEqual(withPage.pages, [{ keys: grid(padPage(ctx, pad)) }, { keys: grid({ 11: a }) }]);
+    assert.deepEqual(withPage.bindings, defineActivity(ctx, "hdd", { pages: [{ 11: a }], pad }).bindings);
 });

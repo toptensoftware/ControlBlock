@@ -27,3 +27,15 @@ void standalone_tick(void);
 
 // The host took control (true) or gave it back (false). Protocol task.
 void standalone_set_hosted(bool hosted);
+
+// For the diagnostics (/status): copies of what the op task last saw (any task)
+struct StandaloneDiag
+{
+    bool     busy;              // the op queue is running
+    int      activity;          // selected activity, -1 = none
+    uint32_t script_runs, script_errors, script_heap_peak;  // since the last re-arm
+};
+void standalone_get_diag(StandaloneDiag *out);
+
+// An activity's name from the layout ("" for -1 or no layout)
+const char *standalone_activity_name(int index);

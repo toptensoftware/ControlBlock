@@ -78,6 +78,7 @@ Notes for the order: step 1 doesn't depend on HID, so hosted mode keeps working 
 - **Left text:** always the selected activity's name, or its optional `displayName` if set. With no activity selected, it is empty.
 - **Right text:** fixed `{clock}` (`STATUS_TEXT_STANDALONE_RIGHT` in `protocol.h`): the time, 12 h without am/pm ("2:05"), blank until NTP or a host has set it ([`status-bar.md`](status-bar.md#clock)). Set at boot and restored on release and disconnect; a takeover clears it like the left text, and the host sets its own (which may hold `{clock}`). No layout field.
 - **Pager pills:** one pill per page, including Home.
+- **Icons** (just left of the clock; [`status-bar.md`](status-bar.md#icons)): Wi-Fi (waves connected, a dot otherwise), a busy hourglass while the op queue runs or net requests are pending (at least 500 ms), and an error icon for 5 s after an external failure (it replaces the hourglass while it shows). **Counts as an error:** a net op (`httpGet`, `httpPost`, `udpPacket`, `sendWol`, or a script's `http` call) that can't be sent (Wi-Fi down, net queue full) or whose request finishes with a connect failure, a timeout or an HTTP status >= 400, fire-and-forget or waited (`NetFailureIsExternal`, `net_host.h`). **Doesn't:** Lua errors, refused activity switches, bad params and other configuration errors (logged as `op failed: <why>`), and requests the net queue drops unsent. Hosted, only the Wi-Fi icon shows.
 
 ### Wi-Fi
 

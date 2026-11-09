@@ -49,12 +49,21 @@ export function switchTo(name)
     return { op: "switchActivity", activity: name };
 }
 
-// What a switch into `name` runs, again: every device's turnOn in the activity's order, then didActivate
+// A forced resync of `name`: every device's turnOn in the activity's order, then didActivate, then the turnOff of
+// every device it doesn't use (in device order; those without a turnOff are skipped). null = no activity: every
+// device off.
 export function resync(ctx, name)
 {
     const devs = devices(ctx);
-    return [...activity(name).devices.flatMap(d => devs[d].turnOn), ...hooks(ctx, name).didActivate];
+    const used = name === null ? [] : activity(name).devices;
+    const unused = Object.keys(devs).filter(d => !used.includes(d));
+    return [
+        ...used.flatMap(d => devs[d].turnOn),
+        ...(name === null ? [] : hooks(ctx, name).didActivate),
+        ...unused.flatMap(d => devs[d].turnOff ?? []),
+    ];
 }
 
-// Home's activity keys: tap switches, long switches and then resyncs (works from any activity)
+// Home's activity keys (and the power key, name null): tap switches, long switches and then resyncs (works from
+// any activity)
 export const activityKeyGestures = (ctx, name) => ({ tap: [switchTo(name)], long: [switchTo(name), ...resync(ctx, name)] });

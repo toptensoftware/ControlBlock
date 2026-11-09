@@ -14,6 +14,7 @@
 #include "heap_log.h"
 #include "net_queue.h"
 #include "net_worker.h"
+#include "status.h"
 #include "wifi.h"
 #include "wol_packet.h"
 
@@ -92,6 +93,8 @@ namespace
     {
         xSemaphoreTake(s_lock, portMAX_DELAY);
         bool ok = s_queue.Submit(req);
+        if (ok)
+            status_net_busy(true);              // the busy icon until the worker drains the queue
         xSemaphoreGive(s_lock);
         if (ok)
             xTaskNotifyGive(s_task);
@@ -284,6 +287,10 @@ namespace
                 xSemaphoreTake(s_lock, portMAX_DELAY);
                 s_queue.Expire(now_ms());
                 bool have = s_queue.Next(now_ms(), &req);
+                // Cleared under the lock that submits set it under, so a request
+                // submitted just now can't be missed
+                if (!have)
+                    status_net_busy(false);
                 xSemaphoreGive(s_lock);
                 if (!have)
                     break;
@@ -301,6 +308,8 @@ namespace
                 xSemaphoreGive(s_lock);
 
                 log_outcome(req, o);
+                if (NetFailureIsExternal(o.result, o.status))
+                    status_error();             // the status bar's error icon (fire and forget or waited)
             }
         }
     }
@@ -322,6 +331,7 @@ esp_err_t net_worker_init(void)
     s_host.submit    = host_submit;
     s_host.take_reply = host_take_reply;
     s_host.abandon   = host_abandon;
+    s_host.external_error = [](void *) { status_error(); };     // Wi-Fi down or queue full, from the executors
     log_heap(TAG, "before the net worker");
     if (xTaskCreatePinnedToCore(worker_task, "net", NET_TASK_STACK, nullptr, NET_TASK_PRIO, &s_task, NET_TASK_CORE) != pdPASS)
         return ESP_FAIL;

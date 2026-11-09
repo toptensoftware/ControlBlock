@@ -125,6 +125,19 @@ Fact("ClockText Utf8 Cut Length")
     Assert(utf8_cut_len("\xE2\x82\xAC", 2) == 0);   // nor U+20AC
 }
 
+Fact("ClockText Utf8 Complete Length")
+{
+    Assert(utf8_complete_len("abc", 3) == 3);
+    Assert(utf8_complete_len("", 0) == 0);
+    Assert(utf8_complete_len("a\xC3\xA9", 3) == 3);         // whole U+00E9
+    Assert(utf8_complete_len("a\xC3", 2) == 1);             // its lead byte alone
+    Assert(utf8_complete_len("a\xE2\x94\x80", 4) == 4);     // whole U+2500
+    Assert(utf8_complete_len("a\xE2\x94", 3) == 1);         // two of its three bytes
+    Assert(utf8_complete_len("a\xE2", 2) == 1);
+    Assert(utf8_complete_len("\xF0\x9F\x98", 3) == 0);      // three of a four-byte one
+    Assert(utf8_complete_len("\xF0\x9F\x98\x80", 4) == 4);
+}
+
 Fact("ClockText Has Clock")
 {
     Assert(clock_text_has_clock("{clock}"));

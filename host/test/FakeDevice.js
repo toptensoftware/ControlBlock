@@ -25,6 +25,7 @@ const USB_RX_TRANSFER = 512;    // the firmware's receive transfer (CONFIG_TINYU
 
 // Requests that edit the keys, images or status bar: refused while standalone
 const HOSTED_REQUESTS = [Msg.RESET, Msg.SET_STATUS_TEXT, Msg.PUT_IMAGE, Msg.FREE_IMAGES, Msg.SET_PAGE_COUNT, Msg.SET_KEYS, Msg.SET_PAGE];
+const FAKE_DEFAULT_NAME = "controlblock-a1b2c3";   // NAME_GET with no name stored
 
 export class FakeDevice
 {
@@ -40,9 +41,11 @@ export class FakeDevice
     //   controlStatus: if not OK, TAKE_CONTROL and RELEASE_CONTROL answer with it and change nothing.
     // clock: emulate the clock messages (docs/protocol.md, Clock): { offset, source, tz, server }.
     //   offset: device time minus Date.now() in ms, null while the time isn't known (the default).
-    constructor({ maxPayload = 8192, handler, backlight = true, layout, wifi, clock, hosted = false, controlStatus = Status.OK } = {})
+    // name: emulate NAME_SET/NAME_GET (docs/protocol.md, Device name): { name } stored, null (the default) for none.
+    constructor({ maxPayload = 8192, handler, backlight = true, layout, wifi, clock, name, hosted = false, controlStatus = Status.OK } = {})
     {
         this.clock = clock ? { offset: null, source: 0, tz: "UTC0", server: "pool.ntp.org", ...clock } : null;
+        this.name = name ? { name: null, ...name } : null;
         this.hosted = hosted;
         this.model = hosted ? "empty" : "home";
         this.controlStatus = controlStatus;
@@ -123,6 +126,8 @@ export class FakeDevice
                     ? this._wifi(msg)
                 : this.clock && msg.type >= Msg.TIME_SET && msg.type <= Msg.CLOCK_SET
                     ? this._clock(msg)
+                : this.name && (msg.type === Msg.NAME_SET || msg.type === Msg.NAME_GET)
+                    ? this._name(msg)
                 : msg.type === Msg.PING
                     ? { status: Status.OK, data: msg.payload }
                     : this.handler(msg);
@@ -194,6 +199,20 @@ export class FakeDevice
         if (mask & 2)
             c.server = r.str() || "pool.ntp.org";
         return reply(Status.OK);
+    }
+
+    // The device name messages, as the firmware does them (the rules are checked by the firmware's own tests)
+    _name(msg)
+    {
+        const p = msg.payload;
+        if (msg.type === Msg.NAME_SET) {
+            if (p.length < 1 || p.length !== 1 + p[0])
+                return { status: Status.BAD_LENGTH, data: new Uint8Array(0) };
+            this.name.name = new TextDecoder().decode(p.subarray(1)).toLowerCase() || null;
+            return { status: Status.OK, data: new Uint8Array(0) };
+        }
+        const n = new TextEncoder().encode(this.name.name ?? FAKE_DEFAULT_NAME);
+        return { status: Status.OK, data: new Writer(2 + n.length).u8(this.name.name ? 0 : 1).u8(n.length).raw(n).done() };
     }
 
     // The layout upload, as the firmware does it. Answers (possibly later) itself.

@@ -8,6 +8,7 @@ import {
     InfoFlags, Writer, WifiState, WIFI_SSID_MAX_BYTES, WIFI_PASS_MIN_BYTES, WIFI_PASS_MAX_BYTES,
     encodeWifiSet, decodeWifiCredentials, decodeWifiStatus,
     ClockSource, TIME_VALID_FROM_MS, CLOCK_FIELD_MAX_BYTES, encodeTimeSet, decodeTime, encodeClockSet,
+    DEVICE_NAME_MAX_BYTES, encodeNameSet, decodeName,
 } from "../src/protocol.js";
 import { infoPayload } from "./FakeDevice.js";
 
@@ -354,4 +355,27 @@ test("clock set refuses what the device would refuse", () => {
     for (const server of ["pool.ntp.org ", "a_b", "host:123", "é"])
         assert.throws(() => encodeClockSet({ ntpServer: server }), RangeError, server);
     assert.throws(() => encodeClockSet({ ntpServer: "x".repeat(CLOCK_FIELD_MAX_BYTES + 1) }), RangeError);
+});
+
+test("name set is a length and the name, lowercased; empty is the default", () => {
+    const enc = s => [...new TextEncoder().encode(s)];
+    assert.equal(Msg.NAME_SET, 0x60);
+    assert.equal(Msg.NAME_GET, 0x61);
+    assert.deepEqual([...encodeNameSet("den-tv")], [6, ...enc("den-tv")]);
+    assert.deepEqual([...encodeNameSet("Den-TV")], [6, ...enc("den-tv")]);
+    assert.deepEqual([...encodeNameSet("")], [0]);
+    assert.equal(encodeNameSet("a".repeat(DEVICE_NAME_MAX_BYTES)).length, 1 + DEVICE_NAME_MAX_BYTES);
+});
+
+test("name set refuses what the device would refuse", () => {
+    assert.throws(() => encodeNameSet(5), TypeError);
+    assert.throws(() => encodeNameSet("a".repeat(DEVICE_NAME_MAX_BYTES + 1)), RangeError);
+    for (const name of ["-den", "den-", "a.b", "a_b", "a b", "é"])
+        assert.throws(() => encodeNameSet(name), RangeError, name);
+});
+
+test("name get decodes is_default and the name", () => {
+    const n = new TextEncoder().encode("controlblock-a1b2c3");
+    assert.deepEqual(decodeName(Uint8Array.of(1, n.length, ...n)), { name: "controlblock-a1b2c3", isDefault: true });
+    assert.deepEqual(decodeName(Uint8Array.of(0, 3, 100, 101, 110)), { name: "den", isDefault: false });
 });

@@ -112,6 +112,7 @@ static void wake(void)
 static void on_wifi_state(WifiState state, const uint8_t ip[4])
 {
     s_proto.PostWifiState(state, ip);
+    status_set_wifi(state);             // the status bar's Wi-Fi icon (before wifi_start: boots showing not connected)
     wake();
 }
 
@@ -150,6 +151,7 @@ static void on_disconnected(void)
 static void ph_mode_changed(bool hosted, void *)
 {
     standalone_set_hosted(hosted);      // drops held keys and queued ops; release re-arms
+    status_set_hosted(hosted);          // hosted: the Wi-Fi icon only (busy/error cleared)
     ESP_LOGI(TAG, "%s", hosted ? "host took control" : "standalone");
 }
 
@@ -215,7 +217,7 @@ esp_err_t host_link_init(void)
     layout_flash_open(&cf);
     cf.busy = cf_busy;
     s_layout_store.Init(cf);
-    s_proto.Init(model_store(), model_layout(), &s_layout_store, wifi_config(), clock_config(), h);
+    s_proto.Init(model_store(), model_layout(), &s_layout_store, wifi_config(), clock_config(), device_name(), h);
     s_proto.SetHome(layout_summary(), layout_blob());
 
     if (xTaskCreatePinnedToCore(protocol_task, "protocol", PROTOCOL_TASK_STACK, nullptr,

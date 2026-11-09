@@ -3,7 +3,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { padBindings, volumeBindings, padArrows, ARROW_REPEAT, PAD_CONTROLS } from "./pad.mjs";
+import { padBindings, volumeBindings, padArrows, padPage, volumeStep, ARROW_REPEAT, PAD_CONTROLS } from "./pad.mjs";
+import { key, grid, muteKey } from "./keys.mjs";
+import { icon, COLORS } from "./look.mjs";
+import { setVolume } from "../tables/yamaha.mjs";
 import { makeContext } from "./context.mjs";
 import { volumeScript, yamahaToggle } from "./scripts.mjs";
 import { ROOT_DEFAULTS } from "./look.mjs";
@@ -69,4 +72,38 @@ test("padArrows: urem's arrow keys key2/4/5/6 = up/left/down/right on press, wit
     });
     assert.deepEqual(padBindings(spec).map(b => `${b.control} ${b.event}`),
                      ["key2 press", "key4 press", "key5 press", "key6 press"]);
+});
+
+test("volumeStep: one Yamaha step per tap", () => {
+    assert.deepEqual(volumeStep(ctx, "up"), ops.yamaha(setVolume("up", 1)));
+    assert.deepEqual(volumeStep(ctx, "down"), ops.yamaha(setVolume("down", 1)));
+    assert.throws(() => volumeStep(ctx, "sideways"), /volume direction/);
+});
+
+test("padPage: the pad's keys in its 2x3 shape, tap ?? press and long, then Vol+/Vol-/mute", () => {
+    const k = n => ops.atvKey(n);
+    const spec = { key1: { tap: k("menu"), long: k("home") }, key3: { press: k("select") }, ...padArrows(k) };
+    const white = { color: COLORS.white }, purple = { color: COLORS.purple };
+    assert.deepEqual(padPage(ctx, spec), {
+        1: key(icon("#cross", { color: COLORS.red }), k("menu"), { long: k("home") }),
+        2: key(icon("#arrow-up", white), k("up")),
+        3: key(icon("#check", { color: COLORS.green }), k("select")),
+        6: key(icon("#arrow-left", white), k("left")),
+        7: key(icon("#arrow-down", white), k("down")),
+        8: key(icon("#arrow-right", white), k("right")),
+        4: key(icon("#volume-up", purple), volumeStep(ctx, "up")),
+        9: key(icon("#volume-down", purple), volumeStep(ctx, "down")),
+        14: muteKey(ctx),
+    });
+});
+
+test("padPage: unbound controls leave their slots empty", () => {
+    const slots = padPage(ctx, { key2: { press: ops.slideshow("voteUp") } });
+    assert.deepEqual(Object.keys(slots).map(Number).sort((a, b) => a - b), [2, 4, 9, 14]);
+});
+
+test("padPage resolves clean (icons included)", async () => {
+    const spec = { key1: { tap: ops.atvKey("menu") }, key3: { tap: ops.atvKey("select") }, ...padArrows(ops.atvKey) };
+    const tree = await cleanLayout({ version: 1, defaults: ROOT_DEFAULTS, home: { keys: grid(padPage(ctx, spec)) } });
+    assert.equal(tree.home.keys.filter(k => k.normalFg).length, 9);
 });

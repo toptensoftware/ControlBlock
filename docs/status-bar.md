@@ -4,9 +4,9 @@ The fixed 800x40 band at the top of the screen. Status: **implemented and measur
 
 ```
 +--------------------------------------------------------------------+
-| AppleTV                      ▬ ━━ ▬                           12:35 |
+| AppleTV                      ▬ ━━ ▬                     12:35  ! … • |
 +--------------------------------------------------------------------+
-  left text                   pager pills                 right text
+  left text                   pager pills           right text  icons
 ```
 
 ## Content
@@ -28,6 +28,19 @@ Four properties:
 The setters are safe from any task (not ISRs). Setting a property to its current value does nothing.
 
 The host sets the two texts with `SET_STATUS_TEXT` ([protocol.md](protocol.md)); the protocol task calls `status_set_left/right()`, which only copy 48 bytes under a short spinlock and wake the status task. Drawing stays in that task (internal RAM only). `RESET` and `TAKE_CONTROL` clear both. Standalone, the left text is the activity name and the right text is `{clock}` (set at boot, restored on release and disconnect; [standalone.md](standalone.md#status-bar)).
+
+## Icons
+
+Built and host tested; **not yet run on the hardware.** Firmware owned: no protocol message sets or hides them.
+
+- **Placement:** just left of the right text (the clock), which stays at the right margin. Left to right: error or busy, Wi-Fi, then the clock, each icon centred in a `STATUS_ICON_SLOT_W` (22 px) slot, `STATUS_ICON_TEXT_GAP` (8 px) before the text. Only the icons showing take a slot, and they move with the clock's width. With no right text they end at the margin.
+- **Wi-Fi:** always shown. Connected: the Wi-Fi waves, white like the text; anything else (no credentials, connecting, retrying): a grey dot. State only: no signal bars, no polling. Fed from `host_link.cpp`'s `on_wifi_state`.
+- **Busy:** a small white hourglass. Shown while the op queue runs or the net worker has requests queued or in flight (a fire-and-forget request outlives its op), kept until both are idle, but at least `STATUS_BUSY_MIN_MS` (500 ms) from the latest start, so a short HID tap still shows briefly rather than flickering. Fed from the op task's busy edges (`status_busy`) and the net worker (`status_net_busy`: set on a submit, cleared when its queue drains, both under its lock).
+- **Error:** a red circle with a white x, for `STATUS_ERROR_SHOW_MS` (5 s) after an op that reaches outside the device fails for external reasons; a new failure restarts the 5 s. It shares the busy icon's place and wins over it (`StatusIcons::Visible` never reports both). What counts: [standalone.md](standalone.md#status-bar). Configuration errors (Lua errors, refused switches, bad params) never show it; they are logged (`op failed: ...`).
+- **Hosted:** only the Wi-Fi icon shows. A takeover clears busy and error.
+- **State:** `StatusIcons` (`status_icons.cpp/.h`, pure, `TestStatusIcons.cpp`) takes the inputs with injected times and gives the visible bits (`Visible(now)`) and the ms to the next busy-minimum or error expiry (`NextDeadlineMs`). `status.cpp` holds it under its own spinlock (setters `status_set_wifi`, `status_busy`, `status_error`, `status_set_hosted`, safe from any task) and passes the bits to `StatusBar::SetIcons` (redraws only on a change).
+- **Wake:** the status task waits `status_wait_ms(clock, icons)`: the sooner of the clock's minute wake and the icon deadline. Each icon change is a full redraw (rare: a few per op run).
+- **Images:** ui.bin blobs `UI_ASSET_STATUS_ICON` + bit (see Assets).
 
 ## Clock
 
@@ -51,6 +64,7 @@ Built and host tested; **not yet run on the hardware.**
 | `UI_ASSET_STATUS_FONT` | Inter SemiBold, 20 px, ASCII 32–126, 4 subpixel positions (~66 KB). Source: `tools/test-icons/fonts/` (SIL OFL 1.1) |
 | `UI_ASSET_PAGER_CURRENT` | 24x6 white rounded pill (rle565 with alpha) |
 | `UI_ASSET_PAGER_OTHER` | 12x6 grey (#606060) rounded pill |
+| `UI_ASSET_STATUS_ICON` + 0..3 | 20 px status icons with alpha, placeholders: Wi-Fi waves (white), Wi-Fi dot (grey #a0a0a0), busy (white hourglass), error (red circle, white x). To replace one, edit its SVG in `gen.js` (`STATUS_ICONS`), `npm run build` in `tools/test-icons`, rebuild the firmware |
 
 `main.cpp` copies the pack to PSRAM (rle565 needs 4-byte alignment); `status_init()` validates it (`check_font()`, `check_image_header()`). Pill sizes come from the images, so the layout follows any change to them.
 

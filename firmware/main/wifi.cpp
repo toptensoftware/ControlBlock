@@ -20,6 +20,8 @@
 #include "esp_wifi.h"
 #include "lwip/ip_addr.h"
 #include "ping/ping_sock.h"
+#include "mdns.h"
+#include "diag_http.h"
 #include "nvs_blob.h"
 #include "heap_log.h"
 #include "clock.h"
@@ -41,6 +43,8 @@ static const char *TAG = "wifi";
 
 // Where the credentials live in NVS. Don't change: boards already hold them here.
 static const NvsBlob s_nvs = { "cb_wifi", "cred", "the credentials" };
+static const NvsBlob s_name_nvs = { "cb_name", "name", "the device name" };
+static DeviceName    s_name;
 
 // The machine's reason numbers are esp_wifi's (it can't include the header: host tests)
 static_assert(CB_WIFI_REASON_LEAVE == WIFI_REASON_ASSOC_LEAVE, "wifi_state.h reason");
@@ -63,7 +67,7 @@ WifiConfig *wifi_config(void)
 // The Wi-Fi task
 // ---------------------------------------------------------------------------
 
-enum class Ev : uint8_t { Credentials, Disconnected, GotIp, LostIp, NtpServer };
+enum class Ev : uint8_t { Credentials, Disconnected, GotIp, LostIp, NtpServer, Name };
 
 struct Msg
 {
@@ -163,10 +167,7 @@ static void driver_up(void)
     }
 
     s_netif = esp_netif_create_default_wifi_sta();
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char host[32];
-    snprintf(host, sizeof(host), "controlblock-%02x%02x%02x", mac[3], mac[4], mac[5]);
+    const char *host = s_name.Get();       // the DHCP hostname; a rename applies on the next lease
     esp_netif_set_hostname(s_netif, host);
 
     log_heap(TAG, "before the Wi-Fi driver starts");
@@ -184,8 +185,11 @@ static void driver_up(void)
 
 static void sntp_down(void);
 
+static void services_down(void);
+
 static void driver_down(void)
 {
+    services_down();
     sntp_down();
     esp_wifi_stop();
     esp_wifi_deinit();
@@ -349,6 +353,60 @@ static void sntp_server_changed(void)
         sntp_up();
 }
 
+// ---- mDNS (<name>.local, _http._tcp) and the diagnostics server ----
+// Up on each connect, down when the link goes (the Wi-Fi task only). A rename
+// applies to mDNS at once; the DHCP hostname follows on the next lease.
+
+static bool s_mdns_on;
+
+static void mdns_up(void)
+{
+    if (s_mdns_on)
+        return;
+    esp_err_t err = mdns_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "mdns: init failed: %s", esp_err_to_name(err));
+        return;
+    }
+    s_mdns_on = true;
+    mdns_hostname_set(s_name.Get());
+    mdns_instance_name_set(s_name.Get());
+    mdns_service_add(nullptr, "_http", "_tcp", DIAG_HTTP_PORT, nullptr, 0);
+    ESP_LOGI(TAG, "mdns: %s.local", s_name.Get());
+}
+
+static void mdns_down(void)
+{
+    if (!s_mdns_on)
+        return;
+    mdns_free();
+    s_mdns_on = false;
+}
+
+static void services_up(void)
+{
+    mdns_up();
+    diag_http_start();
+}
+
+static void services_down(void)
+{
+    diag_http_stop();
+    mdns_down();
+}
+
+static void name_changed(void)
+{
+    const char *name = s_name.Get();
+    if (s_netif)
+        esp_netif_set_hostname(s_netif, name);
+    if (s_mdns_on) {
+        mdns_hostname_set(name);
+        mdns_instance_name_set(name);
+    }
+    ESP_LOGI(TAG, "renamed %s (mDNS now, DHCP hostname on the next lease)", name);
+}
+
 static void publish(void)
 {
     s_snap_lock.Enter();
@@ -385,7 +443,11 @@ static void apply(const WifiAction &a)
             ESP_LOGI(TAG, "got IP %u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
             log_heap(TAG, "with Wi-Fi connected");
             sntp_up();
+            services_up();
+            log_heap(TAG, "with mDNS and the diagnostics server up");
             log_link(GATEWAY_PINGS_AT_CONNECT);
+        } else {
+            services_down();
         }
         if (s_state_cb)
             s_state_cb(s_machine.GetState(), s_machine.Ip());
@@ -410,6 +472,9 @@ static void handle(const Msg &m)
         break;
     case Ev::NtpServer:
         sntp_server_changed();
+        break;
+    case Ev::Name:
+        name_changed();
         break;
     }
 }
@@ -455,6 +520,14 @@ static void on_credentials_changed(const WifiCredentials &now, void *)
     post(m);
 }
 
+// A rename from the protocol task: the Wi-Fi task applies it
+static void on_name_changed(const char *, void *)
+{
+    Msg m = {};
+    m.ev = Ev::Name;
+    post(m);
+}
+
 void wifi_ntp_server_changed(void)
 {
     Msg m = {};
@@ -472,6 +545,11 @@ void wifi_init(void)
     s_config.SetChangedCallback(on_credentials_changed, nullptr);
     if (s_config.Stored())
         ESP_LOGI(TAG, "credentials stored for \"%s\"", s_config.Get().ssid);
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    s_name.Init(nvs_blob_storage(&s_name_nvs), mac);
+    s_name.SetChangedCallback(on_name_changed, nullptr);
+    ESP_LOGI(TAG, "device name %s%s", s_name.Get(), s_name.IsDefault() ? " (default)" : "");
 }
 
 esp_err_t wifi_start(void)
@@ -490,4 +568,14 @@ esp_err_t wifi_start(void)
         post(m);
     }
     return ESP_OK;
+}
+
+bool wifi_sntp_on(void)
+{
+    return s_sntp_on;                       // a bool written by the Wi-Fi task: a stale read is harmless
+}
+
+DeviceName *device_name(void)
+{
+    return &s_name;
 }

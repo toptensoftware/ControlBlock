@@ -12,6 +12,8 @@
 #include "ui_assets.h"
 #include "status.h"
 #include "clock.h"
+#include "status_icons.h"
+#include "esp_timer.h"
 
 static const char *TAG = "status";
 
@@ -39,12 +41,35 @@ static TaskHandle_t       s_task;
 static fill_gap_client_t  s_gap_client = { NULL, WAKE_GAP, false };
 static uint16_t          *s_scratch;        // SCREEN_W x STATUS_BAR_BAND_ROWS_MAX, internal RAM
 
-// Ticks to just after the next minute boundary: rounded up, so never early
-// and never 0 (the tick is 10 ms)
-static TickType_t clock_wait_ticks(void)
+static StatusIcons        s_icons;          // under s_icons_lock
+static port::SpinLock     s_icons_lock;
+
+static int64_t uptime_ms(void) { return esp_timer_get_time() / 1000; }
+
+// Bring the bar's icons up to date; returns ms until they next change by
+// themselves (or STATUS_NO_DEADLINE)
+static int64_t refresh_icons(void)
 {
-    int64_t ms = clock_wait_ms(clock_now_ms());
-    return (TickType_t)((ms + portTICK_PERIOD_MS - 1) / portTICK_PERIOD_MS);
+    int64_t now = uptime_ms();
+    s_icons_lock.Enter();
+    int icons = s_icons.Visible(now);
+    int64_t next = s_icons.NextDeadlineMs(now);
+    s_icons_lock.Exit();
+    s_bar.SetIcons(icons);
+    return next;
+}
+
+// Ticks to the next wake: just after the next minute boundary while a text
+// shows the clock, or an icon's expiry. Rounded up, so never early and never
+// 0 (the tick is 10 ms).
+static TickType_t wait_ticks(int64_t icons_ms)
+{
+    int64_t clock = s_bar.HasClock() ? clock_wait_ms(clock_now_ms()) : STATUS_NO_DEADLINE;
+    int64_t ms = status_wait_ms(clock, icons_ms);
+    if (ms == STATUS_NO_DEADLINE)
+        return portMAX_DELAY;
+    TickType_t t = (TickType_t)((ms + portTICK_PERIOD_MS - 1) / portTICK_PERIOD_MS);
+    return t ? t : 1;
 }
 
 // Bring the clock's text up to date (a redraw only if a text shows it and it
@@ -71,10 +96,12 @@ static void status_task(void *arg)
     int row = 0;                // next row of the bar to copy to it
     int rendered = 0;           // rows waiting in the scratch band
     uint32_t bits = 0;
+    int64_t icons_ms = STATUS_NO_DEADLINE;
 
     while (1) {
         if (!back) {
             refresh_clock();                    // between draws: each wake, the minute one included
+            icons_ms = refresh_icons();
             back = s_bar.BeginDraw(screen_status_bar_shown(), &content);
             row = rendered = 0;
         }
@@ -111,12 +138,13 @@ static void status_task(void *arg)
 
         // Wait for a change or a gap, or, if a change waits on the last swap,
         // for the next frame start (a tick is at least one frame); while a
-        // text shows the clock, at most until the minute turns over
-        TickType_t wait = portMAX_DELAY;
+        // text shows the clock, at most until the minute turns over (and an
+        // icon expiry)
+        TickType_t wait;
         if (!back && s_bar.Pending())
             wait = 1;
-        else if (s_bar.HasClock())
-            wait = clock_wait_ticks();
+        else
+            wait = wait_ticks(icons_ms);
         bits = 0;
         xTaskNotifyWait(0, ULONG_MAX, &bits, wait);
     }
@@ -127,7 +155,7 @@ static bool ui_ok(const BLOBPACK *ui)
     if (ui->count < UI_ASSET_COUNT ||
         !check_font(get_blob(ui, UI_ASSET_STATUS_FONT), get_blob_size(ui, UI_ASSET_STATUS_FONT)))
         return false;
-    for (int i = UI_ASSET_PAGER_CURRENT; i <= UI_ASSET_PAGER_OTHER; i++)
+    for (int i = UI_ASSET_PAGER_CURRENT; i < UI_ASSET_COUNT; i++)      // pills and icons
         if (!check_image_header(get_blob(ui, i), get_blob_size(ui, i)))
             return false;
     return true;
@@ -174,3 +202,19 @@ void status_set_right(const char *text)   { changed(s_bar.SetRight(text)); }
 void status_set_pill_count(int count)     { changed(s_bar.SetPillCount(count)); }
 void status_set_selected_pill(int index)  { changed(s_bar.SetSelectedPill(index)); }
 void status_clock_changed(void)           { changed(true); }
+
+// The icons' state changes; the task works out what shows (it may not change)
+template <typename F>
+static void icons_update(F f)
+{
+    s_icons_lock.Enter();
+    f(uptime_ms());
+    s_icons_lock.Exit();
+    changed(true);
+}
+
+void status_set_wifi(WifiState state)     { icons_update([&](int64_t) { s_icons.SetWifi(state); }); }
+void status_busy(bool busy)               { icons_update([&](int64_t now) { s_icons.SetBusy(busy, now); }); }
+void status_net_busy(bool busy)           { icons_update([&](int64_t now) { s_icons.SetNetBusy(busy, now); }); }
+void status_error(void)                   { icons_update([&](int64_t now) { s_icons.ReportError(now); }); }
+void status_set_hosted(bool hosted)       { icons_update([&](int64_t) { s_icons.SetHosted(hosted); }); }

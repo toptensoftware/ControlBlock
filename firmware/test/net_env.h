@@ -21,6 +21,7 @@ struct FakeNet
     uint32_t    reply_gen = 0;
     uint32_t    abandoned[8] = {};
     int         n_abandoned = 0;
+    int         external_errors = 0;        // external_error calls
     NetHost     host;
 
     FakeNet()
@@ -49,7 +50,8 @@ struct FakeNet
             if (f->n_abandoned < 8)
                 f->abandoned[f->n_abandoned++] = gen;
         };
-        host.submit = [](const NetRequest &r, void *c) {
+        host.external_error = [](void *c) { ((FakeNet *)c)->external_errors++; };
+        host.submit =[](const NetRequest &r, void *c) {
             FakeNet *f = (FakeNet *)c;
             if (!f->accepts)
                 return false;

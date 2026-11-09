@@ -14,6 +14,7 @@ export function steam(ctx)
     const press = cmd => ({ press: show(cmd) });
 
     return defineActivity(ctx, "steam", {
+        padPage: true,
         pages: [
             {
                 ...transportKeys({ previous: show("prevDay"), next: show("nextDay"), rewind: show("backward20"),

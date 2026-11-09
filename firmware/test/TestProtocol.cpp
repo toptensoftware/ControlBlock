@@ -62,6 +62,9 @@ namespace
         WifiConfig wifi;
         FakeBlobStorage clock_storage;
         ClockConfig clock;
+        FakeBlobStorage name_storage;
+        DeviceName name;
+        int  name_changes = 0;
         Protocol   proto;
 
         List<uint8_t> out;
@@ -91,6 +94,9 @@ namespace
             wifi.SetChangedCallback([](const WifiCredentials &, void *c) { ((Fixture *)c)->wifi_changes++; }, this);
             clock.Init(clock_storage.Host());
             clock.SetChangedCallback([](const ClockSettings &, void *c) { ((Fixture *)c)->clock_changes++; }, this);
+            static const uint8_t mac[6] = { 1, 2, 3, 0xa1, 0xb2, 0xc3 };
+            name.Init(name_storage.Host(), mac);
+            name.SetChangedCallback([](const char *, void *c) { ((Fixture *)c)->name_changes++; }, this);
 
             store.Init(env.Host(), capacity, COMP_KEY_SIZE, COMP_KEY_SIZE);
             store.SetListener(&layout);
@@ -139,7 +145,7 @@ namespace
             h.fw_version       = "1.2.3";
             h.serial           = "ABCDEF";
             h.ctx              = this;
-            proto.Init(&store, &layout, &layout_store, &wifi, &clock, h);
+            proto.Init(&store, &layout, &layout_store, &wifi, &clock, &name, h);
 
             if (hosted) {
                 Request(MSG_TAKE_CONTROL);
@@ -1876,4 +1882,94 @@ Fact("Protocol Standalone Right Text Is The Clock After Release And Cleared By A
     f.proto.PostDisconnect();
     f.proto.ServiceDisconnect();
     Assert(!strcmp(f.status_text[1], STATUS_TEXT_STANDALONE_RIGHT));
+}
+
+// ===========================================================================
+// Device name (NAME_SET, NAME_GET)
+// ===========================================================================
+
+namespace
+{
+    Bytes NameSet(const char *name)
+    {
+        Bytes p;
+        p.U8((uint32_t)strlen(name)).Raw(name, strlen(name));
+        return p;
+    }
+
+    // NAME_GET read back: u8 is_default, u8 len, name
+    struct NameInfo
+    {
+        uint32_t is_default;
+        char     name[DEVICE_NAME_MAX + 1];
+    };
+
+    NameInfo NameGet(Fixture &f)
+    {
+        Msg m = f.Request(MSG_NAME_GET);
+        Check(m.Status() == ST_OK);
+        NameInfo n = {};
+        n.is_default = m.U8At(4);
+        uint32_t len = m.U8At(5);
+        Check(len <= DEVICE_NAME_MAX);
+        memcpy(n.name, m.data + 6, len);
+        Check(6 + (int)len == m.len);
+        return n;
+    }
+}
+
+Fact("Protocol Name Message Types")
+{
+    Assert(MSG_NAME_SET == 0x60 && MSG_NAME_GET == 0x61);
+}
+
+Fact("Protocol Name Get Is The Default At First")
+{
+    Fixture f;
+    NameInfo n = NameGet(f);
+    Assert(n.is_default == 1 && !strcmp(n.name, "controlblock-a1b2c3"));
+}
+
+Fact("Protocol Name Set Valid Name")
+{
+    Fixture f;
+    Assert(f.Request(MSG_NAME_SET, NameSet("Den-TV")).Status() == ST_OK);
+    NameInfo n = NameGet(f);
+    Assert(n.is_default == 0 && !strcmp(n.name, "den-tv"));
+    Assert(f.name_changes == 1 && f.name_storage.present);
+
+    Assert(f.Request(MSG_NAME_SET, NameSet("")).Status() == ST_OK);        // back to the default
+    n = NameGet(f);
+    Assert(n.is_default == 1 && !strcmp(n.name, "controlblock-a1b2c3"));
+    Assert(!f.name_storage.present);
+}
+
+Fact("Protocol Name Set Errors Change Nothing")
+{
+    Fixture f;
+    f.Request(MSG_NAME_SET, NameSet("den"));
+    int changes = f.name_changes;
+    Assert(f.Request(MSG_NAME_SET, NameSet("-den")).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_NAME_SET, NameSet("a.b")).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_NAME_SET, NameSet("abcdefghijklmnopqrstuvwxyz0123456")).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_NAME_SET).Status() == ST_BAD_LENGTH);             // no length
+    Bytes shortName;
+    shortName.U8(5).Raw("den", 3);
+    Assert(f.Request(MSG_NAME_SET, shortName).Status() == ST_BAD_LENGTH);
+    Bytes extra;
+    extra.U8(3).Raw("abcd", 4);
+    Assert(f.Request(MSG_NAME_SET, extra).Status() == ST_BAD_LENGTH);
+    Assert(!strcmp(NameGet(f).name, "den"));
+    Assert(f.name_changes == changes);
+
+    f.name_storage.fail_save = true;
+    Assert(f.Request(MSG_NAME_SET, NameSet("other")).Status() == ST_IO_ERROR);
+    Assert(!strcmp(NameGet(f).name, "den"));
+}
+
+Fact("Protocol Name Allowed While Standalone")
+{
+    Fixture f(1u << 20, false);
+    Assert(f.Request(MSG_NAME_SET, NameSet("den")).Status() == ST_OK);
+    Assert(!strcmp(NameGet(f).name, "den"));
 }

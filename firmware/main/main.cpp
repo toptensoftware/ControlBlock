@@ -28,6 +28,8 @@
 #include "status.h"
 #include "clock.h"
 #include "protocol.h"
+#include "log_capture.h"
+#include "diag_collect.h"
 
 static const char *TAG = "controlblock";
 
@@ -549,6 +551,7 @@ static void on_touched(uint8_t id, TOUCH_EVENT_TYPE type, uint16_t x, uint16_t y
 
 extern "C" void app_main(void)
 {
+    log_capture_init();                     // first: capture every log line for /log
     ESP_LOGI(TAG, "ControlBlock starting");
     log_heap(TAG, "at start");
 
@@ -591,10 +594,10 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(wifi_start());          // last: a Wi-Fi problem can never keep the screen from coming up
     log_heap(TAG, "after init");
 
-#if STATS_LOG
-    uint32_t last_frames = 0;
     screen_stats_t st;
     comp_stats_t cs;
+#if STATS_LOG
+    uint32_t last_frames = 0;
 #else
     char last_net[80] = "";
 #endif
@@ -611,6 +614,7 @@ extern "C" void app_main(void)
             display_enable_backlight(backlight);
         }
 #endif
+        diag_sample_second(&st, &cs);       // the one reader of the screen and compositor stats (/status)
 #if !STATS_LOG
         const char *net = net_counts();
         if (strcmp(net, last_net) != 0) {
@@ -623,8 +627,6 @@ extern "C" void app_main(void)
         model_store()->GetStats(&is);
         model_unlock();
 
-        screen_get_stats(&st);
-        comp_get_stats(&cs);
         ESP_LOGI(TAG, "%lu fps, fill max %3lu us, %lu over %d us, page %d | "
                       "comp: %lu keys (max %lu us, busy %lu us), %lu swaps, %lu held | img %lu (%lu KB)%s%s",
                  (unsigned long)(st.frames - last_frames),

@@ -31,6 +31,9 @@ export const CLOCK_FIELD_MAX_BYTES = 63;                   // CLOCK_SET: the tim
 export const ClockSource = Object.freeze({ NONE: 0, HOST: 1, NTP: 2 });
 const ClockSetMask = Object.freeze({ TZ: 0x01, SERVER: 0x02 });
 
+// Device name (docs/protocol.md, Device name): the mDNS name and DHCP hostname
+export const DEVICE_NAME_MAX_BYTES = 32;
+
 export const Flags = Object.freeze({
     RESPONSE: 0x01,
     EVENT:    0x02,
@@ -59,6 +62,8 @@ export const Msg = Object.freeze({
     TIME_SET:       0x50,
     TIME_GET:       0x51,
     CLOCK_SET:      0x52,
+    NAME_SET:       0x60,
+    NAME_GET:       0x61,
     KEY:           0x80,       // events
     PAGE_CHANGED:   0x81,
     WAKE:           0x82,
@@ -316,6 +321,20 @@ export function encodeClockSet(settings)
     return w.done();
 }
 
+// NAME_SET: a hostname label (A-Z are lowercased, as the device does), or ""
+// for the default. Throws rather than send what the device would refuse.
+export function encodeNameSet(name)
+{
+    if (typeof name !== "string")
+        throw new TypeError("The name must be a string");
+    const lower = name.toLowerCase();
+    if (lower && !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(lower))
+        throw new RangeError(`The name "${name}" must be a-z 0-9 - and not start or end with -`);
+    if (lower.length > DEVICE_NAME_MAX_BYTES)
+        throw new RangeError(`The name is ${lower.length} bytes; the limit is ${DEVICE_NAME_MAX_BYTES}`);
+    return new Writer(1 + lower.length).u8(lower.length).raw(new TextEncoder().encode(lower)).done();
+}
+
 // One PUT_IMAGE chunk
 export function encodePutImage(id, total, offset, chunk)
 {
@@ -428,6 +447,14 @@ export function decodeTime(data)
         time: known ? new Date(ms) : null,
         timeZone: r.str(), ntpServer: r.str(),
     };
+}
+
+// NAME_GET response data: { name, isDefault }
+export function decodeName(data)
+{
+    const r = new Reader(data);
+    const isDefault = r.u8() !== 0;
+    return { name: r.str(), isDefault };
 }
 
 // QUERY_IMAGES response data: one bool per ID asked about

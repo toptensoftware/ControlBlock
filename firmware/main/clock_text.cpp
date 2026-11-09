@@ -17,6 +17,19 @@ size_t utf8_cut_len(const char *text, size_t max)
     return len;
 }
 
+size_t utf8_complete_len(const char *text, size_t len)
+{
+    // Find the last sequence's lead byte (at most 3 continuation bytes back)
+    size_t i = len;
+    while (i > 0 && len - i < 3 && ((uint8_t)text[i - 1] & 0xC0) == 0x80)
+        i--;
+    if (i == 0)
+        return len;                         // nothing but continuation bytes: leave it
+    uint8_t lead = (uint8_t)text[i - 1];
+    size_t need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+    return len - (i - 1) >= need ? len : i - 1;
+}
+
 void clock_format(char *dst, int hour24, int minute)
 {
     int h = hour24 % 12;

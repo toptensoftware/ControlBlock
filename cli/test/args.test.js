@@ -102,3 +102,18 @@ test("args: time mistakes are reported with the usage", () => {
     usage(["time", "--default"], /--default/);
     usage(["time", "zone", "UTC0", "--force"], /unknown option --force/);
 });
+
+test("args: name get (the default) and set", () => {
+    assert.deepEqual(parseArgs(["name"]), { command: "name", action: "get", serial: undefined });
+    assert.deepEqual(parseArgs(["name", "get", "--serial", "S1"]), { command: "name", action: "get", serial: "S1" });
+    assert.deepEqual(parseArgs(["name", "set", "den-tv"]), { command: "name", action: "set", serial: undefined, value: "den-tv" });
+    assert.deepEqual(parseArgs(["name", "set", "--default"]), { command: "name", action: "set", serial: undefined, value: "" });
+});
+
+test("args: name mistakes are reported with the usage", () => {
+    usage(["name", "rename"], /unknown name command rename/);
+    usage(["name", "get", "x"], /takes no arguments/);
+    usage(["name", "set"], /name set needs/);
+    usage(["name", "set", "a", "b"], /name set needs/);
+    usage(["name", "get", "--default"], /--default/);
+});

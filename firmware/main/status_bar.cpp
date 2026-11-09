@@ -8,6 +8,8 @@ status_bar_style_t status_bar_style(const BLOBPACK *ui)
     s.font          = (const FONT *)get_blob(ui, UI_ASSET_STATUS_FONT);
     s.pill_selected = get_blob(ui, UI_ASSET_PAGER_CURRENT);
     s.pill_other    = get_blob(ui, UI_ASSET_PAGER_OTHER);
+    for (int i = 0; i < STATUS_ICON_IMAGES; i++)
+        s.icon[i] = get_blob(ui, UI_ASSET_STATUS_ICON + i);
     return s;
 }
 
@@ -41,6 +43,34 @@ static void draw_pager(IMAGE_BUFFER *buf, int y0, const status_bar_style_t *styl
     }
 }
 
+// Icon image index (STATUS_ICON_* bit order) of the first bit in `mask` that's set in `icons`, or -1
+static int first_icon(int icons, int mask)
+{
+    for (int i = 0; i < STATUS_ICON_IMAGES; i++)
+        if (icons & mask & (1 << i))
+            return i;
+    return -1;
+}
+
+// Right to left from `right` (the right text's start, less the gap): Wi-Fi, then
+// error or busy (error wins), each centred in a STATUS_ICON_SLOT_W slot
+static void draw_icons(IMAGE_BUFFER *buf, int y0, const status_bar_style_t *style, int icons, int right)
+{
+    int status = first_icon(icons, STATUS_ICON_ERROR);
+    if (status < 0)
+        status = first_icon(icons, STATUS_ICON_BUSY);
+    int order[] = { first_icon(icons, STATUS_ICON_WIFI_CONNECTED | STATUS_ICON_WIFI_OFF), status };
+    int x = right;
+    for (int i : order) {
+        if (i < 0)
+            continue;
+        x -= STATUS_ICON_SLOT_W;
+        const void *img = style->icon[i];
+        int w = get_image_width(img), h = get_image_height(img);
+        draw_image(buf, img, x + (STATUS_ICON_SLOT_W - w) / 2, (SCREEN_STATUS_H - h) / 2 - y0, 0, 0, w, h, NULL, 255, NULL);
+    }
+}
+
 void status_bar_render_rows(uint16_t *px, int y0, int rows, const status_bar_style_t *style, const status_bar_content_t *content)
 {
     // Drawing is clipped to the band, so shifting everything up by y0 draws
@@ -52,10 +82,14 @@ void status_bar_render_rows(uint16_t *px, int y0, int rows, const status_bar_sty
     int baseline = text_baseline(style->font) - y0;
     if (content->left[0])
         draw_text(&buf, style->font, STATUS_BAR_MARGIN, baseline, content->left, -1, STATUS_BAR_TEXT, 255);
+    // The right text (the clock) at the margin, the icons just left of it
+    int icons_right = SCREEN_W - STATUS_BAR_MARGIN;
     if (content->right[0]) {
-        int x = SCREEN_W - STATUS_BAR_MARGIN - font_measure_text(style->font, content->right, -1);
+        int x = icons_right - font_measure_text(style->font, content->right, -1);
         draw_text(&buf, style->font, x, baseline, content->right, -1, STATUS_BAR_TEXT, 255);
+        icons_right = x - STATUS_ICON_TEXT_GAP;
     }
+    draw_icons(&buf, y0, style, content->icons, icons_right);
 
     draw_pager(&buf, y0, style, content->selected_pill, content->pill_count);
 }
@@ -121,6 +155,7 @@ bool StatusBar::SetLeft(const char *text)   { return SetText(m_content.left, tex
 bool StatusBar::SetRight(const char *text)  { return SetText(m_content.right, text); }
 bool StatusBar::SetPillCount(int count)     { return SetInt(&m_content.pill_count, count); }
 bool StatusBar::SetSelectedPill(int index)  { return SetInt(&m_content.selected_pill, index); }
+bool StatusBar::SetIcons(int icons)         { return SetInt(&m_content.icons, icons); }
 
 bool StatusBar::HasClockLocked() const
 {

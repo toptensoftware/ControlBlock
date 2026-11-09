@@ -24,6 +24,13 @@ idf_component_register(
         "screen.cpp"
         "screen_view.cpp"
         "status_bar.cpp"
+        "status_icons.cpp"
+        "log_ring.cpp"
+        "log_capture.cpp"
+        "diag_status.cpp"
+        "diag_collect.cpp"
+        "diag_http.cpp"
+        "device_name.cpp"
         "clock_text.cpp"
         "status.cpp"
         "fill_gap.cpp"
@@ -83,6 +90,7 @@ idf_component_register(
         esp_driver_i2c
         esp_event
         esp_http_client
+        esp_http_server
         esp_hw_support
         esp_lcd
         esp_partition
@@ -94,6 +102,7 @@ idf_component_register(
         esp_wifi
         espressif__esp_lcd_touch_gt911
         espressif__esp_tinyusb
+        espressif__mdns
         lwip
         nvs_flash
 )

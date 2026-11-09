@@ -7,9 +7,9 @@ import assert from "node:assert/strict";
 import { steam } from "./steam.mjs";
 import { makeContext } from "../context.mjs";
 import { activityMeta } from "../devices.mjs";
-import { key } from "../keys.mjs";
+import { key, grid } from "../keys.mjs";
 import { icon, label, COLORS } from "../look.mjs";
-import { volumeBindings } from "../pad.mjs";
+import { volumeBindings, padPage } from "../pad.mjs";
 import { targets } from "../../targets.mjs";
 import { assertSlots, layoutWith } from "../../test/slots.mjs";
 import { cleanLayout } from "../../test/resolve.mjs";
@@ -21,14 +21,14 @@ for (const [name, target] of Object.entries(targets))
     const show = cmd => ops.slideshow(cmd);
     const white = { color: COLORS.white }, orange = { color: COLORS.orange };
 
-    test(`${name}: steam meta and two pages`, () => {
+    test(`${name}: steam meta, the pad page and two pages`, () => {
         const { pages, bindings, ...meta } = steam(ctx);
         assert.deepEqual(meta, activityMeta(ctx, "steam"));
-        assert.equal(pages.length, 2);
+        assert.equal(pages.length, 3);
     });
 
     test(`${name}: steam page 1 (HOT PC, slideshow transport) matches urem`, () => {
-        assertSlots(steam(ctx).pages[0].keys, {
+        assertSlots(steam(ctx).pages[1].keys, {
             1: key(icon("#previous-track", white), show("prevDay")),
             2: key(icon("#next-track", white), show("nextDay")),
             4: key(label("Steam"), ops.hotpc("launch-steam")),
@@ -44,7 +44,7 @@ for (const [name, target] of Object.entries(targets))
 
     test(`${name}: steam page 2 (display element toggles) matches urem`, () => {
         const toggle = (text, el) => key(label(text), ops.slideshowToggle(el));
-        assertSlots(steam(ctx).pages[1].keys, {
+        assertSlots(steam(ctx).pages[2].keys, {
             1: toggle("Play State", "transport"),
             2: toggle("Date", "date"),
             3: toggle("Time", "time"),
@@ -66,6 +66,21 @@ for (const [name, target] of Object.entries(targets))
 
     test(`${name}: steam resolves clean`, async () => {
         const tree = await cleanLayout(layoutWith(ctx, { activities: { steam: steam(ctx) } }));
-        assert.deepEqual(tree.activities[2].pages.map(p => p.keys.filter(k => k.normalFg).length), [10, 6]);
+        assert.deepEqual(tree.activities[2].pages.map(p => p.keys.filter(k => k.normalFg).length), [7, 10, 6]);
+    });
+}
+
+for (const [name, target] of Object.entries(targets))
+{
+    const ctx = makeContext(target);
+    const show = cmd => ctx.ops.slideshow(cmd);
+
+    test(`${name}: steam pad page: vote and step arrows, slots 1/3 empty`, () => {
+        const page = steam(ctx).pages[0].keys;
+        assert.equal(page[1], null);
+        assert.equal(page[3], null);
+        assert.deepEqual([2, 6, 7, 8].map(s => page[s].tap), ["voteUp", "prev", "voteDown", "next"].map(show));
+        assert.deepEqual(page, grid(padPage(ctx, { key2: { tap: show("voteUp") }, key4: { tap: show("prev") },
+            key5: { tap: show("voteDown") }, key6: { tap: show("next") } })));
     });
 }

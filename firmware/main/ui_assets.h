@@ -6,4 +6,5 @@
 #define UI_ASSET_STATUS_FONT    0   // .rfnt, Inter SemiBold 20 px
 #define UI_ASSET_PAGER_CURRENT  1   // rle565 pill for the page in view
 #define UI_ASSET_PAGER_OTHER    2   // rle565 pill for the other pages
-#define UI_ASSET_COUNT          3
+#define UI_ASSET_STATUS_ICON    3   // rle565 status icons 3..6, STATUS_ICON_* bit order (status_icons.h)
+#define UI_ASSET_COUNT          7

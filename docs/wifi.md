@@ -101,6 +101,8 @@ States:
 
 Sent when the state changes (not on every retry), so a host can show "connected" without polling. A host that doesn't care ignores it.
 
+The device also shows the state in its [status bar](status-bar.md#icons), in both modes: the Wi-Fi waves when connected, a dot otherwise.
+
 ## Storage (NVS)
 
 The `nvs` partition (24 KB at `0x9000`) already exists in `partitions.csv`.
@@ -126,7 +128,7 @@ Station mode only. The sequence, once, at startup when credentials exist (`wifi.
 
 1. `nvs_flash_init()` (in `main`, see Storage).
 2. `esp_netif_init()` and `esp_event_loop_create_default()`. Nothing else in the firmware creates the default event loop yet; check before adding it.
-3. `esp_netif_create_default_wifi_sta()`, then set the hostname (`controlblock-<last 3 MAC bytes>`) with `esp_netif_set_hostname`.
+3. `esp_netif_create_default_wifi_sta()`, then set the hostname to the device name with `esp_netif_set_hostname` (default `controlblock-<last 3 MAC bytes>`; settable, see [`diagnostics.md`](diagnostics.md#finding-the-device)). On connect `wifi.cpp` starts mDNS (`<name>.local`) and the diagnostics HTTP server, and stops both on any other state; a rename reaches mDNS at once and DHCP on the next lease.
 4. `esp_wifi_init()` with `WIFI_INIT_CONFIG_DEFAULT()` and the buffer settings below, `esp_wifi_set_storage(WIFI_STORAGE_RAM)`, `esp_wifi_set_mode(WIFI_MODE_STA)`.
 5. Register handlers for `WIFI_EVENT` (any id) and `IP_EVENT_STA_GOT_IP` / `IP_EVENT_STA_LOST_IP`.
 6. `esp_wifi_set_config(WIFI_IF_STA, …)` with the SSID and password. Set the auth threshold to `WIFI_AUTH_WPA2_PSK` for a password and `WIFI_AUTH_OPEN` for none (so a WPA2/WPA3 mixed AP works and a downgrade to WEP is refused), and `sae_pwe_h2e = WPA3_SAE_PWE_BOTH`.

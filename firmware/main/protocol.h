@@ -22,6 +22,7 @@
 #include "wifi_credentials.h"
 #include "wifi_state.h"
 #include "clock_config.h"
+#include "device_name.h"
 #include "clock_text.h"
 
 #define PROTO_VERSION        1
@@ -62,6 +63,8 @@ enum : uint8_t
     MSG_TIME_SET       = 0x50,
     MSG_TIME_GET       = 0x51,
     MSG_CLOCK_SET      = 0x52,
+    MSG_NAME_SET       = 0x60,
+    MSG_NAME_GET       = 0x61,
 
     EVT_KEY            = 0x80,
     EVT_PAGE_CHANGED   = 0x81,
@@ -176,7 +179,7 @@ class Protocol
 {
 public:
     void Init(ImageStore *store, KeyLayout *keys, LayoutStore *layout_store, WifiConfig *wifi,
-              ClockConfig *clock, const ProtocolHost &host);
+              ClockConfig *clock, DeviceName *name, const ProtocolHost &host);
 
     // Bytes from the host (bulk OUT), in order, in any pieces. Complete
     // messages are handled as they arrive and their responses flushed.
@@ -278,6 +281,8 @@ private:
     void OnTimeSet();
     void OnTimeGet();
     void OnClockSet();
+    void OnNameSet();
+    void OnNameGet();
     bool ReadIds(uint16_t *count);
     void PostEvent(const Event &e);
     void DropEvents(bool all);          // all, or just the hosted-only KEY and PAGE_CHANGED
@@ -290,6 +295,7 @@ private:
     LayoutStore *m_layout_store = nullptr;
     WifiConfig  *m_wifi = nullptr;
     ClockConfig *m_clock = nullptr;
+    DeviceName  *m_name = nullptr;
     ProtocolHost m_host = {};
 
     // Mode (atomics: read from any task)

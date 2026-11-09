@@ -72,7 +72,17 @@ struct NetHost
     bool (*take_reply)(uint32_t generation, NetReply *out, void *ctx);
     // The waiter gave up (takeover): its queued request is dropped, an in-flight one's answer ignored
     void (*abandon)(uint32_t generation, void *ctx);
+    // A request couldn't reach outside the device (Wi-Fi down, queue full): the status
+    // bar's error icon. Optional. Configuration errors (bad params, scripts) never call it.
+    void (*external_error)(void *ctx);
 };
+
+// A finished request failed for a reason outside the device (timeout, connect/DNS/send
+// failure, HTTP status >= 400), so the error icon shows. Ok with 0 (udp, wol) or < 400 isn't.
+inline bool NetFailureIsExternal(NetResult result, uint16_t status)
+{
+    return result != NetResult::Ok || status >= 400;
+}
 
 // The response cap: clip *len, say whether anything was cut.
 inline bool NetClipResponse(uint32_t *len)

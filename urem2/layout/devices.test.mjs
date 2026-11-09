@@ -47,9 +47,23 @@ for (const [name, target] of Object.entries(targets))
     test(`${name}: switchTo and the resync`, () => {
         assert.deepEqual(switchTo("atv"), { op: "switchActivity", activity: "atv" });
         assert.deepEqual(switchTo(null), { op: "switchActivity", activity: null });
+        // Power on the activity's devices, then the input, then off every other device that has a turnOff
         assert.deepEqual(resync(ctx, "atv"), [
             ...devs.yama.turnOn, ...devs.lgtv.turnOn, ...devs.atv.turnOn, ...hooks(ctx, "atv").didActivate,
+        ]);                                             // hotpc, the only unused device, has no turnOff
+        assert.deepEqual(resync(ctx, "hdd"), [
+            ...devs.yama.turnOn, ...devs.lgtv.turnOn, ...hooks(ctx, "hdd").didActivate, ...devs.atv.turnOff,
         ]);
+        assert.deepEqual(resync(ctx, "steam"), [
+            ...devs.yama.turnOn, ...devs.lgtv.turnOn, ...devs.hotpc.turnOn, ...hooks(ctx, "steam").didActivate,
+            ...devs.atv.turnOff,
+        ]);
+        // No activity: nothing on, no input, every device with a turnOff off (in device order)
+        assert.deepEqual(resync(ctx, null), [...devs.yama.turnOff, ...devs.lgtv.turnOff, ...devs.atv.turnOff]);
+        assert.deepEqual(activityKeyGestures(ctx, null), {
+            tap: [switchTo(null)],
+            long: [switchTo(null), ...resync(ctx, null)],
+        });
         assert.deepEqual(activityKeyGestures(ctx, "steam"), {
             tap: [switchTo("steam")],
             long: [switchTo("steam"), ...resync(ctx, "steam")],

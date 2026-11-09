@@ -194,3 +194,25 @@ test("cli: a bad time zone exits 1 without sending it", async () => {
     assert.match(r.err[0], /^error: timeZone "UTC 0" must be printable ASCII without spaces/);
     assert.equal(dev.clock.tz, "UTC0");
 });
+
+// --- name (docs/protocol.md, Device name) ---
+
+test("cli: name shows the device name, set stores one or puts back the default", async () => {
+    const dev = new FakeDevice({ name: {} });
+    const open = fakeOpener(dev);
+    assert.deepEqual((await run(["name"], { open })).out, ["name: controlblock-a1b2c3 (default)"]);
+    const r = await run(["name", "set", "Den-TV"], { open });
+    assert.equal(r.code, 0, r.err.join("\n"));
+    assert.deepEqual(r.out, ["name: den-tv"]);
+    assert.equal(dev.hosted, false);                            // no takeover
+    assert.deepEqual((await run(["name", "get"], { open })).out, ["name: den-tv"]);
+    assert.deepEqual((await run(["name", "set", "--default"], { open })).out, ["name: controlblock-a1b2c3 (default)"]);
+});
+
+test("cli: a bad name exits 1 without sending it", async () => {
+    const dev = new FakeDevice({ name: {} });
+    const r = await run(["name", "set", "a.b"], { open: fakeOpener(dev) });
+    assert.equal(r.code, 1);
+    assert.match(r.err[0], /^error: The name "a.b" must be/);
+    assert.equal(dev.name.name, null);
+});

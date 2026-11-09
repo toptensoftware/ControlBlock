@@ -11,12 +11,13 @@
 // takeControl() / releaseControl() switch the device between standalone and hosted mode (docs/standalone.md).
 // uploadLayout() saves a standalone layout in the device's flash (docs/protocol.md).
 // setTime() / getTime() / setClock() run the device's clock (docs/protocol.md, Clock).
+// setName() / getName() set the device name (mDNS/DHCP hostname; docs/protocol.md, Device name).
 
 import { Emitter } from "./Emitter.js";
 import {
     USB_VID, USB_PID, INTERFACE, ENDPOINT, USB_PACKET_SIZE, PROTOCOL_VERSION, REQ_RESET_STREAM,
     PUT_IMAGE_PREFIX, LAYOUT_DATA_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
-    encodeWifiSet, decodeWifiCredentials, decodeWifiStatus, WifiState, encodeTimeSet, decodeTime, encodeClockSet,
+    encodeWifiSet, decodeWifiCredentials, decodeWifiStatus, WifiState, encodeTimeSet, decodeTime, encodeClockSet, encodeNameSet, decodeName,
     encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeLayoutBegin, encodeLayoutData, crc32,
     decodeInfo, decodeQuery, decodeEvent, statusName, HEARTBEAT_INTERVAL_MS,
 } from "./protocol.js";
@@ -312,6 +313,21 @@ export class ControlBlock extends Emitter
     async setClock(settings)
     {
         await this.call(Msg.CLOCK_SET, encodeClockSet(settings));
+    }
+
+    // Device name (docs/protocol.md, Device name). Independent of the operating mode.
+    // Store the name the device goes by on the network (<name>.local, DHCP
+    // hostname); "" puts back the default (controlblock-xxxxxx from its MAC).
+    // A-Z are lowercased. Throws before sending anything if the device would refuse.
+    async setName(name)
+    {
+        await this.call(Msg.NAME_SET, encodeNameSet(name));
+    }
+
+    // { name, isDefault }
+    async getName()
+    {
+        return decodeName(await this.call(Msg.NAME_GET));
     }
 
     // Upload (or replace) an rle565 image under `id`, in pipelined chunks

@@ -152,10 +152,11 @@ namespace
 }
 
 void Protocol::Init(ImageStore *store, KeyLayout *keys, LayoutStore *layout_store, WifiConfig *wifi,
-                    ClockConfig *clock, const ProtocolHost &host)
+                    ClockConfig *clock, DeviceName *name, const ProtocolHost &host)
 {
     m_wifi   = wifi;
     m_clock  = clock;
+    m_name   = name;
     m_store  = store;
     m_keys   = keys;
     m_layout_store = layout_store;
@@ -409,6 +410,8 @@ void Protocol::Dispatch()
     case MSG_TIME_SET:       OnTimeSet();      break;
     case MSG_TIME_GET:       OnTimeGet();      break;
     case MSG_CLOCK_SET:      OnClockSet();     break;
+    case MSG_NAME_SET:       OnNameSet();      break;
+    case MSG_NAME_GET:       OnNameGet();      break;
     default:                 Respond(ST_UNKNOWN_TYPE); break;
     }
 }
@@ -784,6 +787,28 @@ void Protocol::OnClockSet()
     if (mask & ~(uint32_t)(CLOCK_SET_TZ | CLOCK_SET_SERVER))
         return Respond(ST_BAD_ARG);
     Respond(status_of(m_clock->Set((uint8_t)mask, text[0], len[0], text[1], len[1])));
+}
+
+// u8 len + name: a hostname label (DeviceName's rules), empty for the default
+void Protocol::OnNameSet()
+{
+    Reader r = { m_buf, m_len, 0 };
+    if (!r.Has(1))
+        return Respond(ST_BAD_LENGTH);
+    uint32_t len = r.U8();
+    if (m_len != 1 + len)
+        return Respond(ST_BAD_LENGTH);
+    Respond(status_of(m_name->Set(m_buf + 1, len)));
+}
+
+// u8 is_default, u8 len, name
+void Protocol::OnNameGet()
+{
+    uint8_t out[2 + DEVICE_NAME_MAX];
+    Writer w = { out, sizeof(out), 0 };
+    w.U8(m_name->IsDefault() ? 1 : 0);
+    w.Str(m_name->Get());
+    Respond(ST_OK, out, w.len);
 }
 
 // ===========================================================================

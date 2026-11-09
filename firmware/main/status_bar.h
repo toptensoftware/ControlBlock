@@ -6,6 +6,7 @@
 #include "port.h"
 #include "screen_layout.h"
 #include "clock_text.h"
+#include "status_icons.h"
 
 // Status bar, platform independent (host tested): its properties, drawing,
 // and the two buffers the bounce fill shows (screen_set_status_bar()).
@@ -18,10 +19,17 @@
 #define STATUS_BAR_TEXT_MAX     48      // bytes per text, with the NUL; longer is cut
 #define STATUS_BAR_PIXELS       (SCREEN_W * SCREEN_STATUS_H)
 
+// The icons sit just left of the right text (the clock), so they move with its
+// width. Left to right: error or busy (error wins), Wi-Fi, then the text; each
+// icon is centred in a slot, and only the icons showing take a slot.
+#define STATUS_ICON_SLOT_W      22
+#define STATUS_ICON_TEXT_GAP    8       // between the icons and the right text
+
 typedef struct {
     const FONT *font;
     const void *pill_selected;          // rle565 pager pill for the page in view
     const void *pill_other;             // and for the other pages
+    const void *icon[STATUS_ICON_IMAGES];   // status icons, STATUS_ICON_* bit order
 } status_bar_style_t;
 
 typedef struct {
@@ -29,6 +37,7 @@ typedef struct {
     char right[STATUS_BAR_TEXT_MAX];    // right aligned text
     int  pill_count;                    // pager pills; none drawn for 0 or 1
     int  selected_pill;                 // highlighted pill (none if out of range)
+    int  icons;                         // STATUS_ICON_* bits (status_icons.h); 0 = no icon strip
 } status_bar_content_t;
 
 // The style from ui.bin (layout in ui_assets.h)
@@ -61,6 +70,7 @@ public:
     bool SetRight(const char *text);
     bool SetPillCount(int count);
     bool SetSelectedPill(int index);
+    bool SetIcons(int icons);           // STATUS_ICON_* bits
 
     // The clock's text ("" while the time isn't known). Returns true only if
     // it changed and a text shows it.

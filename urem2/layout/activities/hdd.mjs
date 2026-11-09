@@ -22,6 +22,7 @@ export function hdd(ctx)
     const square = color => icon("#square", { color, scale: 0.6 });
 
     return defineActivity(ctx, "hdd", {
+        padPage: true,
         pages: [
             {
                 ...transportKeys({ previous: ir("previousTrack"), next: ir("nextTrack"), rewind: ir("reverse"),

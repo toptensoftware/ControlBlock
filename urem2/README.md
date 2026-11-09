@@ -99,6 +99,12 @@ arrows, clock) are empty: swipe instead.
 - **PlayStation:** 7ch Stereo and mute (urem's had no keys; see below).
 - **Every activity:** the encoder sets the volume (step 1/3/5 by spin speed, as urem), pad key 7 (encoder push)
   toggles mute.
+- **Pad page** (the first page of Apple TV, TV and Steam; not PlayStation, which has no pad keys): on-screen keys
+  doing the pad's job while the pad hardware isn't ready. The pad's 2x3 shape in slots 1-3 / 6-8 (red cross =
+  Escape, up, green tick = Enter / left, down, right), Vol+ (4), Vol- (9) and mute (14). Built from the activity's
+  pad spec (`padPage()` in `layout/pad.mjs`), so it always matches the pad: a key the pad leaves unbound (Steam's
+  cross and tick) is empty. Every key fires on tap (touch keys have no press event; long kept, e.g. Apple TV's
+  menu/select hold), with no auto-repeat, and Vol+/Vol- move 1 step per tap.
 
 Look: each key has a grey rounded border on black; pressed, the square fills mid grey. Icons are node-buttonImage
 built-ins with urem's colours, scales and offsets, times `ICON_SCALE` (`layout/look.mjs`, 0.9 for now; the glyphs
@@ -110,7 +116,7 @@ come out ~50-83 px, so it may go up after a look on the hardware).
 |---|---|---|
 | **Auto-repeat while held** (rewind/forward on Apple TV and Steam, the pad arrows) | Single shot. Each key carries its urem `repeat` setting, which `withRepeat()` in `layout/keys.mjs` drops for now: one place to change once repeat exists. | A `repeat` gesture (fires every period after an initial delay while held), for touch keys and the pad. |
 | **Display off / idle dim** (off with no activity, dim after 8 s idle, first touch only wakes) | Not ported: the screen stays lit. | The backlight is locked on (switch-on glitch, `docs/backlight.md`); then a standalone idle policy. Backlogged in `docs/backlight.md` Open items. |
-| **Re-selecting the current activity re-syncs** (urem re-ran every power-on and the input) | Long press on Home's activity keys (switch, then re-send power-on and input). Tap only switches; reselecting the current activity only glides. | Possibly a `resync` option on `switchActivity`. |
+| **Re-selecting the current activity re-syncs** (urem re-ran every power-on and the input) | Long press on Home's activity keys (switch, then re-send power-on for its devices and the input, then power-off for every other device), and on the power key (everything off again). Tap only switches; reselecting the current activity only glides. | Possibly a `resync` option on `switchActivity`. |
 | **Global pad bindings** (urem's volume encoder and mute button worked everywhere, even on Home) | The volume bindings are repeated in every activity; with no activity selected the pad does nothing (the receiver is off then anyway). | Root-level (global) bindings. |
 | **Encoder push = mute** (urem's 7th button) | Bound as `key7` tap in every activity, but **inert**: the pad's pin map has 6 keys and no encoder push. | A 7th key in the macro pad's pin map (`wip/wip-macro-pad.md`). |
 | **Press shrink** (urem shrank the image while pressed) | Grey fill instead (the root `pressed` look). | Nothing needed; a different look. |

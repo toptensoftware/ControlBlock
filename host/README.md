@@ -89,6 +89,7 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: Ke
   - `getTime()` returns `{ known, source, sourceName, time, timeZone, ntpServer }` (`time` is a `Date`, null while not known; `source` is `ClockSource`: `NONE`, `HOST` or `NTP`).
   - `setClock({ timeZone, ntpServer })` stores either or both: a POSIX TZ string (e.g. `AEST-10AEDT,M10.1.0,M4.1.0/3`) and the NTP server; `""` puts one back to its default (`UTC0`, `pool.ntp.org`). An invalid value throws before anything is sent.
   - From the command line: `node cli/cli.js time [set] | get | zone <posix>|--default | server <host>|--default` ([`cli/README.md`](../cli/README.md)).
+- **Device name** (`docs/protocol.md`, Device name; any mode): `setName(name)` stores the mDNS/DHCP name (`a-z 0-9 -`, up to 32; capitals lowercased; `""` = the default `controlblock-xxxxxx`), `getName()` returns `{ name, isDefault }`. An invalid name throws before anything is sent.
 - **`freeImages(ids)`:** the ID goes at once, and the memory once no key uses it.
 
 ## Bake

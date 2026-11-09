@@ -124,3 +124,16 @@ Fact("Net Response Is Clipped To The Cap And Says So")
     Assert(NET_HTTP_MAX_RESPONSE == 16 * 1024);
     Assert(NET_HTTP_TIMEOUT_MS == 10000);
 }
+
+Fact("Net Failure Is External For Timeouts, Connect Failures And Http Errors")
+{
+    Assert(NetFailureIsExternal(NetResult::Timeout, 0));
+    Assert(NetFailureIsExternal(NetResult::Failed, 0));
+    Assert(NetFailureIsExternal(NetResult::Ok, 404));
+    Assert(NetFailureIsExternal(NetResult::Ok, 400));
+    Assert(NetFailureIsExternal(NetResult::Ok, 503));
+    Assert(!NetFailureIsExternal(NetResult::Ok, 200));
+    Assert(!NetFailureIsExternal(NetResult::Ok, 302));
+    Assert(!NetFailureIsExternal(NetResult::Ok, 399));
+    Assert(!NetFailureIsExternal(NetResult::Ok, 0));          // udp / wol
+}

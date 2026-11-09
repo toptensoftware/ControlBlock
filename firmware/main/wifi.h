@@ -9,6 +9,7 @@
 #include "esp_err.h"
 #include "wifi_credentials.h"
 #include "wifi_state.h"
+#include "device_name.h"
 
 // The credentials (shared with Protocol). Empty until wifi_init().
 WifiConfig *wifi_config(void);
@@ -38,3 +39,9 @@ void wifi_ntp_server_changed(void);
 
 // Has an IP (cheap, any task): what the network ops check before sending
 bool wifi_is_connected(void);
+
+// SNTP is running (for the diagnostics; any task)
+bool wifi_sntp_on(void);
+
+// The device name (mDNS/DHCP hostname; shared with Protocol). Loaded by wifi_init().
+DeviceName *device_name(void);

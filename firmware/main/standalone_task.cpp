@@ -55,9 +55,26 @@ static int      s_logged_activity = -1;
 static bool     s_was_busy;
 static uint32_t s_busy_since_ms;
 
+// Copies for the diagnostics (standalone_get_diag): written by the op task, read anywhere
+static volatile StandaloneDiag s_diag = { false, -1, 0, 0, 0 };
+
 static const char *activity_name(int index)
 {
-    return index < 0 || !s_root ? "none" : s_root->activities[index].name;
+    return index < 0 || !s_root ? "none" : standalone_activity_name(index);
+}
+
+void standalone_get_diag(StandaloneDiag *out)
+{
+    out->busy             = s_diag.busy;
+    out->activity         = s_diag.activity;
+    out->script_runs      = s_diag.script_runs;
+    out->script_errors    = s_diag.script_errors;
+    out->script_heap_peak = s_diag.script_heap_peak;
+}
+
+const char *standalone_activity_name(int index)
+{
+    return index < 0 || !s_root ? "" : s_root->activities[index].name;
 }
 
 static uint32_t clock_ms(void *)
@@ -140,6 +157,8 @@ static void op_task(void *)
         xSemaphoreGive(s_lock);
 
         uint32_t now = clock_ms(nullptr);
+        if (busy != s_was_busy)
+            status_busy(busy);                  // the status bar's busy icon (it keeps it STATUS_BUSY_MIN_MS)
         if (busy && !s_was_busy)
             s_busy_since_ms = now;
         if (activity != s_logged_activity) {
@@ -164,6 +183,11 @@ static void op_task(void *)
                          heap_refused, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
             }
         }
+        s_diag.busy = busy;
+        s_diag.activity = activity;
+        s_diag.script_runs = runs;
+        s_diag.script_errors = script_errors;
+        s_diag.script_heap_peak = (uint32_t)heap_peak;
         s_logged_runs = runs;                   // (a re-arm closes the host and starts it again from 0)
         s_was_busy = busy;
         // Busy: an op started (the next may follow at once) or a delay is running
