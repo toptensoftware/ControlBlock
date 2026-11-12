@@ -12,6 +12,14 @@ export const GRID_SLOTS = KEY_COLS * KEY_ROWS;   // KEY_GRID_SLOTS: the plain gr
 export const KEY_CELL = 144;          // KEY_CELL: 1U in pixels
 export const KEY_QUARTER = KEY_CELL / 4;         // KEY_QUARTER: 0.25U in pixels
 export const MAX_KEYS_PER_PAGE = 32;  // COMP_MAX_KEYS
+
+// The screen (firmware: screen_layout.h): the status bar on top, the page area below it with the
+// key grid centred in it (key_geometry.h KEY_GRID_X0/Y0: in the page area, not the screen)
+export const SCREEN_W = 800;          // SCREEN_W
+export const SCREEN_H = 480;          // SCREEN_H
+export const SCREEN_STATUS_H = 40;    // SCREEN_STATUS_H
+export const KEY_GRID_X0 = (SCREEN_W - KEY_COLS * KEY_CELL) / 2;
+export const KEY_GRID_Y0 = (SCREEN_H - SCREEN_STATUS_H - KEY_ROWS * KEY_CELL) / 2;
 export const MAX_KEY_ID = 65535;      // key ids are u16, 1..65535 (0 = none)
 
 // The default look draws a FACE_SIZE face (and its icon and label) in a 1U cell, with black

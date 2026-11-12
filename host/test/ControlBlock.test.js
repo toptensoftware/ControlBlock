@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
     Msg, Status, Reader, encodeIds, crc32, HEARTBEAT_INTERVAL_MS, WifiState, encodeWifiSet, encodeTimeSet, ClockSource,
-    PROTOCOL_VERSION, KEYDEF_SIZE, KEY_EVENT_SIZE, KeyAction, encodeKeys, keySlot, keyPixelSize,
+    PROTOCOL_VERSION, KEYDEF_SIZE, KEY_EVENT_SIZE, KeyAction, encodeKeys, keySlot, keyPixelSize, encodePutImage, PUT_IMAGE_PREFIX,
 } from "../src/protocol.js";
 import { keyImage, encodeImage } from "../src/images.js";
 import { FakeDevice, DEVICE } from "./FakeDevice.js";
@@ -112,6 +112,19 @@ test("putImage splits into chunks the device can take", async () => {
         assert.ok(c.payload.length <= 100);
     }
     assert.deepEqual(joined, [...data]);
+    await cb.close();
+});
+
+test("a PUT_IMAGE for id 0 is refused (BAD_ARG), its data skipped, and the link stays in step", async () => {
+    // The firmware skips such a message's data without touching the image store (State::Skip):
+    // examples/bench-sink.mjs uses it to time the USB pipe alone
+    const { dev, cb } = await connected();
+    const data = new Uint8Array(cb.info.maxPayload - PUT_IMAGE_PREFIX).fill(0x5A);
+    const rs = await Promise.all(Array.from({ length: 4 }, () =>
+        cb.request(Msg.PUT_IMAGE, encodePutImage(0, data.length, 0, data))));
+    assert.deepEqual(rs.map(r => r.status), [Status.BAD_ARG, Status.BAD_ARG, Status.BAD_ARG, Status.BAD_ARG]);
+    assert.equal(dev.images.size, 0);
+    assert.equal((await cb.ping(Uint8Array.of(7)))[0], 7);
     await cb.close();
 });
 
@@ -257,7 +270,7 @@ test("FakeDevice's geometry and wire sizes match the firmware's headers", () => 
     assert.equal(DEVICE.screenWidth, define(screen, "SCREEN_W"));
     assert.equal(DEVICE.screenHeight, define(screen, "SCREEN_H"));
     assert.equal(DEVICE.statusHeight, define(screen, "SCREEN_STATUS_H"));
-    assert.equal(define(screen, "SCREEN_PAGER_H"), 0);          // DEVICE.gridY assumes no pager bar
+    assert.match(screen, /#define SCREEN_PAGE_H\s+\(SCREEN_H - SCREEN_STATUS_H\)/);   // DEVICE.gridY assumes no pager bar
     assert.equal(DEVICE.maxPages, define(screen, "SCREEN_MAX_PAGES"));
     assert.equal(DEVICE.icon, define(keys, "KEY_ICON_SIZE"));
     assert.equal(PROTOCOL_VERSION, define(proto, "PROTO_VERSION"));

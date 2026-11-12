@@ -245,7 +245,7 @@ extern "C" void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bu
 {
     // The data is in the RX FIFO; the protocol task reads it
     if (s_cb.rx)
-        s_cb.rx();
+        s_cb.rx(bufsize);
 }
 
 extern "C" void tud_vendor_tx_cb(uint8_t itf, uint32_t sent_bytes)
@@ -322,11 +322,12 @@ esp_err_t usb_init(const char *serial, const usb_callbacks_t *cb)
     return ESP_OK;
 }
 
-size_t usb_vendor_read(void *buf, size_t len, uint32_t *epoch)
+size_t usb_vendor_read(void *buf, size_t len, uint32_t *epoch, uint32_t *waiting)
 {
     xSemaphoreTake(s_rx_lock, portMAX_DELAY);
     *epoch = s_epoch;
-    size_t n = tud_vendor_available() ? tud_vendor_read(buf, (uint32_t)len) : 0;
+    *waiting = tud_vendor_available();
+    size_t n = *waiting ? tud_vendor_read(buf, (uint32_t)len) : 0;
     xSemaphoreGive(s_rx_lock);
     return n;
 }

@@ -172,6 +172,22 @@ Fact("ImageStore Rejects Bad Images")
     Assert(f.env.LiveBlocks() == 0);
 }
 
+Fact("ImageStore Stats Count The Checks Of Finished Uploads")
+{
+    // (the stats line's check time: wip/wip-upload-throughput.md; cycles read 0 on the host)
+    Fixture f;
+    ImageStoreStats st;
+    f.store.GetStats(&st);
+    Assert(st.checks == 0 && st.check_cycles == 0);
+
+    Assert(f.env.Upload(f.store, 1, f.env.Icon(0)) == ImageResult::Ok);
+    List<uint8_t> bad = Corrupt(f.env.Icon(0));
+    Assert(f.env.Upload(f.store, 2, bad.GetBuffer()) == ImageResult::BadImage);
+    Assert(f.store.PutBegin(3, 0, 0, 0) == ImageResult::BadArg);        // refused before any data: no check
+    f.store.GetStats(&st);
+    Assert(st.checks == 2);
+}
+
 // ---------------------------------------------------------------------------
 // Sizes and opacity: any size up to the maximum, opaque only if required
 // ---------------------------------------------------------------------------

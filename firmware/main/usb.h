@@ -11,9 +11,9 @@
 #include "esp_err.h"
 
 typedef struct {
-    // Bytes arrived on bulk OUT. Called on the TinyUSB task: just wake the
-    // reader.
-    void (*rx)(void);
+    // A bulk OUT transfer of `bytes` arrived (it's in the RX FIFO). Called on
+    // the TinyUSB task: just wake the reader (and count it).
+    void (*rx)(uint32_t bytes);
     // The host sent RESET_STREAM. The RX FIFO has been flushed and the
     // stream epoch moved on (see usb_vendor_read). TinyUSB task.
     void (*reset_stream)(void);
@@ -28,8 +28,9 @@ esp_err_t usb_init(const char *serial, const usb_callbacks_t *cb);
 
 // Read up to `len` bytes from bulk OUT. `*epoch` is the stream epoch they
 // belong to: it moves on at each RESET_STREAM, and bytes read under a new
-// epoch all arrived after it. Returns 0 if nothing is waiting.
-size_t usb_vendor_read(void *buf, size_t len, uint32_t *epoch);
+// epoch all arrived after it. `*waiting` is how many bytes were in the RX
+// FIFO before the read. Returns 0 if nothing is waiting.
+size_t usb_vendor_read(void *buf, size_t len, uint32_t *epoch, uint32_t *waiting);
 
 // Queue bytes for bulk IN, waiting for room. Gives up (false) if the host
 // isn't connected or doesn't read for a while.

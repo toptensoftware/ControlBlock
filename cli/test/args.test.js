@@ -117,3 +117,19 @@ test("args: name mistakes are reported with the usage", () => {
     usage(["name", "set", "a", "b"], /name set needs/);
     usage(["name", "get", "--default"], /--default/);
 });
+
+test("args: render, with its options and the default output folder", () => {
+    assert.deepEqual(parseArgs(["render", "dir/living-room.mjs"]),
+                     { command: "render", input: "dir/living-room.mjs", out: "living-room-pages", state: "normal", page: undefined, grid: true });
+    assert.deepEqual(parseArgs(["render", "l.json", "-o", "shots", "--pressed", "--page", "Watch TV", "--no-grid"]),
+                     { command: "render", input: "l.json", out: "shots", state: "pressed", page: "Watch TV", grid: false });
+    assert.equal(parseArgs(["render", "l.json", "--out", "x"]).out, "x");
+});
+
+test("args: render mistakes are reported with the usage", () => {
+    usage(["render"], /one layout/);
+    usage(["render", "a.json", "b.json"], /one layout/);
+    usage(["render", "a.bin"], /baked/);
+    usage(["render", "a.json", "--page"], /needs a value/);
+    usage(["render", "a.json", "--serial", "X"], /unknown option --serial/);
+});

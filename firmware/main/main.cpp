@@ -57,7 +57,7 @@ static const char *TAG = "controlblock";
 #define BACKLIGHT_CYCLE_S  0
 #endif
 
-// The once-a-second stats line (fps, fill, compositor, images, net). Off by
+// The once-a-second stats line (fps, fill, compositor, images, usb rx, net). Off by
 // default so it doesn't bury other log messages; build with
 //     idf.py --preset debug -DCB_STATS_LOG=ON build
 // (-DCB_STATS_LOG=OFF turns it off again). With it off, the net counters are
@@ -707,7 +707,8 @@ extern "C" void app_main(void)
     screen_stats_t st;
     comp_stats_t cs;
 #if STATS_LOG
-    uint32_t last_frames = 0;
+    uint32_t last_frames = 0, last_checks = 0, last_check_cycles = 0;
+    char link_text[160];
 #else
     char last_net[80] = "";
 #endif
@@ -736,15 +737,19 @@ extern "C" void app_main(void)
         model_lock();
         model_store()->GetStats(&is);
         model_unlock();
+        FormatLinkSample(host_link_stats(), is.checks - last_checks, is.check_cycles - last_check_cycles,
+                         port::CyclesPerUs(), link_text, sizeof(link_text));
+        last_checks = is.checks;
+        last_check_cycles = is.check_cycles;
 
         ESP_LOGI(TAG, "%lu fps, fill max %3lu us, %lu over %d us, page %d | "
-                      "comp: %lu keys (max %lu us, busy %lu us), %lu swaps, %lu held | img %lu (%lu KB)%s%s",
+                      "comp: %lu keys (max %lu us, busy %lu us), %lu swaps, %lu held | img %lu (%lu KB)%s%s%s",
                  (unsigned long)(st.frames - last_frames),
                  (unsigned long)st.max_fill_us, (unsigned long)st.overruns, DISPLAY_BOUNCE_BUDGET_US,
                  swipe_current_page(),
                  (unsigned long)cs.keys, (unsigned long)cs.max_key_us, (unsigned long)cs.busy_us,
                  (unsigned long)cs.swaps, (unsigned long)cs.holds,
-                 (unsigned long)is.count, (unsigned long)(is.used / 1024), net_counts(), late_fills(&st));
+                 (unsigned long)is.count, (unsigned long)(is.used / 1024), link_text, net_counts(), late_fills(&st));
         last_frames = st.frames;
 #endif
     }

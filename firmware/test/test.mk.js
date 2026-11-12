@@ -23,6 +23,7 @@ export default async function ()
             "../main/diag_status.cpp",
             "../main/clock_text.cpp",
             "../main/image_store.cpp",
+            "../main/link_stats.cpp",
             "../main/key_layout.cpp",
             "../main/protocol.cpp",
             "../main/layout_store.cpp",

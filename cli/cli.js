@@ -7,17 +7,25 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ControlBlock, BakeError, WifiState, ClockSource, bakeFile, formatEntries, uploadBlob } from "../host/index.js";
+import { ControlBlock, BakeError, WifiState, ClockSource, bakeFile, previewFile, encodePng, formatEntries, uploadBlob } from "../host/index.js";
 import { parseArgs, UsageError } from "./args.js";
+
+function printWarnings(warnings, io)
+{
+    if (warnings.length)
+        io.stderr(`warnings:\n${formatEntries(warnings)}`);
+}
 
 // Bake a layout file; prints its warnings. Resolves the blob.
 async function bakeLayout(input, io)
 {
     const { blob, warnings } = await bakeFile(input);
-    if (warnings.length)
-        io.stderr(`warnings:\n${formatEntries(warnings)}`);
+    printWarnings(warnings, io);
     return blob;
 }
+
+// A page's file name: its number in the whole layout and its name, e.g. 01-watch-tv-1.png
+const pageFile = p => `${String(p.index).padStart(2, "0")}-${p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}.png`;
 
 const defaultBlobPath = input => path.join(path.dirname(input), path.basename(input, path.extname(input)) + ".bin");
 
@@ -51,6 +59,20 @@ const COMMANDS = {
             io.stdout(`${a.input}: ${blob.length} bytes`);
         }
         await upload(blob, a, io);
+        return 0;
+    },
+
+    async render(a, io)
+    {
+        const { pages, warnings } = await previewFile(a.input, { state: a.state, page: a.page, grid: a.grid });
+        printWarnings(warnings, io);
+        fs.mkdirSync(a.out, { recursive: true });
+        for (const p of pages)
+        {
+            const file = path.join(a.out, pageFile(p));
+            fs.writeFileSync(file, await encodePng(p));
+            io.stdout(file);
+        }
         return 0;
     },
 

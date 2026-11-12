@@ -6,6 +6,7 @@
 //   node examples/bench.js       (from the repo root)
 
 import { ControlBlock, encodeImage, keyImage, keyPixelSize, svgLayer, buttonLayer, FACE_MARGIN } from "../host/index.js";
+import { sinkSend } from "./bench-sink.mjs";
 
 const cb = await ControlBlock.open();
 await cb.takeControl();
@@ -24,6 +25,13 @@ t = performance.now();
 await Promise.all(Array.from({ length: 50 }, () => cb.ping(payload)));
 let secs = (performance.now() - t) / 1000;
 console.log(`ping ${payload.length} B x 50: ${(payload.length * 50 * 2 / 1024 / secs).toFixed(0)} KB/s (both ways)`);
+
+// Sink: full-size PUT_IMAGEs the device refuses and skips (bench-sink.mjs), pipelined like an
+// upload: the USB pipe's one-way rate without the image path (PSRAM copy, check_image)
+t = performance.now();
+const sunk = await sinkSend(cb, 50);
+secs = (performance.now() - t) / 1000;
+console.log(`sink ${cb.info.maxPayload} B x 50: ${(sunk / 1024 / secs).toFixed(0)} KB/s (one way, nothing stored)`);
 
 // Uploads: a noisy (poorly compressing) opaque 1U image with 251 colours, under many IDs
 const rgba = new Uint8Array(width * height * 4);

@@ -1,6 +1,6 @@
 # Key rendering redesign (tight packing, spanning keys, opaque key images)
 
-Status: Implement (steps 1-15 done; step 16, the user's hardware check, remains)
+Status: Complete
 
 ## Decisions (user, 2026-11-12)
 - Tight packing and spanning keys are merged into this one job.
@@ -1163,7 +1163,7 @@ don't flash it until step 13 (hosted and standalone content are only consistent 
   - Approved and applied 2026-11-12 (Notes, "Step 15: CLAUDE.md changes"); the code comments pointing at this doc
     now point at the docs.
   - Checklist for step 16 written (Notes, "Step 16: hardware checklist").
-- [ ] 16. **Hardware checklist for the user (STOP).** Write it in Notes: flash full; release `RUN_STRESS` (late
+- [x] 16. **Hardware checklist for the user (STOP).** Write it in Notes: flash full; release `RUN_STRESS` (late
   fills, worst fill, internal RAM free); hosted demo.js/bench.js (upload throughput, decides deflate); standalone
   upload of urem2 and the example layout (upload time, boot load time); spans/groups look and press; edge zone and
   group seam feel; page swipes between differently laid out pages (no stale pixels); old layout gives empty Home.
@@ -1462,3 +1462,8 @@ of one picture under A.
 - **Pager bar dropped for good** (user): `SCREEN_PAGER_H` and the fill's blank pager branch removed; the pager is
   the status bar's pills. Debug build 0 errors, fw-test 752 (debug and release).
 - **Not yet run:** hosted `examples/demo.js` and `examples/bench.js` (upload throughput decides deflate).
+- **Hosted (user, 2026-11-12):** `demo.js` works. `bench.js`: ping 0.63 ms; ping 8 KB x 50 705 KB/s both ways;
+  upload 40 x 21.8 KB 251 KB/s; a page of keys 30 images, 142.5 KB in 556 ms (256 KB/s, 4.7 KB/image); image memory
+  1014 KB -> 0 after freeing. Uploads run at ~1/3 of the link: the bottleneck is on the device side (per-chunk round
+  trips, the opacity check, or the PSRAM copy), so deflate alone may not help. Follow-up: investigate upload
+  throughput before deciding on deflate (not part of this job).

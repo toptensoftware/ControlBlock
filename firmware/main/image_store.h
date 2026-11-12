@@ -84,6 +84,8 @@ struct ImageStoreStats
     uint32_t count;         // live images
     uint32_t largest_free;
     uint32_t retired;       // allocations waiting for a sweep
+    uint32_t checks;        // finished uploads checked (pixels walked): counts up, wraps
+    uint32_t check_cycles;  // CPU cycles those checks took (port::Cycles; 0 on the host): counts up, wraps
 };
 
 class ImageStore
@@ -166,6 +168,7 @@ private:
     ImageStoreHost      m_host = {};
     ImageStoreListener *m_listener = nullptr;
     uint32_t            m_capacity = 0, m_used = 0;
+    uint32_t            m_checks = 0, m_check_cycles = 0;      // ImageStoreStats
     uint32_t            m_max_w = 0, m_max_h = 0;
     bool                m_require_opaque = false;
     uintptr_t           m_ext_lo = 0, m_ext_hi = 0;     // [lo, hi) spans the external images

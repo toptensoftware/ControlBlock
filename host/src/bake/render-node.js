@@ -7,7 +7,9 @@
 import { renderButtonImage, encodeImage, composeOverBlack, clipLayer } from "../images.js";
 import { stable } from "./render.js";
 
-export function createRenderer()
+// spec -> Promise<RGBA> (opaque, width x height): the composition both the bake and the page
+// previews (preview.js) use
+export function createPixelRenderer()
 {
     // A layer drawn once per renderer, however many keys share it (a group's face, a common icon)
     const layers = new Map();
@@ -21,7 +23,16 @@ export function createRenderer()
     return async ({ width, height, layers: list }) => {
         const placed = await Promise.all(list.map(async l =>
             clipLayer({ rgba: await layerPixels(l), width: l.width, height: l.height, x: l.x, y: l.y }, width, height)));
-        const data = await encodeImage(await composeOverBlack(placed.filter(Boolean), width, height), width, height);
+        return composeOverBlack(placed.filter(Boolean), width, height);
+    };
+}
+
+// spec -> Promise<Buffer> (rle565): the bake's renderer
+export function createRenderer()
+{
+    const pixels = createPixelRenderer();
+    return async spec => {
+        const data = await encodeImage(await pixels(spec), spec.width, spec.height);
         return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     };
 }

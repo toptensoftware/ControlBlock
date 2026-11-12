@@ -39,6 +39,7 @@ idf_component_register(
         "key_geometry.cpp"
         "opaque_row.cpp"
         "image_store.cpp"
+        "link_stats.cpp"
         "key_layout.cpp"
         "model.cpp"
         "protocol.cpp"
@@ -141,7 +142,7 @@ if(CB_PIXEL_CLOCK_MHZ)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE PIXEL_CLOCK_MHZ=${CB_PIXEL_CLOCK_MHZ})
 endif()
 
-# Once-a-second stats line (main.cpp STATS_LOG): fps, fill, compositor, images, net.
+# Once-a-second stats line (main.cpp STATS_LOG): fps, fill, compositor, images, usb rx, net.
 #   idf.py --preset debug -DCB_STATS_LOG=ON build   (OFF turns it off again)
 if(CB_STATS_LOG)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE STATS_LOG=1)

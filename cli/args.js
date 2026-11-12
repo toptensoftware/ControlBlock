@@ -11,6 +11,11 @@ export const USAGE = `usage: node cli/cli.js <command> ...
   upload <layout.json|.js|.mjs|baked.bin> [--serial S] [--force]
       upload to the device (a layout is baked in memory first); --force sends it
       even if the device already has it
+  render <layout.json|.js|.mjs> [-o dir] [--pressed] [--page home|<activity>] [--no-grid]
+      draw each page of a layout as an 800x480 PNG (no device needed): writes
+      NN-<page>.png to <layout name>-pages in the current folder, or the folder -o
+      names; --pressed draws the pressed looks, --page only Home or one activity,
+      --no-grid leaves out the dashed grid of numbered slots under empty areas
   wifi set <ssid> [password] | get | clear | status | wait [seconds]  [--serial S]
       the device's Wi-Fi network: set stores one (no password: an open network) and
       waits for the connection; get shows it (password in clear text); clear forgets
@@ -85,6 +90,20 @@ function parseBake(argv)
     if (!opts.upload && (opts.serial !== undefined || opts.force))
         throw new UsageError("--serial and --force only apply with --upload");
     return { command: "bake", input, out: opts.out, upload: !!opts.upload, serial: opts.serial, force: !!opts.force };
+}
+
+// The layout file's name without its folder or extension
+const layoutName = file => file.replace(/^.*[\\/]/, "").replace(/\.[^.]*$/, "");
+
+function parseRender(argv)
+{
+    const { opts, pos } = scan(argv, { values: { "-o": "out", "--out": "out", "--page": "page" },
+                                       flags: { "--pressed": "pressed", "--no-grid": "noGrid" } });
+    const input = single(pos, "render needs one layout file");
+    if (isBlob(input))
+        throw new UsageError(`${input} is already baked: render needs the layout file`);
+    return { command: "render", input, out: opts.out ?? `${layoutName(input)}-pages`, state: opts.pressed ? "pressed" : "normal",
+             page: opts.page, grid: !opts.noGrid };
 }
 
 function parseUpload(argv)
@@ -168,7 +187,7 @@ const parseName = actionCommand("name", {
     set: setting("name set", "a name"),
 }, { scanOptions: DEFAULT_FLAG, defaultAction: "get" });
 
-const COMMANDS = { bake: parseBake, upload: parseUpload, wifi: parseWifi, time: parseTime, name: parseName };
+const COMMANDS = { bake: parseBake, upload: parseUpload, render: parseRender, wifi: parseWifi, time: parseTime, name: parseName };
 
 export function parseArgs(argv)
 {

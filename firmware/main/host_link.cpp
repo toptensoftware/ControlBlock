@@ -46,6 +46,7 @@ static Protocol     s_proto;
 static LayoutStore  s_layout_store;
 static TaskHandle_t s_task;
 static char         s_serial[16];
+static LinkCounters s_link;          // the receive path, for the stats line (host_link_stats)
 
 // --- ProtocolHost ---
 
@@ -108,6 +109,13 @@ static void wake(void)
         xTaskNotifyGive(s_task);
 }
 
+// TinyUSB task: a bulk OUT transfer is in the RX FIFO
+static void on_rx(uint32_t bytes)
+{
+    s_link.Transfer(bytes);
+    wake();
+}
+
 // The Wi-Fi task: the connection changed
 static void on_wifi_state(WifiState state, const uint8_t ip[4])
 {
@@ -159,7 +167,9 @@ static void ph_mode_changed(bool hosted, void *)
 
 static void protocol_task(void *)
 {
-    static uint8_t buf[512];
+    // One receive transfer per read (the endpoint buffer: sdkconfig.defaults, or the
+    // usbbig presets' sdkconfig.usbbig)
+    static uint8_t buf[CONFIG_TINYUSB_VENDOR_EPSIZE];
     uint32_t epoch = 0;
     bool     waiting = false;       // images waiting for a sweep
 
@@ -167,19 +177,23 @@ static void protocol_task(void *)
         // Wakes at least once per heartbeat interval, so an idle link still
         // carries a HEARTBEAT (the host's reads never sit idle until they time out)
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(waiting ? IDLE_POLL_MS : PROTO_HEARTBEAT_MS));
+        s_link.Wake();
 
         // Everything that's arrived. Bytes from a new stream epoch come
         // after a RESET_STREAM: reset the parser before them.
         while (1) {
-            uint32_t e;
-            size_t n = usb_vendor_read(buf, sizeof(buf), &e);
+            uint32_t e, fifo;
+            size_t n = usb_vendor_read(buf, sizeof(buf), &e, &fifo);
             if (e != epoch) {
                 epoch = e;
                 s_proto.ResetStream();
             }
             if (!n)
                 break;
+            s_link.Read(fifo);
+            uint32_t t0 = port::Cycles();
             s_proto.Receive(buf, n);
+            s_link.ReceiveCycles(port::Cycles() - t0);
         }
 
         s_proto.ServiceDisconnect();       // after the bytes that came before it
@@ -234,7 +248,7 @@ esp_err_t host_link_init(void)
     wifi_set_state_cb(on_wifi_state);
 
     usb_callbacks_t cb = {};
-    cb.rx           = wake;
+    cb.rx           = on_rx;
     cb.reset_stream = wake;
     cb.disconnected = on_disconnected;
     esp_err_t err = usb_init(s_serial, &cb);
@@ -246,4 +260,9 @@ esp_err_t host_link_init(void)
 bool host_link_seen(void)
 {
     return s_proto.HostSeen();
+}
+
+LinkSample host_link_stats(void)
+{
+    return s_link.Take();
 }

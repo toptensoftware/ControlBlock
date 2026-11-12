@@ -4,9 +4,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { bake } from "./bake.js";
+import { bake, resolveLayout } from "./bake.js";
 import { createNodeHost } from "./host-node.js";
 import { createRenderer } from "./render-node.js";
+import { renderPages } from "./preview.js";
 
 export async function loadLayoutFile(file)
 {
@@ -19,6 +20,15 @@ export async function loadLayoutFile(file)
 // `renderer` defaults to the Node renderer (node-buttonImage + rle565).
 export async function bakeFile(file, { renderer = createRenderer() } = {})
 {
-    const host = await createNodeHost(path.dirname(path.resolve(file)));
-    return bake(await loadLayoutFile(file), host, renderer);
+    return bake(await loadLayoutFile(file), await hostFor(file), renderer);
 }
+
+// The layout file's pages as screen images (preview.js renderPages; `options` are its):
+// -> { pages, warnings }; throws a BakeError listing every problem.
+export async function previewFile(file, options)
+{
+    const { tree, warnings } = resolveLayout(await loadLayoutFile(file), await hostFor(file));
+    return { pages: await renderPages(tree, options), warnings };
+}
+
+const hostFor = file => createNodeHost(path.dirname(path.resolve(file)));

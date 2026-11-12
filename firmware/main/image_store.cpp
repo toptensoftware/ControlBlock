@@ -154,7 +154,11 @@ ImageResult ImageStore::PutEnd()
     ImageData *d  = m_upload.data;
     uint32_t   id = m_upload.id;
     m_upload = {};
-    if (!Check(d)) {
+    uint32_t t0 = port::Cycles();
+    bool ok = Check(d);
+    m_check_cycles += port::Cycles() - t0;
+    m_checks++;
+    if (!ok) {
         Deallocate(d);
         return ImageResult::BadImage;
     }
@@ -312,6 +316,8 @@ void ImageStore::GetStats(ImageStoreStats *st) const
     st->used         = m_used;
     st->count        = (uint32_t)m_live.GetCount();
     st->retired      = (uint32_t)m_retired.GetCount();
+    st->checks       = m_checks;
+    st->check_cycles = m_check_cycles;
     size_t largest   = m_host.largest_free ? m_host.largest_free(m_host.ctx) : 0;
     uint32_t room    = m_capacity - m_used;
     st->largest_free = largest < room ? (uint32_t)largest : room;

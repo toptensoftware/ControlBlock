@@ -48,6 +48,7 @@ test("index.js exports the device API, the image helpers and the bake API", () =
     for (const name of ["imageId", "encodeImage", "keyImage", "composeOverBlack", "centreImage", "svgLayer", "renderButtonImage", "buttonLayer", "FACE_MARGIN",
                         "bake", "BakeError", "resolve", "renderImages", "packTree", "toBpak", "ROOT_TYPE", "formatEntries",
                         "createNodeHost", "createRenderer", "createLuaChecker", "loadLayoutFile", "bakeFile", "uploadBlob",
+                        "createPixelRenderer", "renderPages", "encodePng", "previewFile", "SCREEN_W", "KEY_GRID_X0",
                         "parseChord", "KEYS", "MODIFIERS", "KEY_CELL", "FACE_SIZE", "BLOB_VERSION", "OP"])
         assert.ok(node[name] !== undefined, `index.js lacks ${name}`);
 });

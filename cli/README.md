@@ -1,8 +1,8 @@
 # ControlBlock command line
 
-Bakes and uploads standalone-mode layouts, and sets up the device's Wi-Fi and clock. It is a thin
+Bakes, renders (page mockups) and uploads standalone-mode layouts, and sets up the device's Wi-Fi and clock. It is a thin
 wrapper: argument parsing and output only. Everything it does is the library's
-(`../host`: `bakeFile`, `uploadBlob`, `ControlBlock`), imported by relative path, so there
+(`../host`: `bakeFile`, `previewFile`, `uploadBlob`, `ControlBlock`), imported by relative path, so there
 is nothing to install here beyond `npm install` in `host/`.
 
 Run it from the repo root:
@@ -35,6 +35,20 @@ Uploads to the device over USB ([`docs/protocol.md`](../docs/protocol.md#layout-
 sends the blob, waits for the device to restart and checks it kept the same blob. A `.bin`
 is sent as it is; a layout is baked in memory first. If the device already has the same
 blob nothing is sent, unless `--force`.
+
+### `render <layout> [-o dir] [--pressed] [--page home|<activity>] [--no-grid]`
+
+Draws each page of a layout as the screen would show it, as 800x480 PNGs, for checking a
+layout without the device: each key's image (the bake's own rendering) at its place, a faint
+dashed grid of the 1U slots (numbered 0-14) under empty areas, and the page's name in the
+status bar. Uses the library's `previewFile` / `renderPages`.
+
+- Writes `NN-<page>.png` (`00-home.png`, `01-atv-1.png`: the page's number in the whole
+  layout, then Home or the activity and its page) to `<layout name>-pages/` in the current
+  folder, or the folder `-o` names (created if needed), and prints each file written.
+- `--pressed` draws every key's pressed look; `--page home` or `--page <activity>` only
+  those pages (an unknown name exits 1); `--no-grid` leaves the empty areas black.
+- A layout with errors prints them and exits 1, as `bake` does.
 
 ### `wifi <action> [--serial S]`
 
@@ -101,7 +115,7 @@ The device's name on the network: its mDNS name (`<name>.local`) and DHCP hostna
 | Code | |
 |---|---|
 | 0 | done (`wifi set`/`wait`: connected) |
-| 1 | failed: a bad layout, a device error, no device, or (`wifi set`/`wait`) not connected in time or no network stored |
+| 1 | failed: a bad layout, an unknown `render --page`, a device error, no device, or (`wifi set`/`wait`) not connected in time or no network stored |
 | 2 | usage error (the usage is printed) |
 
 ## Examples
@@ -109,6 +123,7 @@ The device's name on the network: its mDNS name (`<name>.local`) and DHCP hostna
 ```sh
 node cli/cli.js bake examples/net-test.json                         # writes examples/net-test.bin
 node cli/cli.js bake examples/activity-test.mjs -o scratch/a.bin
+node cli/cli.js render urem2/urem2.mjs -o scratch/urem2-pages        # page mockups as PNGs
 node cli/cli.js upload examples/activity-test.mjs                   # bake in memory and upload
 node cli/cli.js upload scratch/a.bin --serial 3C84279E1D50 --force
 node cli/cli.js wifi set MyNetwork "my password"
@@ -122,7 +137,7 @@ node cli/cli.js name set den-tv                                     # den-tv.loc
 ## Tests
 
 `npm test` in `cli/` (no device: the upload, wifi, time and name commands run against the library's
-`FakeDevice`; the bake runs the real renderer). `cli.js` exports
+`FakeDevice`; the bake and render run the real renderer). `cli.js` exports
 `main(argv, { open, reconnect, stdout, stderr })`, which resolves the exit code, and only
 runs itself when executed directly. `args.js` (`parseArgs`, `USAGE`, `UsageError`) is the
 pure argument parser.

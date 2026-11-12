@@ -16,12 +16,19 @@ export class BakeError extends Error
     }
 }
 
-// -> { blob (the BPAK file), tree, warnings }
-export async function bake(layout, host, render)
+// Stage 1 alone: -> { tree, warnings }; throws a BakeError if the layout has errors
+export function resolveLayout(layout, host)
 {
     const { tree, errors, warnings } = resolve(layout, host);
     if (errors.length)
         throw new BakeError(errors);
+    return { tree, warnings };
+}
+
+// -> { blob (the BPAK file), tree, warnings }
+export async function bake(layout, host, render)
+{
+    const { tree, warnings } = resolveLayout(layout, host);
     await renderImages(tree, render);
     return { blob: toBpak(packTree(tree)), tree, warnings };
 }

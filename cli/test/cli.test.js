@@ -216,3 +216,46 @@ test("cli: a bad name exits 1 without sending it", async () => {
     assert.match(r.err[0], /^error: The name "a.b" must be/);
     assert.equal(dev.name.name, null);
 });
+
+test("cli: render writes one PNG per page and prints each file", { timeout: 120000 }, async () => {
+    const { dir, file, cleanup } = exampleDir();
+    try {
+        const out = path.join(dir, "pages");
+        const r = await run(["render", file, "-o", out]);
+        assert.equal(r.code, 0, r.err.join("\n"));
+        const names = ["00-home.png", "01-watch-tv-1.png", "02-listen-1.png"];
+        assert.deepEqual(r.out, names.map(n => path.join(out, n)));
+        assert.deepEqual(fs.readdirSync(out).sort(), names);
+        const png = fs.readFileSync(path.join(out, names[0]));
+        assert.equal(png.readUInt32BE(0), 0x89504E47);                          // the PNG signature
+        assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [800, 480]);   // IHDR width, height
+
+        // one activity, pressed: numbered as in the whole layout
+        const one = await run(["render", file, "-o", out, "--page", "Listen", "--pressed", "--no-grid"]);
+        assert.equal(one.code, 0, one.err.join("\n"));
+        assert.deepEqual(one.out, [path.join(out, "02-listen-1.png")]);
+    } finally {
+        cleanup();
+    }
+});
+
+test("cli: render refuses an unknown page and a bad layout with exit 1", { timeout: 120000 }, async () => {
+    const { dir, file, cleanup } = exampleDir();
+    try {
+        const out = path.join(dir, "pages");
+        const r = await run(["render", file, "-o", out, "--page", "Nope"]);
+        assert.equal(r.code, 1);
+        assert.match(r.err[0], /^error: no page or activity "Nope"/);
+        assert.equal(fs.existsSync(out), false);
+    } finally {
+        cleanup();
+    }
+    const bad = exampleDir({ layout: { version: 1, home: { keys: [{ iconScale: "x" }] } } });
+    try {
+        const r = await run(["render", bad.file, "-o", path.join(bad.dir, "pages")]);
+        assert.equal(r.code, 1);
+        assert.match(r.err[0], /home\.keys\[0\]\.iconScale/);
+    } finally {
+        bad.cleanup();
+    }
+});
