@@ -1,6 +1,6 @@
 # Status bar icons
 
-Status: Implement (steps 1-10 done; only the user hardware check, step 11, remains)
+Status: Complete
 
 ## Description
 Status icons in the status bar, to the right of the clock:
@@ -90,7 +90,7 @@ hide the icons) is to be decided.
 - [x] 8. **Async net failures + device wiring.** `net_worker.cpp`: when a fire-and-forget (and waited) request finishes with an external failure (step 7 helper), call `status_error()`; `standalone_task.cpp` wires the step-7 callback to `status_error()`. Device build green. (Device only.)
 - [x] 9. **Docs.** `docs/status-bar.md` (icon strip, placement, busy minimum, error rules, wake deadline, hosted shows Wi-Fi only), `docs/standalone.md` (busy/error indicator; what counts as an error), `docs/wifi.md` (icon), note in `docs/protocol.md` that icons are firmware-owned (no protocol change). Propose (don't apply without the user) CLAUDE.md updates: new module `status_icons`, the busy follow-up item resolved.
 - [x] 10. **Final builds and tests.** `mk run` and `mk config=release run` (counts match), `idf.py --preset debug build` and `--preset release build` 0 errors; `host/` `npm test` still green (ui.bin unaffected there, sanity only).
-- [ ] 11. **Hardware check (user).** Flash debug or release, layout with net ops (`examples/net-test.json` / `activity-test.mjs` with the test server):
+- [x] 11. **Hardware check (user).** Flash debug or release, layout with net ops (`examples/net-test.json` / `activity-test.mjs` with the test server):
   - [ ] a. Boot: a grey dot just left of the clock (clock at the right margin); white Wi-Fi waves once connected, about as bright as the clock.
   - [ ] b. Turn the AP off (or the test Wi-Fi): the dot returns; back on: waves.
   - [ ] c. HID tap key: the hourglass shows about 0.5 s, left of the Wi-Fi icon; noticeable when looked for, not distracting.

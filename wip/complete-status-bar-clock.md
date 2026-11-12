@@ -1,6 +1,6 @@
 # Status bar clock
 
-Status: Implement (steps 1-11 done; only step 12, the hardware check by the user, remains)
+Status: Complete
 
 ## Description
 A clock built into the device, shown at the right of the status bar.
@@ -142,7 +142,7 @@ A clock built into the device, shown at the right of the status bar.
 - [x] 9. **CLI `time` command** (`cli/cli.js`, `cli/args.js`, `cli/README.md`, `cli/test/`). Tests first (`args.test.js`, `cli.test.js` with FakeDevice): `time` / `time set` (from the PC clock), `time get` (device time, source, zone, server), `time zone <posix>` / `time zone --default`, `time server <host>` / `--default`, `--serial`. Follow the `wifi` action-table pattern (share its open/dispatch/close code rather than copying it). README with a Sydney TZ example and the run-at-logon tip. `npm test` in `cli/`.
 - [x] 10. **Docs.** `docs/status-bar.md` (`{clock}` templates, minute wake, blank until known), `docs/standalone.md` (right text `{clock}`, restored on release/disconnect), `docs/wifi.md` (NTP: server, hourly resync), `docs/protocol.md` cross-checked against `host/` and firmware. Update Notes section 10 if the CLAUDE.md proposals changed.
 - [x] 11. **Full build and test run.** `idf.py --preset debug build` and `--preset release build` (0 errors); `mk run` and `mk config=release run` in `firmware/test` (same test count); `npm test` in `host/` and `cli/`. Record what's left to check on the hardware.
-- [ ] 12. **Hardware check (user; not automatable).** Flash the debug build first (stack log), then release for RAM/fills. Commands from the repo root.
+- [x] 12. **Hardware check (user; not automatable).** Flash the debug build first (stack log), then release for RAM/fills. Commands from the repo root.
   - [ ] a. **Boot, NTP:** power-cycle with Wi-Fi credentials set. Right of the status bar is blank at first, then the UTC time appears a few seconds after `wifi: connected` (log: `wifi: sntp started (pool.ntp.org)`, then `clock: ntp sync`). Format `h:mm`, no am/pm.
   - [ ] b. **Time zone:** `node cli/cli.js time zone "AEST-10AEDT,M10.1.0,M4.1.0/3"` -> the clock jumps to Sydney time (AEDT, UTC+11 in November) at once (log `clock: time zone ...`). `node cli/cli.js time get` shows the zone, `set by NTP`. `time zone --default` goes back to UTC; set Sydney again. Power-cycle: the zone is kept.
   - [ ] c. **No Wi-Fi:** `node cli/cli.js wifi clear` (or a board without credentials), power-cycle: right text blank. `node cli/cli.js time` -> the time appears at once (log `clock: time set (host)`); `time get` says `set by the host`.

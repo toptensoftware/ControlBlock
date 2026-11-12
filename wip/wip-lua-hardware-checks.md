@@ -174,3 +174,8 @@ Home keys, by row:
   `python tools/test-server/net_test_server.py` and `node tools/test-server/takeover.mjs 3`. (The project reorg has since
   moved them to `examples/test-server/`, with the layouts in `examples/`; the checklist above uses the new paths.)
   `wip/complete-activity-device-management.md` still names the old paths (left as written).
+
+## Progress (2026-11-12)
+- Scripts run from a layout on the hardware: urem2's Yamaha toggles (mute, 7ch Stereo: `yamaha-toggle.lua`, a waited
+  `http.get` then a set) work against the real receiver. Checklist B above (`script-test.mjs`) not yet run: stack depth,
+  `http.get` timeout/abandon, latency and the rest stay unticked.

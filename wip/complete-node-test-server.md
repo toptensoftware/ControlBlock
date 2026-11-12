@@ -1,6 +1,6 @@
 # Port the test server to Node
 
-Status: Implement
+Status: Complete
 
 ## Description
 Replace `examples/test-server/net_test_server.py` (Python 3, standard library) with a Node.js version that
@@ -98,13 +98,13 @@ for it (the Python server had none), then update the references and remove the P
 - [x] 3. Point the users at it: comments in `examples/test-common.mjs`, `examples/activity-test.mjs`,
   `examples/script-test.mjs`; `examples/README.md` (table row: `node examples/test-server/test-server.mjs`,
   Node only, and the address note); `wip/wip-lua-hardware-checks.md` run instructions.
-- [ ] 4. Propose the `CLAUDE.md` edits (layout line, Net ops and Activity switching mentions, a line under
+- [x] 4. Propose the `CLAUDE.md` edits (layout line, Net ops and Activity switching mentions, a line under
   the test sections for `node --test examples/test-server/test-server.test.mjs`) and apply them once the user confirms (Rule 4).
-- [ ] 5. Hardware check (user): allow `node.exe` through the firewall, run the Node server, and tap through
+- [x] 5. Hardware check (user): allow `node.exe` through the firewall, run the Node server, and tap through
   `examples/net-test.json` (GET headers, POSTs, redirect, 404, hang timeout, 5 MB, 2nd host, slow, burst,
   UDP IP/name/hex, WoL) and the `/mute` and latency keys of `script-test.mjs`; compare with the Python
   server's output (connection reuse shows as a repeated source port).
-- [ ] 6. Once step 5 passes: delete `examples/test-server/net_test_server.py`, grep for leftover mentions
+- [x] 6. Once step 5 passes: delete `examples/test-server/net_test_server.py`, grep for leftover mentions
   (outside `complete-*.md`), and rename this file to `complete-node-test-server.md`.
 
 ## Implementation notes
@@ -114,3 +114,5 @@ for it (the Python server had none), then update the references and remove the P
   but no `"`). Only affects how such a body looks in the log.
 - `wip-lua-hardware-checks.md`: only the "Before you start" line was changed; its history notes still name the
   Python file as written.
+- Step 5 (2026-11-12): the user's hardware run passed.
+- Steps 4 and 6 (2026-11-12): CLAUDE.md edits approved and applied; the Python server deleted.

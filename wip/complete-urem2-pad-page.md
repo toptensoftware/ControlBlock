@@ -1,6 +1,6 @@
 # urem2: on-screen pad page
 
-Status: Implement
+Status: Complete
 
 ## Description
 The macro pad's hardware isn't ready for testing, so give urem2's activities that use the pad an extra page of
@@ -48,7 +48,7 @@ Run tests from the repo root: `node --test "urem2/**/*.test.mjs"` (all green aft
 - [x] 5. **Activities (test first).** Update `atv.test.mjs`, `hdd.test.mjs`, `steam.test.mjs`: page 0 is the pad page (atv: cross tap menu/long menu-hold, tick tap select/long hold; hdd: return/ok, pana arrows; steam: arrows only, slots 1/3 empty), existing page assertions shift by one index. `playstation.test.mjs` unchanged. Enable `padPage` in `atv.mjs`, `hdd.mjs`, `steam.mjs`. Check `build.test.mjs`/`home.test.mjs` for page-count or index assumptions (go-to-page, max pages <= `SCREEN_MAX_PAGES` 8) and fix.
 - [x] 6. **Bake check.** Bake both entries with the CLI (`node cli/cli.js bake` on `urem2/layout/urem2.mjs` and `urem2-test.mjs`, outputs under `scratch/`); confirm no errors and the new icons render. `bake.test.mjs` passes.
 - [x] 7. **README.** Update `urem2/README.md`: the pad page (first page of atv/hdd/steam, layout, tap-only arrows with no auto-repeat, 1-step volume) and why (pad hardware not ready).
-- [ ] 8. **Hardware check (user).** Upload the test layout (`node cli/cli.js upload`), against the test server: each activity opens on the pad page; arrows, cross, tick (tap and long on atv) send the expected requests; Vol+/Vol- move 1 step; mute toggles; steam slots 1/3 empty; playstation has no pad page; other pages still work after shifting. Not automatable.
+- [x] 8. **Hardware check (user).** Upload the test layout (`node cli/cli.js upload`), against the test server: each activity opens on the pad page; arrows, cross, tick (tap and long on atv) send the expected requests; Vol+/Vol- move 1 step; mute toggles; steam slots 1/3 empty; playstation has no pad page; other pages still work after shifting. Not automatable.
 
 ## Implementation notes (2026-11-09)
 - `pad.mjs`: one `PAD_KEYS` table (control -> slot, icon, arrow dir) drives both `padArrows` and `padPage(ctx, spec)`

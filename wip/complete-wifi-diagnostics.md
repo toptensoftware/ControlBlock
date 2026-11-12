@@ -1,6 +1,6 @@
 # Diagnostics over Wi-Fi
 
-Status: Implement (steps 1-12 done; only the user hardware check, step 13, remains)
+Status: Complete
 
 ## Description
 Review the device's status and recent logs over Wi-Fi: a simple diagnostics web page, or just plain HTTP endpoints
@@ -66,7 +66,7 @@ Pure parts are host tested (`firmware/test/`, `mk run`); device layers can't be 
 - [x] 10. **Internal RAM + stress.** (builds done; the measurements are a hardware item for the user, see Notes) Measure internal free after init / Wi-Fi up / connected / during a `/log` fetch (release); record in Notes and CLAUDE.md Open Items. Release `RUN_STRESS` build (logging active) for the user to run: 0 late fills expected. Hardware run by the user.
 - [x] 11. **Docs.** New `docs/diagnostics.md` (endpoints, JSON fields, polling example with curl, mDNS/name); `docs/wifi.md` (hostname), `docs/protocol.md` already done; CLAUDE.md (modules, layout, Open Items) — propose the CLAUDE.md edits to the user per Rule 4.
 - [x] 12. **Final builds/tests.** `mk run` (debug and release, same test counts), `npm test` in `host/` and `cli/`, `idf.py --preset debug build` and `--preset release build`: 0 errors.
-- [ ] 13. **Hardware check (user).** Replace `controlblock-a1b2c3` with your device's name (boot log, or `node cli/cli.js name`).
+- [x] 13. **Hardware check (user).** Replace `controlblock-a1b2c3` with your device's name (boot log, or `node cli/cli.js name`).
   - [ ] a. Release normal build: `idf.py --preset release -p COM4 flash monitor` (check `Hash of data verified.`). Boot log shows the name and the `heap` lines: record internal free "after init", "with the Wi-Fi driver up", "with Wi-Fi connected", "with mDNS and the diagnostics server up" in Notes.
   - [ ] b. `ping controlblock-a1b2c3.local` resolves (mDNS).
   - [ ] c. `curl -s http://controlblock-a1b2c3.local/status` returns JSON (name, wifi ip/rssi, fps ~49, lateFills 0, heap).
