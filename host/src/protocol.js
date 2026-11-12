@@ -8,11 +8,12 @@ export const INTERFACE = 0;         // the vendor interface
 export const ENDPOINT  = 1;         // bulk OUT 0x01 / IN 0x81
 export const USB_PACKET_SIZE = 64;  // full-speed bulk packet: a write of a whole number of these is ended with a ZLP
 
-export const PROTOCOL_VERSION  = 1;
+export const PROTOCOL_VERSION  = 2;       // v2: keys are quarter-unit rects with ids, one opaque image per state
 export const MAGIC             = 0x4243;
 export const HEADER_SIZE       = 12;
 export const REQ_RESET_STREAM  = 0x10;
 export const KEYDEF_SIZE       = 20;
+export const KEY_EVENT_SIZE    = 12;
 export const PUT_IMAGE_PREFIX  = 12;
 export const LAYOUT_DATA_PREFIX = 4;       // LAYOUT_DATA: u32 offset, then the bytes
 
@@ -90,7 +91,7 @@ export const Status = Object.freeze({
 
 export const KeyAction = Object.freeze({ PRESS: 0, RELEASE: 1, CANCEL: 2 });
 export const PageCause = Object.freeze({ USER: 0, HOST: 1 });
-export const KeyFlags  = Object.freeze({ EMPTY: 0x0001, DISABLED: 0x0002 });
+export const KeyFlags  = Object.freeze({ REMOVE: 0x0001, DISABLED: 0x0002 });
 
 export function statusName(status)
 {
@@ -353,17 +354,65 @@ export function encodeLayoutData(offset, chunk)
     return new Writer(LAYOUT_DATA_PREFIX + chunk.length).u32(offset).raw(chunk).done();
 }
 
-// keys: [{ page, key, bg, fg, pressedBg, pressedFg, disabled, empty }], IDs 0/undefined = none
+// --- Keys (SET_KEYS) ---
+// A key is placed and sized in units of the 1U grid cell (info.keyWidth), in 0.25 steps:
+// { id, page, x, y, w = 1, h = 1, normal, pressed, disabled }, or { id, remove: true }.
+// On the wire x/y/w/h are counts of quarter units (info.quarter pixels). Images are IDs, or
+// anything with an `id` (keyImage's result); 0/missing = none (normal: black; pressed: no
+// press feedback).
+
+// Units -> quarter units, refusing what isn't a whole number of quarters in a u8
+function quarters(v, name, min)
+{
+    const q = v * 4;
+    if (typeof v !== "number" || !Number.isInteger(q) || q < min || q > 255)
+        throw new RangeError(`Key ${name} ${v} must be a multiple of 0.25 from ${min / 4} to 63.75`);
+    return q;
+}
+
+function checkedInt(v, name, max)
+{
+    if (!Number.isInteger(v) || v < 0 || v > max)
+        throw new RangeError(`Key ${name} ${v} must be an integer from 0 to ${max}`);
+    return v;
+}
+
+function imageRef(v, name)
+{
+    const id = v && typeof v === "object" ? v.id : (v ?? 0);
+    return checkedInt(id, name, 0xFFFFFFFF);
+}
+
 export function encodeKeys(keys)
 {
     const w = new Writer(2 + keys.length * KEYDEF_SIZE).u16(keys.length);
     for (const k of keys) {
-        const flags = (k.empty ? KeyFlags.EMPTY : 0) | (k.disabled ? KeyFlags.DISABLED : 0);
-        w.u8(k.page).u8(k.key).u16(flags);
-        for (const id of [k.bg, k.fg, k.pressedBg, k.pressedFg])
-            w.u32(k.empty ? 0 : (id ?? 0));
+        const id = checkedInt(k.id, "id", 0xFFFF);
+        if (id === 0)
+            throw new RangeError("Key id 0 is reserved (ids are 1 to 65535)");
+        if (k.remove) {
+            w.u16(id).u8(0).u8(0).u8(0).u8(0).u8(0).u8(0).u16(KeyFlags.REMOVE).u16(0).u32(0).u32(0);
+            continue;
+        }
+        w.u16(id).u8(checkedInt(k.page, "page", 0xFF));
+        w.u8(quarters(k.x ?? 0, "x", 0)).u8(quarters(k.y ?? 0, "y", 0));
+        w.u8(quarters(k.w ?? 1, "w", 1)).u8(quarters(k.h ?? 1, "h", 1)).u8(0);
+        w.u16(k.disabled ? KeyFlags.DISABLED : 0).u16(0);
+        w.u32(imageRef(k.normal, "normal image")).u32(imageRef(k.pressed, "pressed image"));
     }
     return w.done();
+}
+
+// Plain grid slot `slot` (row-major, `cols` per row) as a 1U key's position: { x, y, w, h } in units
+export function keySlot(slot, cols = 5)
+{
+    return { x: slot % cols, y: Math.floor(slot / cols), w: 1, h: 1 };
+}
+
+// The size a key's images must be, in pixels: { width, height }. `info` is GET_INFO's (its `quarter`).
+export function keyPixelSize({ w = 1, h = 1 } = {}, info)
+{
+    return { width: quarters(w, "w", 1) * info.quarter, height: quarters(h, "h", 1) * info.quarter };
 }
 
 // GET_INFO response data (after the status)
@@ -388,7 +437,7 @@ export function decodeInfo(data)
     info.rows              = r.u8();
     info.maxPages          = r.u8();
     info.pageCount         = r.u8();
-    info.keyWidth          = r.u16();
+    info.keyWidth          = r.u16();      // 1U: a grid cell (144)
     info.keyHeight         = r.u16();
     info.iconWidth         = r.u16();
     info.iconHeight        = r.u16();
@@ -398,6 +447,15 @@ export function decodeInfo(data)
     info.layoutCapacity    = r.u32();      // 0 from a device without layout storage
     info.layoutSize        = r.u32();      // 0: nothing stored
     info.layoutCrc         = r.u32();
+    // v2: the key grid (screen pixels), the quarter unit, the largest image, keys per page
+    info.gridX             = r.u16();
+    info.gridY             = r.u16();
+    info.gridWidth         = r.u16();
+    info.gridHeight        = r.u16();
+    info.quarter           = r.u16();
+    info.maxImageWidth     = r.u16();
+    info.maxImageHeight    = r.u16();
+    info.maxKeys           = r.u8();
     return info;
 }
 
@@ -473,16 +531,17 @@ export function decodeQuery(data)
 // pipe deaf on Windows, so the host's read timeout must be well past this.
 export const HEARTBEAT_INTERVAL_MS = 1000;
 
-// An event message: { type: "key", page, key, action, lost, timeMs } or
-// { type: "pageChanged", page, cause } or { type: "wake", lost, timeMs } or
-// { type: "heartbeat", timeMs } or { type: "wifiState", state, stateName, lost, ip },
-// or null if unknown
+// An event message: { type: "key", id, page, action, lost, timeMs } (`id`: the key's, from
+// setKeys; `page`: the page it was touched on) or { type: "pageChanged", page, cause } or
+// { type: "wake", lost, timeMs } or { type: "heartbeat", timeMs } or
+// { type: "wifiState", state, stateName, lost, ip }, or null if unknown
 export function decodeEvent(msg)
 {
     const r = new Reader(msg.payload);
     if (msg.type === Msg.KEY) {
-        const page = r.u8(), key = r.u8(), action = r.u8(), lost = (r.u8() & 1) !== 0;
-        return { type: "key", seq: msg.seq, page, key, action, lost, timeMs: r.u32() };
+        const id = r.u16(), page = r.u8(), action = r.u8(), lost = (r.u8() & 1) !== 0;
+        r.pos += 3;                     // reserved
+        return { type: "key", seq: msg.seq, id, page, action, lost, timeMs: r.u32() };
     }
     if (msg.type === Msg.PAGE_CHANGED)
         return { type: "pageChanged", seq: msg.seq, page: r.u8(), cause: r.u8() };

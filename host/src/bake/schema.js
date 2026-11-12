@@ -44,10 +44,17 @@ op("udpPacketOp",      [{ name: "host", type: "string" }, { name: "port", type: 
 op("sendWolOp",        [{ name: "mac", type: "byte[6]" }, { name: "broadcast", type: "string", default: null }]);
 op("scriptOp",         [{ name: "source", type: "length" }, { name: "source", type: "string" }]);
 
+// A key: its id (unique across the layout; touch bindings name it as "touch[id]"), its rect
+// [x, y, w, h] in quarter units from the grid's top-left (the firmware's KeyRect), and one opaque
+// image per state (absent: drawn as background)
 registerType({
     name: "key",
-    fields: [...bytes("normalBg"), ...bytes("normalFg"), ...bytes("pressedBg"), ...bytes("pressedFg"),
-             { name: "longPressMs", type: "uint", default: 0 }],
+    fields: [
+        { name: "id", type: "ushort" },
+        { name: "rect", type: "byte[4]" },
+        ...bytes("normal"), ...bytes("pressed"),
+        { name: "longPressMs", type: "uint", default: 0 },
+    ],
 });
 
 registerType({
@@ -55,11 +62,11 @@ registerType({
     fields: [{ name: "control", type: "string" }, { name: "event", type: "string" }, ...opList("ops")],
 });
 
-registerType({ name: "page", fields: [{ name: "keys", type: "key[15]" }] });
+registerType({ name: "page", fields: list("keys", "key*") });
 
 registerType({
     name: "home",
-    fields: [{ name: "keys", type: "key[15]" }, ...list("bindings", "binding*")],
+    fields: [...list("keys", "key*"), ...list("bindings", "binding*")],
 });
 
 registerType({

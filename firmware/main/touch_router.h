@@ -7,7 +7,7 @@
 // Not thread safe: one task feeds it (the swipe task).
 
 #include <stdint.h>
-#include "page_compositor.h"
+#include "key_geometry.h"
 #include "screen_layout.h"
 
 // Tuning (docs/interactions.md, Constants)
@@ -21,20 +21,37 @@
 #define TOUCH_KEY_RELEASE  1
 #define TOUCH_KEY_CANCEL   2
 
-// The key whose cell, shrunk by `margin` on every side (grown if negative),
-// contains the screen point (x, y), on a page at rest; -1 if none.
-int touch_key_at(int x, int y, int margin);
+// A key as the hit test sees it: its id and its rect in page-area pixels
+struct TouchKey
+{
+    uint16_t     id;
+    KeyPixelRect rect;
+};
 
+// The rect (page-area pixels), shrunk by `margin` on every side (grown if
+// negative), contains the screen point (x, y), on a page at rest
+bool touch_in_rect(const KeyPixelRect &rect, int x, int y, int margin);
+
+// The index of the key in `keys` whose rect, shrunk by `margin`, contains the
+// screen point (x, y), on a page at rest; -1 if none (a margin, a seam's edge
+// zones, an area no key covers)
+int touch_key_at(const TouchKey *keys, int count, int x, int y, int margin);
+
+// Keys are named by id (unique across the layout); the page is the one the
+// touch went down on
 struct TouchRouterHost
 {
-    // Is there a key that reports presses (defined, not empty, not disabled)?
-    bool (*key_active)(int page, int key, void *ctx);
+    // The page's keys (up to COMP_MAX_KEYS into `out`), for the hit test at
+    // touch-down; their count (0 for none or no such page)
+    int  (*page_keys)(int page, TouchKey *out, void *ctx);
+    // Is the key on the page and reporting presses (not disabled)?
+    bool (*key_active)(int page, uint16_t key, void *ctx);
     // A key action, with the device time in milliseconds
-    void (*key_event)(int page, int key, int action, uint32_t time_ms, void *ctx);
+    void (*key_event)(int page, uint16_t key, int action, uint32_t time_ms, void *ctx);
     // Show (or clear) the key's pressed look. On from touch-down on an active
     // key, so a tap gives feedback at once; off again if the touch turns into
     // a swipe, or when the press ends. Always paired, one key at a time.
-    void (*key_look)(int page, int key, bool pressed, void *ctx);
+    void (*key_look)(int page, uint16_t key, bool pressed, void *ctx);
     void *ctx;
 };
 
@@ -69,7 +86,7 @@ private:
         Idle,           // no touch
         Pending,        // on a key, inside the swipe window
         Held,           // PRESS sent; the key owns the touch
-        SwipeOnly,      // can only swipe (gap, edge zone, inactive key, left the key early)
+        SwipeOnly,      // can only swipe (margin, edge zone, no key, inactive key, left the key early)
         Swiping,        // the swipe owns the touch (started, or busy at touch-down)
         Dead,           // a held press was cancelled; ignored until lift
     };
@@ -82,7 +99,9 @@ private:
     TouchRouterHost m_host = {};
     State           m_state = State::Idle;
     int             m_page = 0;
-    int             m_key = -1;
+    uint16_t        m_key = KEY_ID_NONE;
+    KeyPixelRect    m_rect = {};        // the key's rect at touch-down (for leaving it)
+    TouchKey        m_keys[COMP_MAX_KEYS];  // the hit test's scratch
     int             m_down_x = 0;
     int64_t         m_down_us = 0;
 };

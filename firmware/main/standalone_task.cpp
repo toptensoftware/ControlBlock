@@ -226,10 +226,10 @@ esp_err_t standalone_init(const uint8_t *blob)
     return ESP_OK;
 }
 
-void standalone_key(int page, int key, int action, uint32_t time_ms)
+void standalone_key(uint16_t id, int action, uint32_t time_ms)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_sa.Key(page, key, action, time_ms);
+    s_sa.Key(id, action, time_ms);
     bool work = s_sa.Queued() > 0;
     xSemaphoreGive(s_lock);
     if (work)

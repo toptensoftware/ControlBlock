@@ -33,7 +33,7 @@ function importGraph(entry)
 }
 
 test("browser.js exports the device API and imports nothing Node only", () => {
-    for (const name of ["ControlBlock", "ControlBlockError", "Emitter", "Msg", "Status", "WifiState", "KeyAction", "crc32", "MessageParser", "decodeInfo"])
+    for (const name of ["ControlBlock", "ControlBlockError", "Emitter", "Msg", "Status", "WifiState", "KeyAction", "KeyFlags", "crc32", "MessageParser", "decodeInfo", "keySlot", "keyPixelSize"])
         assert.ok(name in browser, `browser.js lacks ${name}`);
     for (const name of ["keyImage", "bake", "bakeFile", "uploadBlob"])
         assert.ok(!(name in browser), `browser.js exports ${name}`);
@@ -45,10 +45,10 @@ test("browser.js exports the device API and imports nothing Node only", () => {
 test("index.js exports the device API, the image helpers and the bake API", () => {
     for (const name of Object.keys(browser))
         assert.equal(node[name], browser[name], `index.js: ${name}`);
-    for (const name of ["imageId", "encodeImage", "keyImage", "keyImageFromSvg", "renderButtonImage", "buttonKeyImage",
+    for (const name of ["imageId", "encodeImage", "keyImage", "composeOverBlack", "centreImage", "svgLayer", "renderButtonImage", "buttonLayer", "FACE_MARGIN",
                         "bake", "BakeError", "resolve", "renderImages", "packTree", "toBpak", "ROOT_TYPE", "formatEntries",
                         "createNodeHost", "createRenderer", "createLuaChecker", "loadLayoutFile", "bakeFile", "uploadBlob",
-                        "parseChord", "KEYS", "MODIFIERS", "KEY_SIZE", "BLOB_VERSION", "OP"])
+                        "parseChord", "KEYS", "MODIFIERS", "KEY_CELL", "FACE_SIZE", "BLOB_VERSION", "OP"])
         assert.ok(node[name] !== undefined, `index.js lacks ${name}`);
 });
 

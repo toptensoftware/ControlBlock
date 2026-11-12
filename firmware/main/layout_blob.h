@@ -24,14 +24,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "layout_types.h"
-#include "key_layout.h"
-#include "page_compositor.h"
+#include "key_geometry.h"
 #include "screen_layout.h"
 
 #define BPAK_SIGNATURE      0x4B415042u     // "BPAK" as bytes 42 50 41 4B
 #define BPAK_FORMAT_VERSION 1
 #define BPAK_HEADER_SIZE    32
-#define LAYOUT_BLOB_VERSION 1               // the root's `version`; BLOB_VERSION in host/src/bake/consts.js
+#define LAYOUT_BLOB_VERSION 2               // the root's `version`; BLOB_VERSION in host/src/bake/consts.js
+                                            // (2: keys are { id, rect, normal, pressed }; 1, the 128 slot keys, is refused)
 
 // Limits (a layout over them is rejected)
 #define LAYOUT_MAX_DEVICES      32
@@ -50,6 +50,20 @@ struct LayoutImage
     uint32_t size;
 };
 
+// A key as the layout apply needs it: its id, rect, and one opaque image per
+// state, each the rect's size in pixels (offset 0 = none: drawn as background)
+struct LayoutKey
+{
+    uint16_t    id;
+    KeyRect     rect;
+    LayoutImage normal;
+    LayoutImage pressed;
+};
+
+// A packed key of a relocated blob as a LayoutKey (image offsets: the pointers
+// minus the blob's address)
+LayoutKey LayoutKeyOf(const layoutdata::key &key, const uint8_t *blob);
+
 // What the boot code needs from a validated blob
 struct LayoutSummary
 {
@@ -57,7 +71,8 @@ struct LayoutSummary
     uint32_t    long_press_ms;                  // 0 = firmware default
     uint32_t    device_count;
     uint32_t    activity_count;
-    LayoutImage home[COMP_KEYS][KEY_SLOTS];     // KEY_SLOT_* order: bg, fg, pressed bg, pressed fg
+    uint32_t    home_count;                     // Home's keys
+    LayoutKey   home[COMP_MAX_KEYS];
 };
 
 enum class LayoutError
@@ -70,10 +85,12 @@ enum class LayoutError
     BadRelocation,      // an entry out of range, unaligned, out of order, or not a pointer slot
     BadPointer,         // a pointer, count or string outside the data
     BadAlignment,       // the blob or an image isn't 4-byte aligned
-    BadLimit,           // too many devices, activities, pages, bindings or ops
+    BadLimit,           // too many devices, activities, pages, keys on a page, bindings or ops
     BadOp,              // unknown op code or field
     BadIndex,           // an activity or device index out of range
-    BadImage,           // failed check_image, or not 128x128
+    BadImage,           // failed check_image, not opaque, or not its key's size in pixels
+    BadKey,             // a key's rect empty or outside the grid, keys of a page overlapping,
+                        // or a key id 0 or used twice in the layout
 };
 
 const char *LayoutErrorName(LayoutError e);

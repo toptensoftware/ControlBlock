@@ -95,6 +95,22 @@ static const char *late_fills(const screen_stats_t *st)
 }
 #endif
 
+#if RUN_STRESS
+// Fill start timing and bounce buffer order (screen_stats_t), then late_fills()
+static const char *fill_timing(const screen_stats_t *st)
+{
+    static char text[200];
+    int n = snprintf(text, sizeof(text), " | start late max %3lu us, end max %3lu us, %lu missed",
+                     (unsigned long)st->max_late_us, (unsigned long)st->max_end_us, (unsigned long)st->missed);
+    if ((st->seq_breaks || st->buffer_mismatches) && n < (int)sizeof(text))
+        n += snprintf(text + n, sizeof(text) - n, ", %lu seq breaks, %lu BUFFER MISMATCHES",
+                      (unsigned long)st->seq_breaks, (unsigned long)st->buffer_mismatches);
+    if (n < (int)sizeof(text))
+        snprintf(text + n, sizeof(text) - n, "%s", late_fills(st));
+    return text;
+}
+#endif
+
 // The network ops' counters, or "" until one has run
 static const char *net_counts(void)
 {
@@ -112,6 +128,7 @@ static const char *net_counts(void)
 #if RUN_STRESS
 
 #include "test_keys.h"
+#include "fill_gap.h"
 #include "layout_types.h"
 #include "op_exec.h"
 #include "script_host.h"
@@ -120,26 +137,31 @@ static const char *net_counts(void)
 
 #define NUM_PAGES 3
 
-// The demo faces are opaque (no clear before each key) or have transparent padding
-#define USE_OPAQUE_FACES 1
-
-// The stress run's own image IDs
-#define DEMO_FACE_ID(i, opaque) (0xDE000100u + ((opaque) ? 0x10u : 0u) + (uint32_t)(i))
-#define DEMO_ICON_ID(i)         (0xDE000200u + (uint32_t)(i))
+// The stress run's own image IDs: test_keys.bin's opaque 1U and 2U keys
+#define DEMO_1U_ID(i)           (0xDE000200u + (uint32_t)(i))
+#define DEMO_2U_ID(i)           (0xDE000300u + (uint32_t)(i))
 
 extern const uint8_t test_keys_start[] asm("_binary_test_keys_bin_start");
 extern const uint8_t test_keys_end[]   asm("_binary_test_keys_bin_end");
 
-static int  s_icon_count;
-static bool s_opaque;                   // the layout uses the opaque faces
-
 // ---------------------------------------------------------------------------
-// Stress layout: test_keys.bin's faces and icons, uploaded into the image
-// store as the host would, on 3 pages
+// Stress layouts: test_keys.bin's opaque keys (fully baked, 1U and 2U), uploaded into the image
+// store as the host would. Two page layouts, in quarter units (KeyRect):
+//  - plain: 15 x 1U, the plain grid
+//  - mixed: 2U spans, 1U keys at fractional positions (x 0.5U, 1.5U) and 0.5U keys with no image
+//    (drawn as background), so a page differs from the plain grid and the black fill runs
+// Pages 0 and 2 are plain, page 1 mixed: mid-swipe the two pages in view have different layouts.
 
-static uint32_t face_id(int i) { return DEMO_FACE_ID(i, s_opaque); }
-static uint32_t icon_id(int i) { return DEMO_ICON_ID(i % s_icon_count); }
-static int      page_face(int page) { return page % TEST_KEYS_FACE_PRESSED; }
+enum { LAYOUT_PLAIN, LAYOUT_MIXED };
+
+static const KeyRect MIXED_RECTS[] = {
+    {  0, 0, 8, 4 }, {  8, 0, 4, 4 }, { 12, 0, 4, 4 }, { 16, 0, 4, 4 },                   // 2U, 1U, 1U, 1U
+    {  0, 4, 2, 4 }, {  2, 4, 4, 4 }, {  6, 4, 4, 4 }, { 10, 4, 8, 4 }, { 18, 4, 2, 4 },  // 0.5U, 1U, 1U, 2U, 0.5U
+    {  0, 8, 4, 4 }, {  4, 8, 8, 4 }, { 12, 8, 8, 4 },                                    // 1U, 2U, 2U
+};
+#define MIXED_COUNT  (int)(sizeof(MIXED_RECTS) / sizeof(MIXED_RECTS[0]))
+
+static int s_page_layout[NUM_PAGES];
 
 // What load_demo_images found, logged with the results: anything logged during the load used to be
 // lost when the backlight switch-on dropped the UART port
@@ -178,28 +200,30 @@ static void report_pack_diffs(const BLOBPACK *pack)
         report(" %02x/%02x", copy[i], test_keys_start[i]);
 }
 
+static void put_demo_image(uint32_t id, const BLOBPACK *pack, uint32_t b, esp_err_t *err)
+{
+    ImageResult ir = model_put_image(id, get_blob(pack, b), get_blob_size(pack, b));
+    if (ir == ImageResult::Ok)
+        return;
+    report(" | blob %u (ID 0x%08lx, %lu bytes) refused (%d)", (unsigned)b, (unsigned long)id,
+           (unsigned long)get_blob_size(pack, b), (int)ir);
+    *err = ESP_ERR_INVALID_STATE;
+}
+
+// The opaque keys only: the 128 faces and icons are the host tests' (test_keys.h)
 static esp_err_t load_demo_images(void)
 {
     BLOBPACK *pack = load_pack(test_keys_start, test_keys_end);
     if (!pack)
         return ESP_ERR_NO_MEM;
     report_pack_diffs(pack);
-    s_icon_count = TEST_KEYS_ICON_COUNT(pack->count);
-    uint32_t pack_count = pack->count;
 
     // Every image is tried, and each refusal noted
     esp_err_t err = ESP_OK;
-    for (uint32_t b = 0; b + 1 < pack_count; b++) {
-        uint32_t id = b < TEST_KEYS_FIRST_ICON
-                    ? DEMO_FACE_ID(b % TEST_KEYS_FACES, b >= TEST_KEYS_FACES)
-                    : DEMO_ICON_ID(b - TEST_KEYS_FIRST_ICON);
-        ImageResult ir = model_put_image(id, get_blob(pack, b), get_blob_size(pack, b));
-        if (ir != ImageResult::Ok) {
-            report(" | blob %u (ID 0x%08lx, %lu bytes) refused (%d)", (unsigned)b, (unsigned long)id,
-                   (unsigned long)get_blob_size(pack, b), (int)ir);
-            err = ESP_ERR_INVALID_STATE;
-        }
-    }
+    for (int i = 0; i < TEST_KEYS_KEYS_1U; i++)
+        put_demo_image(DEMO_1U_ID(i), pack, (uint32_t)TEST_KEYS_KEY_1U(pack->count, i), &err);
+    for (int i = 0; i < TEST_KEYS_KEYS_2U; i++)
+        put_demo_image(DEMO_2U_ID(i), pack, (uint32_t)TEST_KEYS_KEY_2U(pack->count, i), &err);
     heap_caps_free(pack);
 
     ImageStoreStats is;
@@ -207,28 +231,47 @@ static esp_err_t load_demo_images(void)
     model_store()->GetStats(&is);
     model_unlock();
     s_load_store_count = is.count;
-    s_load_blobs = pack_count - 1;
+    s_load_blobs = TEST_KEYS_KEYS;
     return err;
 }
 
 // Refusal codes: 1 bad arg, 2 no space, 3 bad image, 4 bad sequence (ImageResult)
 static void log_demo_load(void)
 {
-    ESP_LOGI(TAG, "stress: %lu demo images (%d icons), the store then had %lu images%s",
-             (unsigned long)s_load_blobs, s_icon_count, (unsigned long)s_load_store_count,
+    ESP_LOGI(TAG, "stress: %lu demo images (%d 1U, %d 2U), the store then had %lu images%s",
+             (unsigned long)s_load_blobs, TEST_KEYS_KEYS_1U, TEST_KEYS_KEYS_2U, (unsigned long)s_load_store_count,
              s_load_report[0] ? s_load_report : " | all accepted, PSRAM copy intact");
 }
 
-static KeyDef demo_key(int page, int k, int icon)
+// The demo image for a key of `r`'s size (1U or 2U), number `i`; none for other sizes (background)
+static uint32_t demo_image(KeyRect r, int i)
 {
-    KeyDef d = {};
-    d.page = (uint8_t)page;
-    d.key  = (uint8_t)k;
-    d.ids[KEY_SLOT_BG]         = face_id(page_face(page));
-    d.ids[KEY_SLOT_FG]         = icon_id(icon);
-    d.ids[KEY_SLOT_PRESSED_BG] = face_id(TEST_KEYS_FACE_PRESSED);
-    d.ids[KEY_SLOT_PRESSED_FG] = icon_id(icon);
-    return d;
+    if (r.h != 4)
+        return IMAGE_ID_NONE;
+    if (r.w == 4)
+        return DEMO_1U_ID(i % TEST_KEYS_KEYS_1U);
+    if (r.w == 8)
+        return DEMO_2U_ID(i % TEST_KEYS_KEYS_2U);
+    return IMAGE_ID_NONE;
+}
+
+// Page `page`'s keys in its current layout into `out`; returns the count. Each key's images are
+// shifted by `shift` (pressed = the next image); `same`: every key shows image 0 (pressed 1).
+static int page_defs(int page, int shift, bool same, KeyDef *out)
+{
+    bool mixed = s_page_layout[page] == LAYOUT_MIXED;
+    int count = mixed ? MIXED_COUNT : KEY_GRID_SLOTS;
+    for (int i = 0; i < count; i++) {
+        KeyDef d = {};
+        d.id      = (uint16_t)(page * COMP_MAX_KEYS + i + 1);     // unique across the pages
+        d.page    = (uint8_t)page;
+        d.rect    = mixed ? MIXED_RECTS[i] : KeySlotRect(i);
+        int n     = same ? 0 : page * 5 + i + shift;
+        d.normal  = demo_image(d.rect, n);
+        d.pressed = demo_image(d.rect, n + 1);
+        out[i] = d;
+    }
+    return count;
 }
 
 // A refused layout change leaves the compositor with nothing to draw, which makes a case's numbers
@@ -246,9 +289,9 @@ static void check_layout(KeyLayoutResult r, const char *what, const KeyDef *defs
     ImageStoreStats is;
     model_lock();
     for (int i = 0; i < count && !missing; i++)
-        for (int s = 0; s < KEY_SLOTS && !missing; s++)
-            if (defs[i].ids[s] && !model_store()->IsLive(defs[i].ids[s]))
-                missing = defs[i].ids[s];
+        for (uint32_t id : { defs[i].normal, defs[i].pressed })
+            if (id && !missing && !model_store()->IsLive(id))
+                missing = id;
     model_store()->GetStats(&is);
     model_unlock();
     ESP_LOGE(TAG, "stress: %s refused (%d): first missing image 0x%08lx; the store has %lu images, %lu KB of %lu KB",
@@ -256,49 +299,47 @@ static void check_layout(KeyLayoutResult r, const char *what, const KeyDef *defs
              (unsigned long)(is.capacity / 1024));
 }
 
-// Every page: its face colour, a different run of icons
-static void set_demo_layout(bool opaque)
+// Pages first..last get their keys again in their current layouts, images shifted by `shift`
+static void set_keys(int first, int last, int shift, bool same, uint32_t flags, const char *what)
 {
-    static KeyDef defs[NUM_PAGES * COMP_KEYS];
-    s_opaque = opaque;
-    for (int p = 0; p < NUM_PAGES; p++)
-        for (int k = 0; k < COMP_KEYS; k++)
-            defs[p * COMP_KEYS + k] = demo_key(p, k, p * 5 + k);
-
+    static KeyDef defs[NUM_PAGES * COMP_MAX_KEYS];
+    int n = 0;
+    if (last >= NUM_PAGES)
+        last = NUM_PAGES - 1;
+    for (int p = first; p <= last; p++)
+        n += page_defs(p, shift, same, defs + n);
     model_lock();
-    KeyLayoutResult count = model_layout()->SetPageCount(NUM_PAGES);
-    KeyLayoutResult keys  = model_layout()->SetKeys(defs, NUM_PAGES * COMP_KEYS);
+    KeyLayoutResult r = model_layout()->SetKeys(first, last - first + 1, defs, n, flags);
     model_unlock();
-    check_layout(count, "SetPageCount");
-    check_layout(keys, "SetKeys (layout)", defs, NUM_PAGES * COMP_KEYS);
+    check_layout(r, what, defs, n);
 }
 
-// Every key on pages first..last gets icons shifted by `shift`
-static void change_icons(int first, int last, int shift, uint32_t flags)
+// The starting layouts: pages 0 and 2 plain, page 1 mixed
+static void set_demo_layout(bool same)
 {
-    static KeyDef defs[NUM_PAGES * COMP_KEYS];
-    int n = 0;
-    for (int p = first; p <= last && p < NUM_PAGES; p++)
-        for (int k = 0; k < COMP_KEYS; k++)
-            defs[n++] = demo_key(p, k, p * 5 + k + shift);
+    for (int p = 0; p < NUM_PAGES; p++)
+        s_page_layout[p] = p == 1 ? LAYOUT_MIXED : LAYOUT_PLAIN;
     model_lock();
-    KeyLayoutResult r = model_layout()->SetKeys(defs, n, flags);
+    KeyLayoutResult count = model_layout()->SetPageCount(NUM_PAGES);
     model_unlock();
-    check_layout(r, "SetKeys (icon change)", defs, n);
+    check_layout(count, "SetPageCount");
+    set_keys(0, NUM_PAGES - 1, 0, same, 0, "SetKeys (layout)");
 }
 
 // ---------------------------------------------------------------------------
 // Stress run
 
-// Fill impact: keep every key on the pages in view changing, so the
-// compositor draws flat out for 2 s. Results are logged afterwards, so the
-// log isn't competing with the run.
+// Fill impact: keep every key on the pages in view changing (or the case's other load), so the
+// compositor draws flat out for 2 s. Results are logged afterwards, so the log isn't competing
+// with the run.
 typedef struct {
     const char    *label;
-    uint32_t       frames;
+    uint32_t       frames, frames_expected;
     float          busy_percent;
     screen_stats_t st;
-    comp_stats_t   cs;
+    comp_stats_t   cs;              // summed over the case
+    uint32_t       builds;          // STRESS_BUILD: whole-page builds timed, their average and max
+    int64_t        build_us_sum, build_us_max;
     uint32_t       script_runs;     // STRESS_SCRIPT: runs in the case, and the host's totals after it
     uint32_t       script_errors;
     size_t         script_peak;
@@ -308,9 +349,37 @@ typedef struct {
 typedef enum {
     STRESS_KEYS    = 0x01,      // change every key in view each round
     STRESS_STATUS  = 0x02,      // redraw the status bar each round
-    STRESS_REPLACE = 0x04,      // replace an icon on screen at ~USB speed
+    STRESS_REPLACE = 0x04,      // replace an image on screen at ~USB speed
     STRESS_SCRIPT  = 0x08,      // Lua churning its PSRAM heap on core 0, as a busy script op does
+    STRESS_LAYOUT  = 0x10,      // switch the pages in view between the plain and mixed layouts each round
+    STRESS_BUILD   = 0x20,      // change every key in view (flushed) and time it until it's on screen
 } stress_what_t;
+
+#define STRESS_CASE_US      2000000
+#define STRESS_SETTLE_MS    600     // let the pages in view build before measuring (a full page ~100-300 ms)
+#define STRESS_BUILD_MAX_US 2000000 // a build that hasn't shown by then is given up
+
+// The compositor's counters since the last call, added to `acc` (comp_get_stats resets them)
+static void comp_add_stats(comp_stats_t *acc)
+{
+    comp_stats_t s;
+    comp_get_stats(&s);
+    acc->keys    += s.keys;
+    acc->swaps   += s.swaps;
+    acc->holds   += s.holds;
+    acc->busy_us += s.busy_us;
+    acc->erases  += s.erases;
+    acc->chunks  += s.chunks;
+    acc->gaps    += s.gaps;
+    acc->bytes   += s.bytes;
+    acc->late_gaps += s.late_gaps;
+    if (s.max_key_us > acc->max_key_us)
+        acc->max_key_us = s.max_key_us;
+    if (s.max_chunk_us > acc->max_chunk_us)
+        acc->max_chunk_us = s.max_chunk_us;
+    if (s.max_gap_end_us > acc->max_gap_end_us)
+        acc->max_gap_end_us = s.max_gap_end_us;
+}
 
 // ---------------------------------------------------------------------------
 // Lua churn: a script that allocates and frees a lot of its (PSRAM) heap, run back to back
@@ -369,40 +438,53 @@ static void stress_script(bool on)
         xTaskNotifyGive(s_script_task);
 }
 
-// Replace the icon shown on every key in view with another icon's pixels:
-// writes the image to PSRAM, checks it, and redraws the keys using it
-static void replace_icon(int round)
+// Replace image 0 (shown on every 1U key in view) with another 1U key's pixels: writes the image
+// to PSRAM, checks it, and redraws the keys using it
+static void replace_image(int round)
 {
     static BLOBPACK *pack;
     if (!pack)
         pack = load_pack(test_keys_start, test_keys_end);
-    int b = TEST_KEYS_FIRST_ICON + round % s_icon_count;
-    model_put_image(icon_id(0), get_blob(pack, b), get_blob_size(pack, b));
+    int b = TEST_KEYS_KEY_1U(pack->count, round % TEST_KEYS_KEYS_1U);
+    model_put_image(DEMO_1U_ID(0), get_blob(pack, b), get_blob_size(pack, b));
     model_lock();
     model_store()->Collect();
     model_unlock();
 }
 
-static void stress_run(stress_result_t *r, const char *label, bool opaque, int scroll, uint32_t flags,
+// Change every key on pages first..last (flushed) and wait until the compositor has swapped it
+// onto the screen: one whole-page build, timed (to the tick: ~10 ms)
+static void timed_build(stress_result_t *r, int first, int last, int round)
+{
+    uint32_t swaps0 = r->cs.swaps;
+    int64_t t0 = esp_timer_get_time();
+    set_keys(first, last, round, false, COMP_FLUSH, "SetKeys (build)");
+    int64_t us;
+    do {
+        vTaskDelay(1);
+        comp_add_stats(&r->cs);
+        us = esp_timer_get_time() - t0;
+    } while (r->cs.swaps == swaps0 && us < STRESS_BUILD_MAX_US);
+    r->builds++;
+    r->build_us_sum += us;
+    if (us > r->build_us_max)
+        r->build_us_max = us;
+}
+
+static void stress_run(stress_result_t *r, const char *label, int scroll, uint32_t flags,
                        uint32_t what = STRESS_KEYS)
 {
+    // Live, so flicker on the screen can be matched to a case
+    ESP_LOGI(TAG, "stress case: %s (%d s)", label, STRESS_CASE_US / 1000000);
+    memset(r, 0, sizeof(*r));
     s_layout_refused = false;
-    set_demo_layout(opaque);
-    if (what & STRESS_REPLACE) {
-        // Every key in view shows icon 0
-        static KeyDef defs[NUM_PAGES * COMP_KEYS];
-        for (int i = 0; i < NUM_PAGES * COMP_KEYS; i++)
-            defs[i] = demo_key(i / COMP_KEYS, i % COMP_KEYS, 0);
-        model_lock();
-        KeyLayoutResult lr = model_layout()->SetKeys(defs, NUM_PAGES * COMP_KEYS);
-        model_unlock();
-        check_layout(lr, "SetKeys (replace layout)", defs, NUM_PAGES * COMP_KEYS);
-    }
+    set_demo_layout((what & STRESS_REPLACE) != 0);     // replaces: every 1U key in view shows image 0
     screen_set_scroll(scroll);
-    vTaskDelay(pdMS_TO_TICKS(300));         // let both pages build
+    vTaskDelay(pdMS_TO_TICKS(STRESS_SETTLE_MS));
 
-    screen_get_stats(&r->st);
-    comp_get_stats(&r->cs);
+    comp_stats_t discard;
+    screen_get_stats(&r->st);       // resets the maxima and late counts
+    comp_get_stats(&discard);
     uint32_t frames0 = r->st.frames;
     uint32_t runs0 = s_script_runs;
     if (what & STRESS_SCRIPT)
@@ -411,32 +493,42 @@ static void stress_run(stress_result_t *r, const char *label, bool opaque, int s
     int first = scroll / SCREEN_PAGE_W;
     int last  = (scroll + SCREEN_PAGE_W - 1) / SCREEN_PAGE_W;
     int64_t t0 = esp_timer_get_time();
-    for (int round = 1; esp_timer_get_time() - t0 < 2000000; round++) {
+    for (int round = 1; esp_timer_get_time() - t0 < STRESS_CASE_US; round++) {
         if (what & STRESS_STATUS) {
             char text[16];
             snprintf(text, sizeof(text), "%d", round);
             status_set_right(text);
         }
-        if (what & STRESS_KEYS)
-            change_icons(first, last, round, flags);
+        if (what & STRESS_LAYOUT)
+            for (int p = first; p <= last && p < NUM_PAGES; p++)
+                s_page_layout[p] = s_page_layout[p] == LAYOUT_PLAIN ? LAYOUT_MIXED : LAYOUT_PLAIN;
+        if (what & STRESS_BUILD) {
+            timed_build(r, first, last, round);
+            continue;
+        }
+        if (what & (STRESS_KEYS | STRESS_LAYOUT))
+            set_keys(first, last, round, false, flags, "SetKeys (change)");
         if (what & STRESS_REPLACE) {
-            // ~1 MB/s, about what USB full speed can deliver: two icons a tick
-            replace_icon(round * 2);
-            replace_icon(round * 2 + 1);
+            // ~1 MB/s, about what USB full speed can deliver: two images a tick
+            replace_image(round * 2);
+            replace_image(round * 2 + 1);
             vTaskDelay(1);
         } else {
             vTaskDelay(pdMS_TO_TICKS(20));
         }
+        comp_add_stats(&r->cs);
     }
     int64_t elapsed = esp_timer_get_time() - t0;
     stress_script(false);
 
     screen_get_stats(&r->st);
-    comp_get_stats(&r->cs);
-    r->label        = label;
-    r->frames       = r->st.frames - frames0;
-    r->busy_percent = r->cs.busy_us * 100.0f / elapsed;
-    r->script_runs  = s_script_runs - runs0;
+    comp_add_stats(&r->cs);
+    r->label           = label;
+    r->frames          = r->st.frames - frames0;
+    r->frames_expected = (uint32_t)(elapsed * (DISPLAY_PIXEL_CLOCK_HZ / 1000000) /
+                                    (DISPLAY_H_TOTAL * DISPLAY_V_TOTAL));
+    r->busy_percent    = r->cs.busy_us * 100.0f / elapsed;
+    r->script_runs     = s_script_runs - runs0;
     if (r->script_runs) {
         vTaskDelay(pdMS_TO_TICKS(30));          // the churn task's last run is over: its stats are settled
         r->script_errors  = s_stress_script.Errors();
@@ -445,12 +537,23 @@ static void stress_run(stress_result_t *r, const char *label, bool opaque, int s
     }
 }
 
+// The deadline a gap's work must end by, from its fill's start
+#define STRESS_GAP_DEADLINE_US  (FILL_GAP_PERIOD_US - COMP_GAP_MARGIN_US)
+
 static void stress_log(const stress_result_t *r)
 {
-    ESP_LOGI(TAG, "stress %-28s fill max %4lu us, %3lu over | keys %3lu, max %4lu us, busy %3.0f%%%s",
+    const comp_stats_t &c = r->cs;
+    char build[64] = "";
+    if (r->builds)
+        snprintf(build, sizeof(build), " | build %.0f ms (max %.0f), %lu builds",
+                 r->build_us_sum / 1000.0f / r->builds, r->build_us_max / 1000.0f, (unsigned long)r->builds);
+    ESP_LOGI(TAG, "stress %-26s fill max %3lu us, %lu over | keys %3lu (max %5lu us), %3lu erases, busy %3.0f%% | "
+                  "%4lu B/gap, chunk max %2lu/%d us, gap end max %3lu/%d us, %lu late | frames %lu/%lu%s%s",
              r->label, (unsigned long)r->st.max_fill_us, (unsigned long)r->st.overruns,
-             (unsigned long)r->cs.keys, (unsigned long)r->cs.max_key_us, r->busy_percent,
-             late_fills(&r->st));
+             (unsigned long)c.keys, (unsigned long)c.max_key_us, (unsigned long)c.erases, r->busy_percent,
+             (unsigned long)(c.gaps ? c.bytes / c.gaps : 0), (unsigned long)c.max_chunk_us, COMP_CHUNK_WORST_US,
+             (unsigned long)c.max_gap_end_us, STRESS_GAP_DEADLINE_US, (unsigned long)c.late_gaps,
+             (unsigned long)r->frames, (unsigned long)r->frames_expected, build, fill_timing(&r->st));
     if (r->script_runs)
         ESP_LOGI(TAG, "       lua: %lu runs, %lu errors, heap peak %u KB, %u allocs refused (totals so far)",
                  (unsigned long)r->script_runs, (unsigned long)r->script_errors,
@@ -459,42 +562,49 @@ static void stress_log(const stress_result_t *r)
 
 static void run_stress(void)
 {
-    static stress_result_t results[16];
+    static stress_result_t results[20];
     int n = 0;
-    ESP_LOGI(TAG, "stress run starting (~35 s): touch, USB and Wi-Fi start after it, results at the end");
-    for (int opaque = 0; opaque < 2; opaque++) {
-        const char *rest  = opaque ? "opaque, at rest, incremental" : "at rest, incremental";
-        const char *restf = opaque ? "opaque, at rest, flush"       : "at rest, flush";
-        const char *mid   = opaque ? "opaque, mid-swipe, incr"      : "mid-swipe, incremental";
-        const char *midf  = opaque ? "opaque, mid-swipe, flush"     : "mid-swipe, flush";
-        stress_run(&results[n++], rest,  opaque, 0, 0);
-        stress_run(&results[n++], restf, opaque, 0, COMP_FLUSH);
-        stress_run(&results[n++], mid,   opaque, SCREEN_PAGE_W / 2, 0);
-        stress_run(&results[n++], midf,  opaque, SCREEN_PAGE_W / 2, COMP_FLUSH);
-    }
+    const int MID = SCREEN_PAGE_W / 2;      // pages 0 (plain) and 1 (mixed) in view
+    ESP_LOGI(TAG, "stress run starting (~50 s): touch, USB and Wi-Fi start after it, results at the end");
+
+    // Every key in view changing every 20 ms
+    stress_run(&results[n++], "at rest, incremental",   0, 0);
+    stress_run(&results[n++], "at rest, flush",         0, COMP_FLUSH);
+    stress_run(&results[n++], "spans at rest, incr",    SCREEN_PAGE_W, 0);
+    stress_run(&results[n++], "mid-swipe, incremental", MID, 0);
+    stress_run(&results[n++], "mid-swipe, flush",       MID, COMP_FLUSH);
+
+    // Whole-page builds, timed until on screen
+    stress_run(&results[n++], "page build, 1U",         0, COMP_FLUSH, STRESS_BUILD);
+    stress_run(&results[n++], "page build, spans",      SCREEN_PAGE_W, COMP_FLUSH, STRESS_BUILD);
+
+    // Layout changes: the black fill of uncovered areas (erases) each round
+    stress_run(&results[n++], "layout changes, at rest", 0, COMP_FLUSH, STRESS_LAYOUT);
+    stress_run(&results[n++], "layout changes, mid",    MID, 0, STRESS_LAYOUT);
 
     // Status bar redraws: on their own, then on top of the worst case above
-    stress_run(&results[n++], "status bar only, mid-swipe", true, SCREEN_PAGE_W / 2, 0, STRESS_STATUS);
-    stress_run(&results[n++], "opaque, mid, flush + status", true, SCREEN_PAGE_W / 2, COMP_FLUSH,
-               STRESS_KEYS | STRESS_STATUS);
+    stress_run(&results[n++], "status bar only, mid",   MID, 0, STRESS_STATUS);
+    stress_run(&results[n++], "mid, flush + status",    MID, COMP_FLUSH, STRESS_KEYS | STRESS_STATUS);
     status_set_right("");
 
     // Image uploads (replaces) writing PSRAM while the keys using them redraw
-    stress_run(&results[n++], "image replaces, at rest", true, 0, 0, STRESS_REPLACE);
-    stress_run(&results[n++], "image replaces, mid-swipe", true, SCREEN_PAGE_W / 2, 0, STRESS_REPLACE);
+    stress_run(&results[n++], "image replaces, at rest", 0, 0, STRESS_REPLACE);
+    stress_run(&results[n++], "image replaces, mid",    MID, 0, STRESS_REPLACE);
 
     // Lua writing PSRAM from core 0: alone, then with the compositor's worst case
-    stress_run(&results[n++], "lua churn, at rest", true, 0, 0, STRESS_SCRIPT);
-    stress_run(&results[n++], "lua churn, mid-swipe", true, SCREEN_PAGE_W / 2, 0, STRESS_SCRIPT);
-    stress_run(&results[n++], "lua + keys, mid, flush", true, SCREEN_PAGE_W / 2, COMP_FLUSH,
-               STRESS_KEYS | STRESS_SCRIPT);
+    stress_run(&results[n++], "lua churn, at rest",     0, 0, STRESS_SCRIPT);
+    stress_run(&results[n++], "lua churn, mid-swipe",   MID, 0, STRESS_SCRIPT);
+    stress_run(&results[n++], "lua + keys, mid, flush", MID, COMP_FLUSH, STRESS_KEYS | STRESS_SCRIPT);
     s_stress_script.Close();                    // give the Lua heap back
 
     screen_set_scroll(0);
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    ESP_LOGI(TAG, "---- stress: every key in view changes every 20 ms for 2 s; fill budget %d us ----",
-             DISPLAY_BOUNCE_BUDGET_US);
+    ESP_LOGI(TAG, "---- stress: fill budget %d us; compositor: ~%d B chunks, chunk worst case "
+                  "COMP_CHUNK_WORST_US %d us, margin COMP_GAP_MARGIN_US %d us (gap deadline %d us after the "
+                  "fill start), guard estimate COMP_GAP_BYTES_EST %d B/fill ----",
+             DISPLAY_BOUNCE_BUDGET_US, COMP_CHUNK_BYTES, COMP_CHUNK_WORST_US, COMP_GAP_MARGIN_US,
+             STRESS_GAP_DEADLINE_US, COMP_GAP_BYTES_EST);
     log_demo_load();
     for (int i = 0; i < n; i++) {
         stress_log(&results[i]);

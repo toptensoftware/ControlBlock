@@ -65,8 +65,9 @@ public:
     int      Activity() const  { return m_activity; }
     uint32_t DevicesOn() const { return m_devices_on; }
 
-    // A router key event (TOUCH_KEY_PRESS / RELEASE / CANCEL) at `time_ms`
-    void Key(int page, int key, int action, uint32_t time_ms);
+    // A router key event (TOUCH_KEY_PRESS / RELEASE / CANCEL) at `time_ms` for
+    // the key with `id` (the control "touch[id]")
+    void Key(uint16_t id, int action, uint32_t time_ms);
 
     // Once per frame: `long` presses that are due
     void Tick();
@@ -94,7 +95,7 @@ private:
     // While a script runs (it waits for the lists) a switch whose lists hold a `script` op
     // is refused: there is one Lua state.
     const char *SwitchActivity(int to);
-    uint32_t KeyLongPressMs(int page, int key) const;
+    uint32_t KeyLongPressMs(uint16_t id) const;
 
     static bool GestureHasBinding(const char *control, const char *event, void *ctx);
     static void GestureTrigger(const char *control, const char *event, void *ctx);

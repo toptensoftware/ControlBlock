@@ -18,12 +18,14 @@ ImageStore::~ImageStore()
     Reset();
 }
 
-void ImageStore::Init(const ImageStoreHost &host, uint32_t capacity, uint32_t width, uint32_t height)
+void ImageStore::Init(const ImageStoreHost &host, uint32_t capacity, uint32_t max_w, uint32_t max_h,
+                      bool require_opaque)
 {
-    m_host     = host;
-    m_capacity = capacity;
-    m_width    = width;
-    m_height   = height;
+    m_host           = host;
+    m_capacity       = capacity;
+    m_max_w          = max_w;
+    m_max_h          = max_h;
+    m_require_opaque = require_opaque;
 }
 
 // ===========================================================================
@@ -169,14 +171,23 @@ ImageResult ImageStore::Put(uint32_t id, const void *data, uint32_t size)
     return PutEnd();
 }
 
-// The whole image, bounds checked: right size, every row's runs valid.
-// Bytes after the image (padding) are allowed. Reads the data only, so it
-// adds no PSRAM writes.
+// The whole image, bounds checked: within the maximum size, every row's runs
+// valid, opaque if required. Bytes after the image (padding) are allowed.
+// Reads the data only, so it adds no PSRAM writes.
 bool ImageStore::CheckPixels(const void *px, uint32_t size, bool *opaque) const
 {
-    return check_image_header(px, size) &&
-           get_image_width(px) == m_width && get_image_height(px) == m_height &&
-           check_image(px, size, opaque);
+    if (!check_image_header(px, size))
+        return false;
+    uint32_t w = get_image_width(px), h = get_image_height(px);
+    if (w == 0 || h == 0 || w > m_max_w || h > m_max_h)
+        return false;
+    return check_image(px, size, opaque) && (*opaque || !m_require_opaque);
+}
+
+static ImageEntry *new_entry(uint32_t id, ImageData *data, const void *pixels, bool opaque, bool external)
+{
+    return new ImageEntry{ id, data, pixels, opaque, (uint16_t)get_image_width(pixels),
+                           (uint16_t)get_image_height(pixels), external, 0, true };
 }
 
 bool ImageStore::Check(ImageData *d) const
@@ -208,7 +219,7 @@ ImageResult ImageStore::AddExternal(uint32_t id, const void *pixels, uint32_t si
         if (lo < m_ext_lo) m_ext_lo = lo;
         if (hi > m_ext_hi) m_ext_hi = hi;
     }
-    m_live.Add(id, new ImageEntry{ id, nullptr, pixels, opaque, true, 0, true });
+    m_live.Add(id, new_entry(id, nullptr, pixels, opaque, true));
     return ImageResult::Ok;
 }
 
@@ -217,8 +228,7 @@ void ImageStore::Install(uint32_t id, ImageData *data)
 {
     ImageEntry *e = Find(id);
     if (!e) {
-        e = new ImageEntry{ id, data, data->Pixels(), data->Opaque(), false, 0, true };
-        m_live.Add(id, e);
+        m_live.Add(id, new_entry(id, data, data->Pixels(), data->Opaque(), false));
         return;
     }
 
@@ -228,6 +238,8 @@ void ImageStore::Install(uint32_t id, ImageData *data)
     e->data     = data;
     e->pixels   = data->Pixels();
     e->opaque   = data->Opaque();
+    e->width    = (uint16_t)get_image_width(e->pixels);
+    e->height   = (uint16_t)get_image_height(e->pixels);
     e->external = false;
     if (m_listener)
         m_listener->OnImageReplaced(e);

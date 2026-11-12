@@ -49,6 +49,6 @@ for (const [name, target] of Object.entries(targets))
 
     test(`${name}: Home resolves clean (custom SVGs found, scripts compile)`, async () => {
         const tree = await cleanLayout(layoutWith(ctx, { home: home(ctx) }));
-        assert.equal(tree.home.keys.filter(k => k.normalFg).length, 12);
+        assert.equal(tree.home.keys.filter(k => k.normal).length, 12);
     });
 }

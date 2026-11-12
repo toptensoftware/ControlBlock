@@ -1,5 +1,6 @@
 // Page compositor scenarios, one per behaviour in docs/page-compositor.md.
-// World (harness.h) checks the invariants on every frame start as well.
+// World (harness.h) checks the invariants on every frame start and step as
+// well (versions, flushes, layouts, pixels, gap writes and deadlines).
 
 #include "UnitTesting.h"
 #include "Core.h"
@@ -8,7 +9,7 @@
 using namespace SimpleLib;
 
 #define W SCREEN_PAGE_W
-#define ALL_KEYS 0x7FFF
+#define ALL_KEYS 0xFFFFFFFFu
 
 namespace
 {
@@ -28,40 +29,40 @@ namespace
     void Boot(World &w, int page)
     {
         w.scroll = page * W;
-        w.RunFrames(10);
+        w.RunFrames(16);
         w.CheckSettledOn(page);
+    }
+
+    // Records of buffer `b` that match buffer `other`'s at the same rect
+    int SameKeys(World &w, int b, int other)
+    {
+        int same = 0;
+        for (int k = 0; k < w.comp.RecordCount(b); k++) {
+            const CompRecord &r = w.comp.GetRecord(b, k);
+            for (int j = 0; j < w.comp.RecordCount(other); j++) {
+                const CompRecord &o = w.comp.GetRecord(other, j);
+                same += r.known && o.known && r.rect.x == o.rect.x && r.rect.y == o.rect.y &&
+                        r.rect.w == o.rect.w && r.rect.h == o.rect.h && r.img == o.img;
+            }
+        }
+        return same;
     }
 }
 
-Fact("Compositor Key Grid Has Equal Gaps And Is Centred")
+Fact("Compositor Key Grid Cells Abut And The Block Is Centred")
 {
-    // Same pitch across and down
-    int pitch_x = COMP_KEY_X(1) - COMP_KEY_X(0);
-    int pitch_y = COMP_KEY_Y(COMP_COLS) - COMP_KEY_Y(0);
-    Assert(pitch_x == pitch_y);
-    Assert(pitch_x >= COMP_KEY_SIZE);
-
-    // Centred in the page area, so the margins at the left and right (the
-    // gap between pages) are equal, and likewise top and bottom
-    int last = COMP_KEYS - 1;
-    Assert(COMP_KEY_X(0) == SCREEN_PAGE_W - (COMP_KEY_X(COMP_COLS - 1) + COMP_KEY_SIZE));
-    Assert(COMP_KEY_Y(0) == SCREEN_PAGE_H - (COMP_KEY_Y(last) + COMP_KEY_SIZE));
-
-    // The gap fills the page area's height: about half a gap above and below
-    // (within rounding), so the space to the bars matches the space between
-    // keys, and it's the largest gap that does
-    int gap = pitch_y - COMP_KEY_SIZE;
-    Assert(COMP_KEY_Y(0) * 2 >= gap);
-    Assert(COMP_KEY_Y(0) * 2 <= gap + COMP_ROWS);
-    Assert(COMP_ROWS * COMP_KEY_SIZE + COMP_ROWS * (gap + 1) > SCREEN_PAGE_H);
-
-    // Every cell on the grid, inside the page
-    for (int k = 0; k < COMP_KEYS; k++) {
-        Assert(COMP_KEY_X(k) == COMP_KEY_X(0) + (k % COMP_COLS) * pitch_x);
-        Assert(COMP_KEY_Y(k) == COMP_KEY_Y(0) + (k / COMP_COLS) * pitch_y);
-        Assert(COMP_KEY_X(k) >= 0 && COMP_KEY_X(k) + COMP_KEY_SIZE <= SCREEN_PAGE_W);
-        Assert(COMP_KEY_Y(k) >= 0 && COMP_KEY_Y(k) + COMP_KEY_SIZE <= SCREEN_PAGE_H);
+    comp_page_t page;
+    MakeLayout(LAYOUT_1U, &page);
+    Assert(page.count == KEY_GRID_COLS * KEY_GRID_ROWS);
+    for (int k = 0; k < page.count; k++) {
+        KeyPixelRect r = page.keys[k].rect;
+        Assert(r.w == KEY_CELL && r.h == KEY_CELL);
+        Assert(r.x == KEY_GRID_X0 + (k % KEY_GRID_COLS) * KEY_CELL);    // edge to edge
+        Assert(r.y == KEY_GRID_Y0 + (k / KEY_GRID_COLS) * KEY_CELL);
     }
+    // Centred in the page area: equal margins left and right, top and bottom
+    Assert(KEY_GRID_X0 * 2 + KEY_GRID_W == SCREEN_PAGE_W);
+    Assert(KEY_GRID_Y0 * 2 + KEY_GRID_H == SCREEN_PAGE_H);
 }
 
 Fact("Compositor Boot Shows Background Then First Page")
@@ -72,25 +73,116 @@ Fact("Compositor Boot Shows Background Then First Page")
     Assert(w.view_count == 0);          // nothing drawn yet: background
     Assert(w.view.px[0] == nullptr && w.view.px[1] == nullptr);
 
-    // A full page: each key rendered, then copied in 32-row slices after
-    // fills, about 5 fills a key: ~2.5 frames
-    int frames = RunUntil(w, 6, [&] { return w.ShowsModel(0); });
-    Assert(frames <= 4);
-    w.CheckSettledOn(0);
+    // A full page of 1U keys, ~41 KB each, in ~1 KB chunks against each
+    // gap's deadline: ~5 chunks a gap
+    int frames = RunUntil(w, 12, [&] { return w.ShowsModel(0); });
+    Assert(frames <= 8);
+    w.CheckSettledOn(0);                // the margins are background too
+    Assert(w.comp.TotalErases() == 0);  // the buffers start out background
 }
 
 Fact("Compositor Writes Page Buffers Only In Fill Gaps")
 {
-    World w(3);
+    World w(3, 1, true);                // 1U, 2U and sparse pages
     w.check_gap_writes = true;
-    Boot(w, 0);                         // one page in view: 32-row slices
+    Boot(w, 0);                         // one page in view
     w.scroll = 300;                     // page 1 built during the hold
-    w.RunFrames(6);
+    w.RunFrames(10);
     Assert(w.view_count == 2);
-    w.ChangeKeys(0, ALL_KEYS, 0);       // two pages in view: 16-row slices
+    w.ChangeKeys(0, ALL_KEYS, 0);       // two pages in view
     w.ChangeKeys(1, 0x0F0F, COMP_FLUSH);
-    RunUntil(w, 20, [&] { return w.ShowsModel(0) && w.ShowsModel(1); });
+    RunUntil(w, 40, [&] { return w.ShowsModel(0) && w.ShowsModel(1); });
     Assert(w.ShowsModel(0) && w.ShowsModel(1));
+    w.scroll = 2 * W - 300;             // the sparse page: areas to fill
+    RunUntil(w, 40, [&] { return w.ShowsModel(1) && w.ShowsModel(2); });
+    Assert(w.ShowsModel(1) && w.ShowsModel(2));
+}
+
+Fact("Compositor Chunks Stop At The Gap Deadline")
+{
+    // ~5 chunks fit between a 150 us fill's end and the deadline (fill start
+    // + period - margin, the last chunk starting a worst case before it).
+    // World checks every step against the deadline.
+    World w(1);
+    w.RunFrames(3);
+    int expect = (CHUNK_US - COMP_GAP_MARGIN_US - COMP_CHUNK_WORST_US - w.fill_one_us) / w.chunk_cost_us + 1;
+    Assert((int)w.max_chunks_per_gap == expect);
+
+    // Slower chunks: fewer a gap
+    World slow(1);
+    slow.chunk_cost_us = 150;
+    slow.RunFrames(3);
+    Assert((int)slow.max_chunks_per_gap == (CHUNK_US - COMP_GAP_MARGIN_US - COMP_CHUNK_WORST_US - slow.fill_one_us) / 150 + 1);
+}
+
+Fact("Compositor Stats Report Chunks Gaps Bytes And Deadline Overruns")
+{
+    // A full 1U page from boot: every chunk, gap and byte counted, the
+    // latest end of a gap's work against the deadline
+    World w(1);
+    comp_stats_t st;
+    w.comp.GetStats(&st);
+    RunUntil(w, 12, [&] { return w.ShowsModel(0); });
+    w.comp.GetStats(&st);
+    Assert(st.keys >= KEY_GRID_SLOTS);                          // (and any idle copy)
+    Assert(st.chunks == w.comp.TotalChunks());
+    // All 1U, no erases: every chunk is ~COMP_CHUNK_BYTES of whole rows (3 of 144)
+    const uint32_t chunk_bytes = COMP_CHUNK_BYTES / (KEY_CELL * 2) * KEY_CELL * 2;
+    Assert(st.bytes == st.chunks * chunk_bytes);
+    Assert(st.bytes >= st.keys * KEY_CELL * KEY_CELL * sizeof(uint16_t));
+    Assert(st.gaps > 0 && st.gaps <= st.chunks);
+    Assert(st.gaps * w.max_chunks_per_gap >= st.chunks);       // gaps counted once each, not per Step
+    Assert(st.max_chunk_us == (uint32_t)w.chunk_cost_us);
+    Assert(st.max_gap_end_us > (uint32_t)w.fill_one_us);
+    Assert(st.max_gap_end_us <= CHUNK_US - COMP_GAP_MARGIN_US);
+    Assert(st.late_gaps == 0);
+    Assert(st.erases == 0);
+
+    // Read once: the counters start again
+    w.comp.GetStats(&st);
+    Assert(st.chunks == 0 && st.gaps == 0 && st.bytes == 0 && st.max_chunk_us == 0 && st.max_gap_end_us == 0);
+
+    // Chunks slower than COMP_CHUNK_WORST_US end past the deadline: counted
+    World slow(1);
+    slow.chunk_cost_us = COMP_CHUNK_WORST_US + 65;
+    slow.RunFrames(3);
+    slow.comp.GetStats(&st);
+    Assert(st.late_gaps > 0);
+    Assert(st.max_chunk_us == (uint32_t)slow.chunk_cost_us);
+    Assert(st.max_gap_end_us > CHUNK_US - COMP_GAP_MARGIN_US);
+}
+
+Fact("Compositor Stats Count Erases")
+{
+    // Swiping onto a differently laid out page fills the uncovered areas
+    World w(3, 1, true);
+    Boot(w, 0);
+    comp_stats_t st;
+    w.comp.GetStats(&st);
+    uint32_t erases0 = w.comp.TotalErases();
+    w.scroll = 2 * W;                   // the sparse page
+    RunUntil(w, 60, [&] { return w.ShowsModel(2); });
+    w.RunFrames(16);
+    w.comp.GetStats(&st);
+    Assert(w.comp.TotalErases() > erases0);
+    Assert(st.erases == w.comp.TotalErases() - erases0);
+}
+
+Fact("Compositor Gap Reached Late Does Less")
+{
+    // A long fill (two pages in view) or a task that gets to the gap late
+    // leaves less of it
+    World w(1);
+    w.gap_delay_us = 200;
+    w.RunFrames(3);
+    Assert((int)w.max_chunks_per_gap == (CHUNK_US - COMP_GAP_MARGIN_US - COMP_CHUNK_WORST_US - w.fill_one_us - 200) / w.chunk_cost_us + 1);
+
+    // Too late for even one chunk: nothing is written at all
+    World late(1);
+    late.gap_delay_us = CHUNK_US - COMP_GAP_MARGIN_US - COMP_CHUNK_WORST_US - late.fill_one_us + 1;
+    late.RunFrames(5);
+    Assert(late.comp.TotalChunks() == 0);
+    Assert(!late.ShowsModel(0));
 }
 
 Fact("Compositor Idle Work Makes A Back Copy Of The Front")
@@ -99,14 +191,9 @@ Fact("Compositor Idle Work Makes A Back Copy Of The Front")
     Boot(w, 0);
     int front = w.ShownBuffer(0);
     int copies = 0;
-    for (int b = 0; b < COMP_BUFFERS; b++) {
-        if (b == front)
-            continue;
-        bool same = true;
-        for (int k = 0; k < COMP_KEYS; k++)
-            same &= w.comp.GetRecord(b, k).bg == w.model[0][k].bg && w.comp.GetRecord(b, k).fg == w.model[0][k].fg;
-        copies += same;
-    }
+    for (int b = 0; b < COMP_BUFFERS; b++)
+        if (b != front && w.Matches(b, 0))
+            copies++;
     Assert(copies == 1);
 }
 
@@ -120,8 +207,8 @@ Fact("Compositor Swipe Start Holds Until The Next Page Is Ready")
     w.RunFrame();
     Assert(w.AtRestOn(0));              // held: page 0 at rest, ignoring the scroll
 
-    int frames = RunUntil(w, 6, [&] { return w.view_count == 2; });
-    Assert(frames <= 4);                // a full page, ~2.5 frames, after the slop
+    int frames = RunUntil(w, 12, [&] { return w.view_count == 2; });
+    Assert(frames <= 8);                // a full page after the slop
     Assert(w.view.offset == 40);        // then it jumps to the finger
     Assert(w.ShowsModel(0) && w.ShowsModel(1));
 }
@@ -131,9 +218,9 @@ Fact("Compositor Swipe Back To The Page Just Left Needs No Drawing")
     World w(3);
     Boot(w, 0);
     w.scroll = 400;
-    w.RunFrames(4);
-    w.scroll = W;                       // settle on page 1
     w.RunFrames(10);
+    w.scroll = W;                       // settle on page 1
+    w.RunFrames(16);
     w.CheckSettledOn(1);
 
     // Page 0 is still in a free buffer, unchanged
@@ -179,9 +266,9 @@ Fact("Compositor Incremental Update Shows Over Several Frames")
 {
     World w(3);
     Boot(w, 0);
-    w.ChangeKeys(0, ALL_KEYS, 0);       // ~6 keys a frame, each drawn twice
-    int frames = RunUntil(w, 20, [&] { return w.ShowsModel(0); });
-    Assert(frames <= 10);
+    w.ChangeKeys(0, ALL_KEYS, 0);       // each key drawn twice
+    int frames = RunUntil(w, 30, [&] { return w.ShowsModel(0); });
+    Assert(frames <= 16);
     Assert(w.partial_frames > 0);       // some keys showed before others
 }
 
@@ -191,7 +278,7 @@ Fact("Compositor Flush Shows Every Key In One Frame")
     Boot(w, 0);
     w.ChangeKeys(0, ALL_KEYS, COMP_FLUSH);
     int frames = RunUntil(w, 20, [&] { return w.ShowsModel(0); });
-    Assert(frames <= 5);
+    Assert(frames <= 8);
     Assert(w.partial_frames == 0);      // World also checks this every frame
 }
 
@@ -199,13 +286,12 @@ Fact("Compositor Swiping Away Drops The Job And Keeps Its Work")
 {
     World w(3);
     Boot(w, 0);
-    w.key_cost_us = 5000;               // slow: page 1 takes several frames
+    w.chunk_cost_us = 300;              // slow: page 1 takes many frames
 
     w.scroll = 40;
     w.RunFrame();
     w.RunFrame();
     Assert(w.comp.JobPage() == 1);
-    uint32_t drawn_first = w.comp.TotalKeys();
 
     // Back to page 0 before page 1 is ready
     w.scroll = 0;
@@ -214,12 +300,12 @@ Fact("Compositor Swiping Away Drops The Job And Keeps Its Work")
     Assert(w.AtRestOn(0));
 
     // Coming back finishes page 1 from where it got to
+    w.chunk_cost_us = 65;
     w.scroll = 40;
     uint32_t before = w.comp.TotalKeys();
-    RunUntil(w, 10, [&] { return w.view_count == 2; });
+    RunUntil(w, 12, [&] { return w.view_count == 2; });
     Assert(w.ShowsModel(1));
     Assert(w.comp.TotalKeys() - before < 15);
-    (void)drawn_first;
 }
 
 Fact("Compositor Direction Reversal Holds The Page")
@@ -227,13 +313,13 @@ Fact("Compositor Direction Reversal Holds The Page")
     World w(3);
     Boot(w, 1);
     w.scroll = W + 40;                  // towards page 2
-    w.RunFrames(6);
+    w.RunFrames(10);
     Assert(w.view_count == 2);
 
     w.scroll = W - 40;                  // back past page 1 towards page 0
     w.RunFrame();
     Assert(w.AtRestOn(1));              // held at page 1 until page 0 is ready
-    RunUntil(w, 6, [&] { return w.view_count == 2; });
+    RunUntil(w, 12, [&] { return w.view_count == 2; });
     Assert(w.ShowsModel(0) && w.ShowsModel(1));
 }
 
@@ -242,26 +328,25 @@ Fact("Compositor Updates Both Pages Mid Swipe")
     World w(3);
     Boot(w, 0);
     w.scroll = 300;
-    w.RunFrames(4);
+    w.RunFrames(10);
     w.ChangeKeys(0, 0x00F0, 0);
     w.ChangeKeys(1, 0x0F00, COMP_FLUSH);
-    // Slow but allowed: with two pages in view slices are 16 rows (~10 fills
-    // a key), and page 1's only free buffer holds page 0, so all 15 of its
-    // keys are redrawn. Measured: 9 frames.
-    int frames = RunUntil(w, 20, [&] { return w.ShowsModel(0) && w.ShowsModel(1); });
-    Assert(frames <= 12);
+    // Slow but allowed: page 1's only free buffer holds page 0, so all 15 of
+    // its keys are redrawn
+    int frames = RunUntil(w, 30, [&] { return w.ShowsModel(0) && w.ShowsModel(1); });
+    Assert(frames <= 16);
 }
 
 Fact("Compositor Reload Keeps The Old Layout Until The New Page Is Complete")
 {
     World w(3);
     Boot(w, 1);
-    w.key_cost_us = 3000;
+    w.chunk_cost_us = 200;
 
     w.Reload();
     w.scroll = 0;                       // the client resets to the start page
     bool seen_new = false;
-    for (int i = 0; i < 20 && !seen_new; i++) {
+    for (int i = 0; i < 40 && !seen_new; i++) {
         w.RunFrame();
         Assert(w.view_count > 0);       // never a blank frame
         seen_new = w.ShowsModel(0);
@@ -271,7 +356,22 @@ Fact("Compositor Reload Keeps The Old Layout Until The New Page Is Complete")
         }
     }
     Assert(seen_new);
-    w.RunFrames(5);
+    w.chunk_cost_us = 65;
+    w.RunFrames(16);
+    w.CheckSettledOn(0);
+}
+
+Fact("Compositor Reload Abandons A Key Being Drawn")
+{
+    World w(1);
+    Boot(w, 0);
+    w.chunk_cost_us = 400;              // one chunk a gap
+    w.ChangeKeys(0, 1, COMP_FLUSH);
+    w.RunFrame();
+    Assert(w.comp.DrawingBuffer() >= 0);
+    w.Reload();                         // done at once (World checks nothing is referenced)
+    w.chunk_cost_us = 65;
+    w.RunFrames(16);
     w.CheckSettledOn(0);
 }
 
@@ -279,12 +379,76 @@ Fact("Compositor Change During A Build Is Picked Up Next")
 {
     World w(3);
     Boot(w, 0);
-    w.key_cost_us = 4000;
+    w.chunk_cost_us = 300;
     w.scroll = 40;
     w.RunFrame();                       // building page 1
     w.ChangeKeys(1, 0x0003, 0);         // after its snapshot
-    w.RunFrames(20);
+    w.chunk_cost_us = 65;
+    w.RunFrames(30);
     Assert(w.ShowsModel(1));
+}
+
+// ---------------------------------------------------------------------------
+// Layouts: pages with different rects share the buffers, so areas a new
+// layout doesn't cover are filled with background, only when it changes
+
+Fact("Compositor Swipe To A Page With Another Layout Fills Uncovered Areas")
+{
+    World w(3, 1, true);                // page 0: 1U, page 1: 2U, page 2: sparse
+    Boot(w, 0);
+    Assert(w.comp.TotalErases() == 0);
+
+    w.scroll = 2 * W;                   // jump to the sparse page: its holes held 1U keys
+    w.RunFrames(16);
+    w.CheckSettledOn(2);
+    Assert(w.comp.TotalErases() > 0);
+
+    w.scroll = W;                       // and the 2U page, which covers the grid
+    w.RunFrames(16);
+    w.CheckSettledOn(1);
+}
+
+Fact("Compositor Fills Uncovered Areas Only When The Layout Changes")
+{
+    World w(1, 1, true);
+    w.ChangeLayout(0, LAYOUT_SPARSE, COMP_FLUSH);
+    Boot(w, 0);
+    uint32_t erases = w.comp.TotalErases();
+    Assert(erases == 0);                // the buffers start out background
+
+    // Key changes in the same layout: no filling
+    for (int i = 0; i < 4; i++) {
+        w.ChangeKeys(0, ALL_KEYS, i & 1 ? COMP_FLUSH : 0);
+        w.RunFrames(16);
+        w.CheckSettledOn(0);
+    }
+    Assert(w.comp.TotalErases() == erases);
+
+    // A new layout leaves the old rects to fill, in every buffer that drew them
+    w.ChangeLayout(0, LAYOUT_1U, COMP_FLUSH);
+    w.RunFrames(16);
+    w.CheckSettledOn(0);
+    w.ChangeLayout(0, LAYOUT_SPARSE, COMP_FLUSH);
+    w.RunFrames(16);
+    w.CheckSettledOn(0);
+    Assert(w.comp.TotalErases() > erases);
+    erases = w.comp.TotalErases();
+    w.ChangeKeys(0, ALL_KEYS, 0);
+    w.RunFrames(16);
+    w.CheckSettledOn(0);
+    Assert(w.comp.TotalErases() == erases);
+}
+
+Fact("Compositor Layout Change Flushed Shows In One Frame")
+{
+    World w(2, 1, true);
+    Boot(w, 0);
+    w.ChangeLayout(0, LAYOUT_2U, COMP_FLUSH);
+    int frames = RunUntil(w, 20, [&] { return w.ShowsModel(0); });
+    Assert(frames <= 8);
+    Assert(w.partial_frames == 0);
+    w.RunFrames(16);
+    w.CheckSettledOn(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +459,7 @@ Fact("Compositor Sweep Forgets Records Of Retired Images")
     World w(2);
     Boot(w, 0);                         // the front and an idle copy hold page 0's images
     w.ChangeKeys(0, 0x0007, 0);
-    w.RunFrames(6);
+    w.RunFrames(10);
     Assert(w.ShowsModel(0));
 
     // Keys 0-2's old images are now only in records (the old front, the copy)
@@ -310,7 +474,7 @@ Fact("Compositor Sweep Forgets Records Of Retired Images")
     // New images reuse the freed addresses: the forgotten records mustn't
     // match them
     w.ChangeKeys(0, 0x0007, 0);
-    w.RunFrames(8);
+    w.RunFrames(12);
     w.CheckSettledOn(0);
 }
 
@@ -318,7 +482,7 @@ Fact("Compositor Sweep Drops A Job Whose Snapshot Uses A Retired Image")
 {
     World w(2);
     Boot(w, 0);
-    w.key_cost_us = 4000;               // slow: the job takes a few frames
+    w.chunk_cost_us = 300;              // slow: the job takes a few frames
     w.ChangeKeys(0, ALL_KEYS, COMP_FLUSH);
     w.RunFrame();
     Assert(w.comp.JobPage() == 0);
@@ -330,8 +494,30 @@ Fact("Compositor Sweep Drops A Job Whose Snapshot Uses A Retired Image")
     w.RunFrames(2);
     Assert(w.RetiredPending() == 0);    // swept and freed (checked unreferenced)
 
-    w.key_cost_us = 600;
-    w.RunFrames(10);
+    w.chunk_cost_us = 65;
+    w.RunFrames(16);
+    w.CheckSettledOn(0);
+}
+
+Fact("Compositor Sweep Abandons A Key Being Drawn From A Retired Image")
+{
+    World w(1);
+    Boot(w, 0);
+    w.chunk_cost_us = 400;              // one chunk a gap: a key takes ~1.5 frames
+    w.ChangeKeys(0, 1 << 4, COMP_FLUSH);
+    w.RunFrame();
+    const void *drawing = w.comp.DrawingImage();
+    Assert(drawing != nullptr);
+
+    // Replaced and retired mid-draw: the sweep stops the draw
+    w.ChangeKeys(0, 1 << 4, COMP_FLUSH);
+    w.RetireUnused();
+    w.RunFrame();
+    Assert(w.RetiredPending() == 0);    // World checked the drawing key isn't it
+    Assert(w.comp.DrawingImage() != drawing);
+
+    w.chunk_cost_us = 65;
+    w.RunFrames(16);
     w.CheckSettledOn(0);
 }
 
@@ -339,14 +525,16 @@ Fact("Compositor Sweep Of A Shown Key Redraws It")
 {
     World w(1);
     Boot(w, 0);
-    w.key_cost_us = 20000;              // the update can't start before the sweep
+    // Every gap reached too late for a chunk: the update can't be drawn
+    // before the sweep
+    w.gap_delay_us = CHUNK_US - COMP_GAP_MARGIN_US - COMP_CHUNK_WORST_US - w.fill_one_us + 1;
     w.ChangeKeys(0, 1 << 4, 0);
-    w.RetireUnused();                   // key 4's old images are still on screen
+    w.RetireUnused();                   // key 4's old image is still on screen
     w.RunFrames(3);
     Assert(w.RetiredPending() == 0);
 
-    w.key_cost_us = 600;
-    w.RunFrames(10);
+    w.gap_delay_us = 0;
+    w.RunFrames(16);
     w.CheckSettledOn(0);
 }
 
@@ -354,54 +542,39 @@ Fact("Compositor Keys With No Images Draw Background")
 {
     World w(1);
     Boot(w, 0);
-    for (int k = 0; k < COMP_KEYS; k++)
-        w.SetKey(0, k, nullptr, nullptr);
+    for (int k = 0; k < w.model[0].count; k++)
+        w.SetKey(0, k, nullptr);
     w.comp.PageChanged(0, COMP_FLUSH);
-    w.RunFrames(4);
+    w.RunFrames(10);
+    w.CheckSettledOn(0);
     int b = w.ShownBuffer(0);
-    for (int k = 0; k < COMP_KEYS; k++) {
-        const uint16_t *cell = w.comp.GetBuffer(b) + COMP_KEY_Y(k) * W + COMP_KEY_X(k);
-        for (int y = 0; y < COMP_KEY_SIZE; y++)
-            for (int x = 0; x < COMP_KEY_SIZE; x++)
-                Assert(cell[y * W + x] == COMP_BACKGROUND);
-    }
+    for (int i = 0; i < W * SCREEN_PAGE_H; i++)
+        Assert(w.comp.GetBuffer(b)[i] == COMP_BACKGROUND);
 }
 
-Fact("Compositor Image Is Opaque Only For Faces That Cover The Cell")
+Fact("Compositor Image That Does Not Fit Its Rect Draws Background")
 {
+    // The client gives images the size of their rect; one that isn't (here
+    // a 1U key's header claiming a missing row) is drawn as background, not
+    // past the rect
     TestImages &ti = TestImages::Get();
-    for (int f = 0; f < TEST_KEYS_FACES; f++) {
-        Assert(comp_image_is_opaque(ti.Face(f, true), ti.Size(ti.Face(f, true))));
-        Assert(!comp_image_is_opaque(ti.Face(f, false), ti.Size(ti.Face(f, false))));
-    }
-    Assert(!comp_image_is_opaque(ti.Icon(0), ti.Size(ti.Icon(0))));
-
-    // Truncated or garbage data isn't opaque (or a crash)
-    Assert(!comp_image_is_opaque(ti.Face(0, true), 16));
-    static const uint32_t junk[64] = { 0x12345678 };
-    Assert(!comp_image_is_opaque(junk, sizeof(junk)));
-}
-
-Fact("Compositor Opaque Face Skips The Clear And Draws Correctly")
-{
-    TestImages &ti = TestImages::Get();
-    World w(1);
-    Boot(w, 0);
-
-    // Transparent face -> opaque face (no clear) -> transparent again (must
-    // clear all 128 rows the opaque face covered) -> no images at all
-    for (int round = 0; round < 3; round++) {
-        for (int k = 0; k < COMP_KEYS; k++) {
-            if (round == 0)
-                w.SetKey(0, k, ti.Face(k % 4, true), ti.Icon(k % ti.IconCount()), COMP_KEY_BG_OPAQUE);
-            else if (round == 1)
-                w.SetKey(0, k, ti.Face(k % 4, false), (k & 1) ? ti.Icon(k % ti.IconCount()) : nullptr);
-            else
-                w.SetKey(0, k, (k & 1) ? nullptr : ti.Face(k % 4, true), ti.Icon(k % ti.IconCount()),
-                         (k & 1) ? 0 : COMP_KEY_BG_OPAQUE);
-        }
+    size_t size = ti.Size(ti.Key1U(0));
+    uint8_t *bad = (uint8_t *)malloc(size);     // outlives the World
+    memcpy(bad, ti.Key1U(0), size);
+    ((IMAGE_RLE *)bad)->rowCount--;
+    {
+        World w(1);
+        Boot(w, 0);
+        w.SetKey(0, 2, bad);
         w.comp.PageChanged(0, COMP_FLUSH);
-        w.RunFrames(6);
-        w.CheckSettledOn(0);
+        w.RunFrames(10);
+        w.CheckSettledOn(0);            // the oracle knows it too
+        int b = w.ShownBuffer(0);
+        Assert(w.comp.GetRecord(b, 2).img == bad);
+        KeyPixelRect r = w.model[0].keys[2].rect;
+        for (int y = r.y; y < r.y + r.h; y++)
+            for (int x = r.x; x < r.x + r.w; x++)
+                Assert(w.comp.GetBuffer(b)[y * W + x] == COMP_BACKGROUND);
     }
+    free(bad);
 }

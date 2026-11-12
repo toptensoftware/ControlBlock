@@ -1,4 +1,4 @@
-// Stage 2: image definitions -> canonical rle565 Buffers.
+// Stage 2: each key's image specs -> canonical rle565 Buffers.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ok, fakeRenderer } from "./helpers.js";
@@ -6,63 +6,72 @@ import { renderImages } from "../../src/bake/render.js";
 
 const layout = (keys, extra = {}) => ({ version: 1, ...extra, home: { keys } });
 
-test("every image definition becomes a Buffer; absent images stay null", async () => {
+test("every image spec becomes a Buffer; a key with no look stays without images", async () => {
     const tree = ok(layout([{ color: "red", icon: "#a" }, {}]));
     await renderImages(tree, fakeRenderer());
     const k = tree.home.keys[0];
-    for (const f of ["normalBg", "normalFg", "pressedBg", "pressedFg"])
+    for (const f of ["normal", "pressed"])
         assert.ok(Buffer.isBuffer(k[f]), f);
-    assert.equal(tree.home.keys[1].normalBg, null);
-    assert.equal(tree.home.keys[14].pressedFg, null);
+    assert.equal(tree.home.keys[1].normal, null);
+    assert.equal(tree.home.keys[1].pressed, null);
 });
 
-test("identical definitions render once and share one Buffer object", async () => {
+test("identical specs render once and share one Buffer object", async () => {
     const tree = ok(layout([{ color: "red", icon: "#a" }, { color: "red", icon: "#a" }, { color: "red", icon: "#b" }]));
     const render = fakeRenderer();
     await renderImages(tree, render);
     const [a, b, c] = tree.home.keys;
-    assert.strictEqual(a.normalBg, b.normalBg);
-    assert.strictEqual(a.pressedFg, b.pressedFg);
-    assert.strictEqual(a.normalBg, c.normalBg);       // same face
-    assert.notStrictEqual(a.normalFg, c.normalFg);    // different icon
-    // icon-only look: pressed foreground is the same definition as the normal one
-    assert.strictEqual(a.normalFg, a.pressedFg);
-    // distinct definitions: face, pressed face, icon a, icon b = 4 renders
+    assert.strictEqual(a.normal, b.normal);
+    assert.strictEqual(a.pressed, b.pressed);
+    assert.notStrictEqual(a.normal, c.normal);        // different icon
+    assert.notStrictEqual(a.normal, a.pressed);       // the pressed face is darker
+    // distinct specs: a normal, a pressed, c normal, c pressed = 4 renders
     assert.equal(render.calls.length, 4);
 });
 
-test("different definitions that encode to the same bytes still share one Buffer object", async () => {
-    const tree = ok(layout([{ icon: "#a" }, { icon: "#b" }]));
-    // a renderer that ignores the definition
-    await renderImages(tree, async () => Buffer.from([1, 2, 3, 4, 5]));
-    const [a, b] = tree.home.keys;
-    assert.strictEqual(a.normalFg, b.normalFg);
+test("the renderer gets the spec: the key's pixel size and its layers", async () => {
+    const tree = ok(layout([{ w: 2, color: "red" }]));
+    const render = fakeRenderer();
+    await renderImages(tree, render);
+    assert.deepEqual(render.calls.map(s => [s.width, s.height, s.layers.length]), [[288, 144, 1], [288, 144, 1]]);
 });
 
-test("activity page keys are rendered too", async () => {
-    const tree = ok({ version: 1, home: {}, activities: { A: { pages: [{ keys: [{ icon: "#a" }] }, { keys: [{ icon: "#b" }] }] } } });
+test("different specs that encode to the same bytes still share one Buffer object", async () => {
+    const tree = ok(layout([{ icon: "#a" }, { icon: "#b" }]));
+    // a renderer that ignores the spec
+    await renderImages(tree, async () => Buffer.from([1, 2, 3, 4, 5]));
+    const [a, b] = tree.home.keys;
+    assert.strictEqual(a.normal, b.normal);
+});
+
+test("activity page keys and group keys are rendered too", async () => {
+    const tree = ok({ version: 1, home: { keys: [{ w: 2, color: "red", keys: [{ label: "-" }, { x: 1, label: "+" }] }] },
+                      activities: { A: { pages: [{ keys: [{ icon: "#a" }] }, { keys: [{ icon: "#b" }] }] } } });
     await renderImages(tree, fakeRenderer());
-    assert.ok(Buffer.isBuffer(tree.activities[0].pages[0].keys[0].normalFg));
-    assert.ok(Buffer.isBuffer(tree.activities[0].pages[1].keys[0].normalFg));
+    assert.ok(Buffer.isBuffer(tree.home.keys[1].pressed));
+    assert.ok(Buffer.isBuffer(tree.activities[0].pages[0].keys[0].normal));
+    assert.ok(Buffer.isBuffer(tree.activities[0].pages[1].keys[0].normal));
 });
 
 test("renders run concurrently, up to the limit", async () => {
     const tree = ok(layout(Array.from({ length: 10 }, (_, i) => ({ icon: "#i" + i }))));
     let active = 0, peak = 0;
-    const render = async def => {
+    const render = async spec => {
         active++; peak = Math.max(peak, active);
         await new Promise(r => setTimeout(r, 5));
         active--;
-        return Buffer.from(JSON.stringify(def));
+        return Buffer.from(JSON.stringify(spec));
     };
     await renderImages(tree, render, { concurrency: 3 });
     assert.ok(peak > 1 && peak <= 3, `peak ${peak}`);
 });
 
-test("a render failure names the key and layer", async () => {
-    const tree = ok(layout([{}, { icon: "#a" }]));
+test("a render failure names the key (its path in the layout) and the state", async () => {
+    const tree = ok(layout([{}, null, { icon: "#a" }]));
     await assert.rejects(renderImages(tree, async () => { throw new Error("no such icon"); }),
-        /home\.keys\[1\]\.normalFg.*no such icon/);
+        /home\.keys\[2\]\.normal.*no such icon/);
+    const group = ok(layout([{ w: 2, keys: [{}, { x: 1, icon: "#a" }] }]));
+    await assert.rejects(renderImages(group, async () => { throw new Error("bad"); }), /home\.keys\[0\]\.keys\[1\]\.normal.*bad/);
 });
 
 test("the renderer must return bytes", async () => {

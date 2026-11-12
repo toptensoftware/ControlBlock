@@ -10,8 +10,9 @@
 #include "key_layout.h"
 
 // Register each distinct Home image with `store` as an external image (ID =
-// its offset in the blob, pointer = blob + offset) and set page 0's keys. A
-// key with no images is empty (inactive). The key layout and store are expected
+// its offset in the blob, pointer = blob + offset) and set page 0's keys (the
+// blob's ids and rects; a key with no image is drawn as background but still
+// pressed). The key layout and store are expected
 // to be empty (boot, or after a hosted takeover is released: Clear() the
 // key layout and Reset() the store first). `blob` must stay put until the store
 // is reset.
@@ -21,8 +22,8 @@
 bool LayoutApplyHome(const LayoutSummary &summary, const uint8_t *blob, ImageStore *store, KeyLayout *keys);
 
 // Make activity `to` (-1 = none) the strip's pages 1..n: the page count becomes
-// 1 + its page count and all 15 keys of each page are set (empty ones too, so
-// the previous activity's keys never show). `root` is the validated blob
+// 1 + its page count and each page gets exactly its keys (ids and rects from
+// the blob; the previous activity's keys never show). `root` is the validated blob
 // relocated to `blob`; `from` is the activity whose pages are there now (-1 =
 // none, e.g. after a Reset), whose images are freed unless Home or the new
 // activity uses them. New images are registered with the checked AddExternal

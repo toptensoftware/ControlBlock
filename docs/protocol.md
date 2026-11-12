@@ -1,4 +1,4 @@
-# ControlBlock USB Protocol (v1)
+# ControlBlock USB Protocol (v2)
 
 This is the host ↔ device protocol for **mode 1 (host-controlled)**. The device boots into standalone mode ([`standalone.md`](standalone.md)); a host sends [`TAKE_CONTROL`](#0x06-take_control) to enter mode 1 and [`RELEASE_CONTROL`](#0x07-release_control) to give the screen back. The PC software uploads images and sets the keys. The device draws them, runs paging, swiping and press feedback on its own, and reports key presses back to the PC.
 
@@ -10,8 +10,8 @@ How images are stored, replaced and freed on the device is in [`image-assets.md`
 - **Messages:** Each message is a 12-byte header followed by a payload. Messages run back to back on a byte stream; the protocol does not rely on USB packet boundaries. A host write whose length is a whole number of 64-byte packets **must be followed by a zero-length packet** (see [Zero-length packets](#zero-length-packets)).
 - **Requests and responses:** The host sends requests. Every request gets exactly one response, in order. The host may have several requests in flight (pipelining).
 - **Events:** The device sends events (key presses, page changes) without being asked.
-- **Images:** Images are stored on the device under 32-bit IDs that the host chooses (`0` = none). Using a content hash (CRC-32, say) as the ID gives caching for free: the host asks the device which IDs it already has and uploads only the missing ones. Uploading to an ID that's already there replaces the image everywhere it's used. All images are **rle565** (`.rle565`) with alpha, `key_w`×`key_h`.
-- **Keys:** Each key names four images: a background and a foreground for the normal state, and a pair for the pressed state. The host draws everything, including faces, icons and labels (labels are baked into the images). Images can be shared between keys and kept on the device unused, so switching a key's look or showing a press needs no upload.
+- **Images:** Images are stored on the device under 32-bit IDs that the host chooses (`0` = none). Using a content hash (CRC-32, say) as the ID gives caching for free: the host asks the device which IDs it already has and uploads only the missing ones. Uploading to an ID that's already there replaces the image everywhere it's used. All images are **rle565** (`.rle565`), **fully opaque**, any size up to `max_image_w`×`max_image_h`.
+- **Keys:** Keys are rectangles on a grid of 1U cells (`key_w`×`key_h`, 144 px) packed edge to edge, placed and sized in **quarter units** (0.25U, `quarter` px), so a key can be 1U, 1.5U, 2U wide, 2U tall and so on. Each key has an **id** (u16, unique across all pages) and names two images, one per state (normal and pressed), each exactly the key's size. The host draws everything, including the face, icon, label and the spacing around the face, composed over black (the device draws no background, blends nothing and has no stock look). Images can be shared between keys and kept on the device unused, so switching a key's look or showing a press needs no upload.
 - **Paging:** Swiping, the pager and press feedback all run on the device. The host is told about page changes but never drives the animation.
 
 ## Byte order and encoding
@@ -87,9 +87,9 @@ Any data specific to that response follows these two fields.
 | 0 | OK | |
 | 1 | UNKNOWN_TYPE | Message type not supported |
 | 2 | BAD_LENGTH | Payload too short or inconsistent |
-| 3 | BAD_ARG | Argument out of range (page, key, ID 0…) |
+| 3 | BAD_ARG | Argument out of range (page, key rect, key id, ID 0…) |
 | 4 | NO_SPACE | Image store full |
-| 5 | BAD_IMAGE | Data failed rle565 validation, or isn't `key_w`×`key_h` |
+| 5 | BAD_IMAGE | `PUT_IMAGE`: the data failed rle565 validation, is larger than `max_image_w`×`max_image_h`, or isn't fully opaque. `SET_KEYS`: an image isn't the size of its key |
 | 6 | NOT_FOUND | Referenced image ID doesn't exist |
 | 7 | — | Reserved (was IN_USE; freeing is never refused now) |
 | 8 | BAD_SEQUENCE | Upload chunk out of order or not started, or a layout commit before all the data arrived |
@@ -139,22 +139,22 @@ Any data specific to that response follows these two fields.
 
 | Type | Field | Notes |
 |---|---|---|
-| u16 | protocol_version | `1` |
+| u16 | protocol_version | `2`. A host for another version should stop here: v2 changed `SET_KEYS`, the `KEY` event, the images and `key_w`/`key_h` (see [Version history](#version-history)) |
 | u16 | flags | Bit 0: backlight is on (see [`backlight.md`](backlight.md)). Bit 1: Wi-Fi credentials are stored (see [`wifi.md`](wifi.md)). Bit 2: hosted (a host has taken control; clear = standalone). Bit 3: the clock is set (see [Clock](#clock)). Other bits 0 |
-| u32 | max_payload | Largest payload the device accepts, for every message type (8192 in v1) |
+| u32 | max_payload | Largest payload the device accepts, for every message type (8192) |
 | u32 | image_capacity | Bytes available for images |
 | u32 | image_used | Bytes in use, counting memory not yet released (retired or mid-replace images) |
 | u32 | image_count | Live images |
 | u32 | image_largest_free | Largest single allocation possible now |
 | u16 | screen_w | 800 |
 | u16 | screen_h | 480 |
-| u8 | cols | 5 |
-| u8 | rows | 3 |
+| u8 | cols | Grid width in 1U cells: 5 |
+| u8 | rows | Grid height in 1U cells: 3 |
 | u8 | max_pages | |
 | u8 | page_count | Current number of pages |
-| u16 | key_w | Size of a key, and of every image |
-| u16 | key_h | |
-| u16 | icon_w | Area icons are designed to fill within a key image: 80 for now (still being tuned) |
+| u16 | key_w | 1U: the size of a grid cell, 144. A 1U key's images are `key_w`×`key_h` |
+| u16 | key_h | 144 |
+| u16 | icon_w | Area icons are designed to fill within a 1U key: 80 for now (still being tuned) |
 | u16 | icon_h | |
 | u8 | current_page | |
 | u8 | fw_version_len | Followed by `fw_version` (UTF-8) |
@@ -162,6 +162,14 @@ Any data specific to that response follows these two fields.
 | u32 | layout_capacity | Largest layout the device can store, in bytes |
 | u32 | layout_size | Size of the stored layout; `0` if there is none (or an upload is in progress) |
 | u32 | layout_crc | CRC-32 of the stored layout; `0` if there is none |
+| u16 | grid_x | The grid's top-left corner on the screen, in pixels: 40 |
+| u16 | grid_y | 44 (the 40 px status bar, then 4) |
+| u16 | grid_w | `cols × key_w`: 720 |
+| u16 | grid_h | `rows × key_h`: 432 |
+| u16 | quarter | The quarter unit (0.25U) in pixels: 36. Key rects are counted in these |
+| u16 | max_image_w | Largest image accepted: the grid, 720 |
+| u16 | max_image_h | 432 |
+| u8 | max_keys | Keys per page: 32 |
 
 `layout_size` and `layout_crc` let a host skip an upload when the device already has the same layout. They describe what was committed; the CRC is not re-checked against the flash for each `GET_INFO`.
 
@@ -260,7 +268,8 @@ After a disconnect the next host must `TAKE_CONTROL` again; it can read `GET_INF
 **Uploading an image:**
 - **Order:** Chunks must arrive in order. The first chunk has `offset = 0`, and each later chunk starts where the previous one ended.
 - **Starting:** At `offset = 0` the device allocates `total_size` bytes and returns `NO_SPACE` if it can't.
-- **Finishing:** When `offset + len == total_size`, the device checks the image: the header, a size of exactly `key_w`×`key_h`, and a full bounds-checked decode. Bytes after the image (padding) are allowed. If it passes, the image becomes available. If it fails, it's discarded and the response is `BAD_IMAGE`.
+- **Finishing:** When `offset + len == total_size`, the device checks the image: the header, a size from 1×1 up to `max_image_w`×`max_image_h`, a full bounds-checked decode, and that **every pixel is fully opaque** (no alpha below 255). Bytes after the image (padding) are allowed. If it passes, the image becomes available. If it fails, it's discarded and the response is `BAD_IMAGE`.
+- **Size:** any size is accepted here; it's checked against the key's rect when a key names the image ([`SET_KEYS`](#0x21-set_keys)). Replacing an image with one of another size is allowed, but its keys then show black until they are set again with images of their size.
 - **Uploads in progress:** Only one upload can be in progress at a time. Starting a new one (`offset = 0`) abandons the old one. Any other message type may be interleaved between chunks.
 - **ID already exists:** The new image **replaces** it. Every key using the ID shows the new image, in one frame per page. The old image stays until the new one has passed its checks, so a failed replace changes nothing. A replace needs room for both copies while it's in progress.
 
@@ -301,7 +310,7 @@ Always `OK`. Each ID is gone at once: `QUERY_IMAGES` no longer reports it and ne
 |---|---|---|
 | u8 | count | 1..`max_pages` |
 
-Keys on pages that are removed are cleared. If the current page no longer exists, the device moves to the last remaining page.
+Keys on pages that are removed are cleared (their ids become free). If the current page no longer exists, the device moves to the last remaining page.
 
 ### `0x21` SET_KEYS
 
@@ -312,33 +321,53 @@ Keys on pages that are removed are cleared. If the current page no longer exists
 | u16 | count |
 | KeyDef[count] | keys |
 
-Each `KeyDef`:
+Each `KeyDef` (20 bytes):
 
-| Type | Field | Notes |
-|---|---|---|
-| u8 | page | |
-| u8 | key | 0..`cols*rows−1`, numbered across each row, left to right, top to bottom |
-| u16 | flags | See below |
-| u32 | bg_id | Normal background. `0` = none |
-| u32 | fg_id | Normal foreground. `0` = none |
-| u32 | pressed_bg_id | Background while pressed |
-| u32 | pressed_fg_id | Foreground while pressed. If both pressed IDs are `0`, the normal pair is shown while pressed (no feedback) |
+| Offset | Type | Field | Notes |
+|---|---|---|---|
+| 0 | u16 | id | The key's id, 1..65535, unique across all pages. Chosen by the host; `KEY` events report it |
+| 2 | u8 | page | |
+| 3 | u8 | x | Left edge, in quarter units from the grid's left: 0..`cols × 4 − 1` (0..19) |
+| 4 | u8 | y | Top edge, in quarter units from the grid's top: 0..`rows × 4 − 1` (0..11) |
+| 5 | u8 | w | Width in quarter units: 4 = 1U, 6 = 1.5U, 8 = 2U |
+| 6 | u8 | h | Height in quarter units |
+| 7 | u8 | reserved | 0 |
+| 8 | u16 | flags | See below |
+| 10 | u16 | reserved | 0 |
+| 12 | u32 | normal | Image shown normally. `0` = none (the key's rect is black) |
+| 16 | u32 | pressed | Image shown while the key is held. `0` = the normal image stays (no press feedback) |
 
 **Flags:**
 
 | Bit | Name | Meaning |
 |---|---|---|
-| 0 | `EMPTY` | Key is blank and inactive. The image IDs must be `0` |
+| 0 | `REMOVE` | Remove the key with this `id`. The other fields are ignored; an id with no key is ignored too |
 | 1 | `DISABLED` | Draw the key but send no events and show no press feedback |
 
-**How keys are drawn:**
-- The background, then the foreground, each `key_w`×`key_h` at the key's origin, with alpha. Both come from the pressed pair while the key is held.
-- **Typical use:** the background is a button face (shared by many keys, with a pressed version) and the foreground is the icon with its label baked in. Icons are designed to fill about `icon_w`×`icon_h`, centred, with transparent padding. rle565 skips transparent rows and runs, so the padding costs next to nothing.
-- **Full custom art:** put it all in the background and leave the foreground `0`.
+Other bits must be 0 (`BAD_ARG`).
+
+**Geometry:** in pixels a key's rect is `x × quarter`, `y × quarter` from (`grid_x`, `grid_y`), `w × quarter` by `h × quarter`. A plain 5×3 grid of 1U keys has slot `i` (row-major) at `x = i % 5 × 4`, `y = i / 5 × 4`, `w = h = 4`. Keys may be any size in quarter steps (wide, tall, or a group of small keys) as long as each page's keys lie inside the grid and don't overlap (keys that only touch are fine). Areas no key covers are black.
+
+**Images:**
+- Each image is exactly the key's size in pixels (`w × quarter` by `h × quarter`), fully opaque, and is copied to the screen as it is: no blending, no background. The host composes the face, icon, label and the black margin around the face (the 1U cell is edge to edge with its neighbours, so the spacing between keys is part of the images).
+- **Typical 1U key:** a 128×128 face centred in the 144×144 image (8 px of black each side), the icon filling about `icon_w`×`icon_h` of it, the label baked in. The pressed image is the same with the pressed face.
+- **Groups:** two keys side by side (say `−` and `+`) can carry one picture across both (a shared "Volume" label): each key's image is its part of the picture. Each key presses on its own.
+
+**Editing keys (by id):**
+- Each `KeyDef` defines the key with its `id`: a new id adds a key; an id that already exists replaces that key (its rect, flags and images). A key stays on its page: naming an existing id with another page is `BAD_ARG` (remove it first, in an earlier message, then define it on the new page). `REMOVE` removes a key.
+- Keys the message doesn't name are left alone. Several keys of a page can move in one message (keys trade places, say): the overlap check is made on the result.
+- A key that is replaced while held stays held (it shows the new pressed image).
 
 **Applying the update:**
-- The whole message is applied in one go: the device validates every entry first. If any entry is invalid, nothing changes and the response is `BAD_ARG` or `NOT_FOUND`.
-- Every image it references must already be uploaded.
+- The whole message is applied in one go: the device checks the result of every entry first. If anything is wrong, nothing changes:
+
+  | Status | Cause |
+  |---|---|
+  | `BAD_LENGTH` | The payload is shorter than `count` KeyDefs |
+  | `BAD_ARG` | An unknown flag; id 0; the same id twice in the message; an existing id on another page; a page past `page_count`; a rect that is empty or not inside the grid; two keys of a page overlapping; more than `max_keys` keys on a page |
+  | `NOT_FOUND` | An image ID that isn't uploaded (or was freed: a key may keep naming an image it already shows after it is freed, but a new key can't take it) |
+  | `BAD_IMAGE` | An image that isn't the key's size |
+
 - Only the affected page buffers are redrawn, and the new content appears on screen in one frame, so a half-applied update is never shown.
 
 ### `0x22` SET_PAGE
@@ -556,11 +585,14 @@ Events have the `EVENT` flag set, and `seq` is the device's event counter.
 
 | Type | Field | Notes |
 |---|---|---|
-| u8 | page | |
-| u8 | key | |
+| u16 | id | The key's id (from `SET_KEYS`) |
+| u8 | page | The page it was touched on |
 | u8 | action | `0` press, `1` release, `2` cancel |
 | u8 | lost | Event-overflow flag (see above) |
+| u8[3] | reserved | 0 |
 | u32 | time_ms | Device milliseconds since boot. For working out hold times |
+
+A touch belongs to the key whose rect it lands in; near a key's edge (12 px) and in areas no key covers, a touch can only swipe ([`interactions.md`](interactions.md)).
 
 **What each action means:**
 See [`interactions.md`](interactions.md) for exactly when these fire.
@@ -629,9 +661,9 @@ And for a host-controlled session:
 
 1. Open the device and send RESET_STREAM (control request).
 2. Send `GET_INFO`: check `protocol_version` and read the geometry. Send `TAKE_CONTROL` (the device boots standalone and refuses the screen requests below until then). When finished, send `RELEASE_CONTROL`; closing or unplugging has the same effect.
-3. Render the faces and icons (with labels), encode them with the rle565 encoder and compute their IDs (CRC-32). Send `QUERY_IMAGES`, then `PUT_IMAGE` only for the missing ones, pipelined.
+3. Lay out the keys (ids and quarter-unit rects), render each key's normal and pressed images at its size over black (face, icon, label), encode them with the rle565 encoder and compute their IDs (CRC-32). Send `QUERY_IMAGES`, then `PUT_IMAGE` only for the missing ones, pipelined.
 4. Send `SET_PAGE_COUNT`, then one `SET_KEYS` with every key. Set the status bar texts with `SET_STATUS_TEXT`, and again whenever they change.
-5. Handle `KEY` events. To sleep the screen, send `SET_BACKLIGHT` off; on a `WAKE` event, send it on. Later changes are `SET_KEYS` with the affected keys (plus `PUT_IMAGE` for any new images), or a `PUT_IMAGE` that replaces an image in place. `FREE_IMAGES` images that are no longer wanted.
+5. Handle `KEY` events (by key id). To sleep the screen, send `SET_BACKLIGHT` off; on a `WAKE` event, send it on. Later changes are `SET_KEYS` with the affected keys (plus `PUT_IMAGE` for any new images), or a `PUT_IMAGE` that replaces an image in place. `FREE_IMAGES` images that are no longer wanted.
 
 ## Device state lifetime
 
@@ -639,7 +671,13 @@ And for a host-controlled session:
 - Keys and images are never saved to flash. Only the standalone layout is ([layout upload](#layout-upload)); the standalone mode that runs it is in [`standalone.md`](standalone.md).
 - The device can't tell when the host app closes (it only sees USB unmount or suspend, which release control). A host that wants the device back on its Home before it exits sends `RELEASE_CONTROL`; `RESET` only clears the screen and keeps the host in control.
 
+## Version history
+
+- **v2** (2026-11): keys are rects in quarter units on a grid of 144 px cells (`key_w`/`key_h` went from 128 to 144; `grid_*`, `quarter`, `max_image_*` and `max_keys` appended to `GET_INFO`), each with a u16 id and one fully opaque image per state, the size of the key (was four 128×128 images with alpha: background and foreground, normal and pressed). `SET_KEYS` edits keys by id (`REMOVE` replaced `EMPTY`); `KEY` events carry the id (12 bytes, was 8: page and slot); `PUT_IMAGE` refuses images that aren't opaque. A v1 host gets `BAD_ARG`/`BAD_LENGTH` from `SET_KEYS` and should check `protocol_version` first.
+- **v1:** the first version.
+
 ## Open questions
 
 - Status bar: the left and right texts are host-settable (`SET_STATUS_TEXT`), and the device has a clock (`{clock}`, [Clock](#clock)). Still open: other status bar content and the pager bar (disabled for now). Message type `0x04` is reserved for them.
 - Icon size: Somewhere from 80 to 96 px, to be decided by trying it on the hardware. The device reports the sizes in `GET_INFO`, so hosts shouldn't hard-code them.
+- Deflate: images are ~3.5x the bytes of v1's shared layers. Compressing uploads (an optional flag on `PUT_IMAGE`) may follow if hosted updates feel slow.

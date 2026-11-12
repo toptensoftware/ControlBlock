@@ -25,7 +25,7 @@
 #include "device_name.h"
 #include "clock_text.h"
 
-#define PROTO_VERSION        1
+#define PROTO_VERSION        2              // 2: keys are rects with ids, opaque images
 #define PROTO_MAGIC          0x4243         // "CB" as bytes 43 42
 #define PROTO_HEADER_SIZE    12
 #define PROTO_MAX_PAYLOAD    8192           // GET_INFO.max_payload: every message, images included
@@ -110,7 +110,17 @@ enum : uint16_t
 #define PAGE_CAUSE_USER      0
 #define PAGE_CAUSE_HOST      1
 
-#define PROTO_KEYDEF_SIZE    20             // KeyDef on the wire
+// SET_KEYS' KeyDef on the wire (little endian): u16 id, u8 page, u8 x, y, w,
+// h (quarter units from the grid origin), u8 reserved, u16 flags, u16
+// reserved, u32 normal, u32 pressed (image IDs; 0 = none)
+#define PROTO_KEYDEF_SIZE    20
+
+#define PROTO_KEYDEF_REMOVE     0x0001      // remove key `id` (the other fields are ignored)
+#define PROTO_KEYDEF_DISABLED   KEYDEF_DISABLED
+#define PROTO_KEYDEF_FLAGS      (PROTO_KEYDEF_REMOVE | PROTO_KEYDEF_DISABLED)
+
+// KEY event payload: u16 id, u8 page, u8 action, u8 lost, u8[3] reserved, u32 time_ms
+#define PROTO_KEY_EVENT_SIZE 12
 
 // SET_STATUS_TEXT fields, and the buffer a text needs (with its NUL).
 // host_link.cpp checks the size against the status bar's.
@@ -218,8 +228,9 @@ public:
     void ServiceDisconnect();
 
     // --- Events (any task) ---
-    // PostKey and PostPageChanged do nothing while standalone.
-    void PostKey(int page, int key, int action, uint32_t time_ms);
+    // PostKey and PostPageChanged do nothing while standalone. A key is
+    // reported by its id (and the page it was touched on).
+    void PostKey(int page, uint16_t id, int action, uint32_t time_ms);
     void PostPageChanged(int page, int cause);
     void PostWake(uint32_t time_ms);
     // The Wi-Fi state or address changed (`ip`: a.b.c.d while Connected, else zeros)
@@ -246,7 +257,7 @@ private:
     {
         uint8_t type;
         uint8_t len;
-        uint8_t data[8];
+        uint8_t data[PROTO_KEY_EVENT_SIZE];     // the longest
     };
 
     void OnHeader();

@@ -48,6 +48,29 @@ export const example = () => ({
     },
 });
 
+// Key placement (docs/layout-format.md "Keys"): spans, a group, fractional keys and a named id on Home
+export const exampleKeys = () => ({
+    version: 1,
+    defaults: { color: "#22262e" },
+    home: { keys: [
+        // slot 0, two units wide (it covers slot 1, so entry 1 is null)
+        { w: 2, icon: "#apple-tv", label: "Watch TV", action: { op: "switchActivity", activity: null } },
+        null,
+        { icon: "#list", label: "Listen", action: { op: "hidKey", keys: "l" } },
+        null,
+        // slot 4, two units tall, one picture split into two keys: + on top, - below
+        { h: 2, label: "Volume", keys: [
+            { icon: "#add", action: { op: "hidKey", keys: "up" } },
+            { y: 1, icon: "#delete", action: { op: "hidKey", keys: "down" } },
+        ] },
+        // slot 5 holds two half-height keys
+        { x: 0, y: 1, h: 0.5, label: "Mute", action: { op: "hidKey", keys: "m" } },
+        { x: 0, y: 1.5, h: 0.5, label: "Input", action: { op: "hidKey", keys: "i" } },
+        // three units wide along the bottom row, with an id of its own
+        { id: 200, x: 1, y: 2, w: 3, label: "Play / Pause", action: { op: "hidKey", keys: "space" } },
+    ] },
+});
+
 export const files = {
     "scripts/mute.lua": "local r = http.get('http://avr.local/mute')\nhttp.post('http://avr.local/mute', r == '1' and 'on=0' or 'on=1')\n",
     "scripts/vol.lua": "http.post('http://avr.local/vol', 'delta=' .. ((tonumber(param) or 1) // 10))\n",

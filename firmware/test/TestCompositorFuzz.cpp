@@ -23,11 +23,12 @@ namespace
         int  preempt_client_percent;    // client changes mid-step
         bool reloads;
         bool sweeps = false;            // retire unused images and sweep them
+        bool layouts = false;           // pages with different layouts, and layout changes
     };
 
     void Fuzz(uint32_t seed, const FuzzOptions &o)
     {
-        World w(o.pages, seed);
+        World w(o.pages, seed, o.layouts);
         w.preempt_percent        = o.preempt_percent;
         w.preempt_client_percent = o.preempt_client_percent;
         Rng &r = w.rng;
@@ -36,8 +37,13 @@ namespace
         for (int op = 0; op < o.ops; op++) {
             int dice = r.Range(0, 99);
             if (dice < 45) {
-                w.key_cost_us = r.Range(300, 4000);
+                // Chunks of varying cost, and sometimes gaps reached late
+                w.chunk_cost_us = r.Range(30, 250);
+                w.gap_delay_us  = r.Chance(20) ? r.Range(0, 400) : 0;
                 w.RunFrame();
+            } else if (dice < 47 && o.layouts) {
+                w.ChangeLayout(r.Range(0, o.pages - 1), (TestLayout)r.Range(0, LAYOUT_COUNT - 1),
+                               r.Chance(50) ? COMP_FLUSH : 0);
             } else if (dice < 70) {
                 // Scroll: drag a bit, snap to a page, or jump
                 int kind = r.Range(0, 9);
@@ -51,9 +57,9 @@ namespace
                 if (w.scroll > max_scroll + 300) w.scroll = max_scroll + 300;
             } else if (dice < 95) {
                 int page = r.Range(0, o.pages - 1);
-                uint32_t mask = r.Chance(30) ? 0x7FFF : (r.Next() & 0x7FFF);
+                uint32_t mask = r.Chance(30) ? 0xFFFFFFFFu : r.Next();
                 if (!mask)
-                    mask = 1u << r.Range(0, COMP_KEYS - 1);
+                    mask = 1u << r.Range(0, w.model[page].count - 1);
                 w.ChangeKeys(page, mask, r.Chance(35) ? COMP_FLUSH : 0);
                 if (o.sweeps && r.Chance(30))
                     w.RetireUnused();
@@ -68,8 +74,9 @@ namespace
         w.preempt_percent = w.preempt_client_percent = 0;
         int page = r.Range(0, o.pages - 1);
         w.scroll = page * W;
-        w.key_cost_us = 1500;
-        w.RunFrames(30);
+        w.chunk_cost_us = 65;
+        w.gap_delay_us  = 0;
+        w.RunFrames(40);
         w.CheckSettledOn(page);
         if (o.sweeps)
             Check(w.images_freed > 0);
@@ -103,22 +110,22 @@ Fact("Compositor Fuzz Swipes And Changes")
 
 Fact("Compositor Fuzz With Reloads")
 {
-    FuzzSeeds(4, FuzzOptions{ 4, 2000, 0, 0, true });
+    FuzzSeeds(4, FuzzOptions{ 4, 2000, 0, 0, true, false, true });
 }
 
 Fact("Compositor Fuzz Frame Starts Mid Step")
 {
-    FuzzSeeds(4, FuzzOptions{ 3, 2000, 10, 0, true });
+    FuzzSeeds(4, FuzzOptions{ 3, 2000, 10, 0, true, false, true });
 }
 
 Fact("Compositor Fuzz Client Changes Mid Step")
 {
-    FuzzSeeds(4, FuzzOptions{ 3, 2000, 10, 5, true });
+    FuzzSeeds(4, FuzzOptions{ 3, 2000, 10, 5, true, false, true });
 }
 
 Fact("Compositor Fuzz One Page")
 {
-    FuzzSeeds(4, FuzzOptions{ 1, 1500, 10, 5, true });
+    FuzzSeeds(4, FuzzOptions{ 1, 1500, 10, 5, true, false, true });
 }
 
 Fact("Compositor Fuzz Sweeps")
@@ -128,5 +135,10 @@ Fact("Compositor Fuzz Sweeps")
 
 Fact("Compositor Fuzz Sweeps With Preemption And Reloads")
 {
-    FuzzSeeds(4, FuzzOptions{ 3, 2000, 10, 5, true, true });
+    FuzzSeeds(4, FuzzOptions{ 3, 2000, 10, 5, true, true, true });
+}
+
+Fact("Compositor Fuzz Layouts")
+{
+    FuzzSeeds(4, FuzzOptions{ 3, 2000, 0, 0, false, false, true });
 }

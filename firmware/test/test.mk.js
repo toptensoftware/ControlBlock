@@ -14,6 +14,8 @@ export default async function ()
         sourceFiles: (base) => [...base, ...this.otherSourceFiles],
         otherSourceFiles: [
             "../main/page_compositor.cpp",
+            "../main/key_geometry.cpp",
+            "../main/opaque_row.cpp",
             "../main/screen_view.cpp",
             "../main/status_bar.cpp",
             "../main/status_icons.cpp",

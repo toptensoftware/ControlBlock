@@ -66,6 +66,14 @@ typedef struct {
     uint32_t late_one_page;         // page lines, one page in view
     uint32_t late_two_pages;        // page lines, mid-swipe
     uint32_t late_status_drawing;   // (any of the above) while the status bar was being drawn
+    // Fill start timing: max_fill_us and overruns only time the fill itself; a fill that starts late
+    // (the ISR held off) can still miss the DMA with a short fill
+    uint32_t max_late_us;      // latest fill start, against the evenly spaced fills of the frame
+    uint32_t max_end_us;       // latest fill end, from when it should have started (budget: DISPLAY_BOUNCE_BUDGET_US)
+    uint32_t missed;           // fills that ended past the budget that way (includes the overruns)
+    // Bounce buffer order (a lasting picture shift would show here)
+    uint32_t seq_breaks;       // fills whose line didn't follow the last fill's (the driver resynced)
+    uint32_t buffer_mismatches; // fills written into the buffer the DMA is sending (lasting desync)
 } screen_stats_t;
 
 // Read the stats. The max and overrun count reset on each call.

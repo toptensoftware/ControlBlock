@@ -8,6 +8,7 @@
 #include "esp_err.h"
 #include "image_store.h"
 #include "key_layout.h"
+#include "touch_router.h"       // TouchKey
 
 // Create the lock, store and layout. Call after comp_init() (the store's
 // capacity is what PSRAM has left once the page buffers are allocated).
@@ -21,13 +22,15 @@ ImageStore *model_store(void);
 KeyLayout  *model_layout(void);
 
 // For comp_init()
-bool model_get_page(int page, comp_key_t keys[COMP_KEYS], void *ctx);
+bool model_get_page(int page, comp_page_t *out, void *ctx);
 bool model_is_retired(const void *img, void *ctx);
 
-// Touch helpers (take the lock): does the key report presses, and show or
-// clear its pressed look
-bool model_key_active(int page, int key);
-void model_set_key_pressed(int page, int key, bool pressed);
+// Touch helpers (take the lock): the page's keys for the hit test (count;
+// up to COMP_MAX_KEYS into `out`, 0 past the page count), does the key report
+// presses (on that page), and show or clear its pressed look. Keys by id.
+int  model_page_keys(int page, TouchKey *out);
+bool model_key_active(int page, uint16_t id);
+void model_set_key_pressed(uint16_t id, bool pressed);
 
 // Upload an image from memory under `id` (the device's own images: the
 // demo layout). Takes the lock.

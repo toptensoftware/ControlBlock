@@ -74,7 +74,7 @@ static int   s_cause = SWIPE_CAUSE_USER;
 
 // Touches: swipe or key press (touch_router.h), key actions to the host
 static TouchGate s_router;
-static void      (*s_key_cb)(int page, int key, int action, uint32_t time_ms);
+static void      (*s_key_cb)(int page, uint16_t id, int action, uint32_t time_ms);
 static void      (*s_wake_cb)(uint32_t time_ms);
 static void      (*s_tick_cb)(void);
 
@@ -440,31 +440,38 @@ void swipe_set_page_changed_cb(void (*cb)(int page, int cause))
     s_page_cb = cb;
 }
 
-void swipe_set_key_cb(void (*cb)(int page, int key, int action, uint32_t time_ms))
+void swipe_set_key_cb(void (*cb)(int page, uint16_t id, int action, uint32_t time_ms))
 {
     s_key_cb = cb;
 }
 
-static bool router_key_active(int page, int key, void *)
+// The hit test walks the page's key rects under the model lock
+static int router_page_keys(int page, TouchKey *out, void *)
 {
-    return model_key_active(page, key);
+    return model_page_keys(page, out);
 }
 
-static void router_key_event(int page, int key, int action, uint32_t time_ms, void *)
+static bool router_key_active(int page, uint16_t id, void *)
+{
+    return model_key_active(page, id);
+}
+
+static void router_key_event(int page, uint16_t id, int action, uint32_t time_ms, void *)
 {
     if (s_key_cb)
-        s_key_cb(page, key, action, time_ms);
+        s_key_cb(page, id, action, time_ms);
 }
 
 // Pressed from touch-down, reverted if it turns into a swipe
-static void router_key_look(int page, int key, bool pressed, void *)
+static void router_key_look(int, uint16_t id, bool pressed, void *)
 {
-    model_set_key_pressed(page, key, pressed);
+    model_set_key_pressed(id, pressed);
 }
 
 esp_err_t swipe_init(void)
 {
     TouchRouterHost host = {};
+    host.page_keys  = router_page_keys;
     host.key_active = router_key_active;
     host.key_event  = router_key_event;
     host.key_look   = router_key_look;

@@ -1,8 +1,10 @@
-// Look properties: validation, inheritance and the four image definitions per key.
-// An image definition is a plain node-buttonImage settings object (stage 2 renders it).
-// See docs/layout-format.md "Button definition" and "Inheritance and defaults".
+// Look properties: validation, inheritance, the four layer definitions per key (face and
+// icon/label, normal and pressed) and the key's two image specs built from them. A layer
+// definition is a plain node-buttonImage settings object; stage 2 renders each image spec (its
+// layers composed over black at the key's pixel size). See docs/layout-format.md "Button
+// definition" and "Inheritance and defaults".
 
-import { KEY_SIZE, LONG_PRESS_MIN, LONG_PRESS_MAX } from "./consts.js";
+import { FACE_SIZE, FACE_MARGIN, LONG_PRESS_MIN, LONG_PRESS_MAX } from "./consts.js";
 import { childPath } from "./diag.js";
 import { t, required, checkObject } from "./check.js";
 
@@ -52,6 +54,21 @@ const LOOK_AND_TIMING = (pressed) => ({
 export const BUTTON_LOOK_SPEC = { ...LABEL, ...LOOK_AND_TIMING(PRESSED) };
 export const DEFAULTS_SPEC = LOOK_AND_TIMING(PRESSED_NO_LABEL);
 
+// A group's keys: the group draws the face, so a key in it sets only its icon and label
+const groupFace = (v, p, d) => (d.error(p, "a group's keys take their face from the group: set it on the group"), false);
+const NO_FACE = { face: groupFace, color: groupFace };
+export const MEMBER_LOOK_SPEC = { ...BUTTON_LOOK_SPEC, ...NO_FACE, image: groupFace, pressed: t.nullable(t.object({ ...LOOK, ...LABEL, ...NO_FACE })) };
+
+// The part of a group's look its keys inherit: not what the group draws itself (its icon and label)
+export function groupLookForKeys(look)
+{
+    const { icon, iconText, label, image, pressed, ...rest } = look;
+    if (pressed === undefined || pressed === null)
+        return pressed === null ? { ...rest, pressed } : rest;
+    const { icon: _i, iconText: _t, label: _l, ...pressedRest } = pressed;
+    return { ...rest, pressed: pressedRest };
+}
+
 // ------------------------------------------------------------ inheritance
 
 // Recursive merge; `over` wins, objects merge, anything else (including arrays and null) replaces
@@ -89,16 +106,20 @@ export function inheritLook(chain, own)
 }
 
 // ------------------------------------------------------------ images
-
 const DEFAULT_FACE_COLOR = "#2b2f38";
 const FACE_PADDING = 4, FACE_RADIUS = 14;
+const VIRTUAL_SIZE = 72;      // node-buttonImage's default virtual size, for a FACE_SIZE square
 
-// The key face as SVG at the key's size. `overlay` darkens it (the default pressed look).
-function faceSvg({ top, bottom, border, radius, padding: pad, shade, overlay })
+// The face area of a key (or group) `width` x `height` px whose image starts `left`, `top` px into
+// it: the rect less FACE_MARGIN of black each side, in the image's coordinates
+export const faceBox = (width, height, left = 0, top = 0) =>
+    ({ x: FACE_MARGIN - left, y: FACE_MARGIN - top, width: width - 2 * FACE_MARGIN, height: height - 2 * FACE_MARGIN });
+
+// The key face as SVG, `width` x `height` px. `overlay` darkens it (the default pressed look).
+function faceSvg({ top, bottom, border, radius, padding: pad, shade, overlay }, { width, height })
 {
-    const size = KEY_SIZE, inner = size - 2 * pad;
-    const rect = (extra) => `<rect x="${pad}" y="${pad}" width="${inner}" height="${inner}" rx="${radius}" ${extra}/>`;
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
+    const rect = (extra) => `<rect x="${pad}" y="${pad}" width="${width - 2 * pad}" height="${height - 2 * pad}" rx="${radius}" ${extra}/>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
         `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${top}"/><stop offset="1" stop-color="${bottom}"/></linearGradient>` +
         `<linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".3"/></linearGradient></defs>` +
         rect(`fill="url(#g)"` + (border ? ` stroke="${border}" stroke-width="2"` : "")) +
@@ -107,7 +128,7 @@ function faceSvg({ top, bottom, border, radius, padding: pad, shade, overlay })
         `</svg>`;
 }
 
-function faceDef(look, overlay)
+function faceDef(look, overlay, size)
 {
     const shape = typeof look.face === "string" ? look.face : "rounded";
     if (shape === "none" || (look.face === undefined && look.color === undefined))
@@ -124,17 +145,21 @@ function faceDef(look, overlay)
             padding: f.padding ?? FACE_PADDING,
             shade: f.top === undefined && f.bottom === undefined,   // a plain colour gets a gentle top-to-bottom shade
             overlay,
-        }),
+        }, size),
     };
 }
 
-// Icon plus label on a transparent background
-function foregroundDef(look, rc)
+// Icon plus label on a transparent background, drawn `size` px. Virtual pixels stay the same
+// size as on a 1U key's FACE_SIZE face, so text and offsets don't stretch on wider or shorter keys
+// (node-buttonImage sizes the icon from the height).
+function foregroundDef(look, rc, size)
 {
     if (look.icon === undefined && look.label === undefined)
         return null;
     const hasIcon = look.icon !== undefined, hasLabel = look.label !== undefined;
     const def = { backColor: "transparent" };
+    if (size.width !== FACE_SIZE || size.height !== FACE_SIZE)
+        def.virtualSize = { width: VIRTUAL_SIZE * size.width / FACE_SIZE, height: VIRTUAL_SIZE * size.height / FACE_SIZE };
     if (hasIcon)
     {
         def.svgFile = look.icon.startsWith("#") ? look.icon : rc.host.resolvePath(look.icon);
@@ -186,8 +211,9 @@ function checkIcon(look, rc, path)
         rc.diag.error(childPath(path, "icon"), `file not found: ${icon}`);
 }
 
-// A resolved look -> { normalBg, normalFg, pressedBg, pressedFg }, each a definition or null
-export function lookImages(look, rc, path)
+// A resolved look -> { normalBg, normalFg, pressedBg, pressedFg }, each a layer definition (drawn
+// `size` px: the face box) or null
+export function lookImages(look, rc, path, size)
 {
     const { pressed, image: override, ...normal } = look;
     checkIcon(normal, rc, path);
@@ -197,13 +223,27 @@ export function lookImages(look, rc, path)
     const explicitFace = pressed !== undefined && (pressed.face !== undefined || pressed.color !== undefined);
 
     const out = {
-        normalBg: faceDef(normal, false),
-        normalFg: foregroundDef(normal, rc),
-        pressedBg: faceDef(pressedLook, !explicitFace),
-        pressedFg: foregroundDef(pressedLook, rc),
+        normalBg: faceDef(normal, false, size),
+        normalFg: foregroundDef(normal, rc, size),
+        pressedBg: faceDef(pressedLook, !explicitFace, size),
+        pressedFg: foregroundDef(pressedLook, rc, size),
     };
     for (const name of LAYERS)
         if (override && Object.hasOwn(override, name))
             out[name] = override[name] === null ? null : overrideLayer(override[name], rc, childPath(childPath(path, "image"), name));
     return out;
+}
+
+// A key's two images from layer definitions placed in it: `placed` is [{ defs: lookImages(),
+// x, y, width, height }] (face boxes), drawn in order, each face then its icon and label.
+// -> { normal, pressed }, each { width, height, layers: [{ layer: "bg" | "fg", def, x, y, width,
+// height }] } (the key's image, `width` x `height` px, drawn over black) or null if nothing is drawn
+export function imageSpecs(placed, width, height)
+{
+    const spec = (bg, fg) => {
+        const layers = placed.flatMap(({ defs, ...box }) =>
+            [["bg", defs[bg]], ["fg", defs[fg]]].filter(([, def]) => def).map(([layer, def]) => ({ layer, def, ...box })));
+        return layers.length ? { width, height, layers } : null;
+    };
+    return { normal: spec("normalBg", "normalFg"), pressed: spec("pressedBg", "pressedFg") };
 }

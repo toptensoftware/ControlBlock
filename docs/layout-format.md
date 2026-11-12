@@ -9,11 +9,12 @@ The file a user writes (by hand now, from a web front end later) to define a sta
 - A `hidKey` chord is modifiers plus **one** key (the packed op has `mode`, `modifiers`, `key`); `hold` is accepted under `press`/`release` only, and in a hook or device list it's an error.
 - Not checked yet (deliberately): device limits (pages, images, blob size, op list length) and the "icon larger than the icon area" warning.
 - The default pressed look is the normal face with a 35% black overlay, unless `pressed` sets its own `color` or `face`.
+- Keys are rects on the 5x3 grid with ids, spans and groups (see [Keys](#keys)); since 2026-11-12 (blob version 2) each key state is baked into one opaque image. A layout baked before that is refused by the device (empty Home) until it's baked and uploaded again.
 - The packed structs are in `host/src/bake/schema.js`; `node tools/codegen/gen-types.js` writes their C declarations (`firmware/main/layout_types.gen.h`).
 
 ## Goals
 
-- **Write what you mean, not what the device runs.** The file has names, inheritance, inline actions and SVG buttons. The pipeline's stage 1 turns that into the device's indices, binding lists and four images per key.
+- **Write what you mean, not what the device runs.** The file has names, inheritance, inline actions and SVG buttons. The pipeline's stage 1 turns that into the device's indices, key rects and ids, binding lists and two images per key.
 - **Plain data.** JSON, or a JS module that default-exports the same object (comments and shared constants are convenient there). No functions in the tree: everything must survive `JSON.stringify`, so a web front end can store and edit it, and the bake can run in a browser.
 - **Fail early, with a path.** Every error names the JSON path (`activities[2].pages[0].keys[4].tap[1].url`) and the reason. Nothing reaches the device that the loader would reject.
 - **Small by default.** A key with nothing but an icon and an action is a valid key. Repeated definitions cost one render and one stored image (see [Inheritance](#inheritance-and-defaults)).
@@ -38,7 +39,7 @@ The file a user writes (by hand now, from a web front end later) to define a sta
   "settings": { ... },          // device-wide constants
   "devices": { "tv": { ... }, "receiver": { ... } },
   "actions": { "mute": [ ... ] },   // named, reusable op lists (expanded host side)
-  "home": { "keys": [ ... 15 ... ], "defaults": { ... } },
+  "home": { "keys": [ ... ], "defaults": { ... } },
   "activities": {
     "Watch TV": {
       "displayName": "TV",
@@ -79,7 +80,7 @@ More settings (HTTP timeout, Lua limits) are firmware constants today and become
 ```jsonc
 "home": {
   "defaults": { ... },                 // optional; between root and key in the chain
-  "keys": [ Button | null, ... ]       // up to 15, row-major; null = empty slot
+  "keys": [ Button | Group | null, ... ]   // see Keys; null = empty slot
 }
 "activities": {
   "<name>": {
@@ -95,13 +96,72 @@ More settings (HTTP timeout, Lua limits) are firmware constants today and become
 }
 ```
 
-- **Keys are row-major** over the 5x3 grid: index 0 is the top-left key, 4 the top-right, 5 the second row's first. A `keys` array shorter than 15 is padded with empty slots; longer is an error. `null` is an empty slot (no images, and no bindings).
+- **Keys** are listed in a page's `keys` array: by default entry `i` is a 1U key in slot `i` of the 5x3 grid (row-major), and a key can also be placed and sized freely. See [Keys](#keys).
 - A **page** is an object (not a bare array) so it can carry `defaults`.
 - An activity needs at least one page. The number of pages is bounded by the firmware's limit (checked, see [Validation](#validation-and-limits)).
 - **Home** has only keys. It has no hooks, devices, pages or bindings: Home's touch keys are the only thing it binds, and the macro pad and encoder always use the **current activity's** bindings, even while Home is in view ([`standalone.md`](standalone.md#triggers-and-bindings)).
 - A Home key that selects an activity is an ordinary button whose action is `{ "op": "switchActivity", "activity": "Watch TV" }`; there is no special key type.
 - `devices` entries must exist in the root `devices`. The packed form stores indices, and the **order matters at run time**: on a switch, `turnOn` lists run in the new activity's `devices` order and `turnOff` lists in the old activity's `devices` order.
 - Hooks (and device `turnOn`/`turnOff`) may not contain `switchActivity`. Delays between ops are the author's job: put a `delay` op in the list (a `delay` holds the whole queue, so touches queue behind a TV warm-up). A switch's hooks and device lists run straight after its `switchActivity` op, before the rest of the list that switched, so a `delay` in a hook or `turnOn` also holds back the ops after `switchActivity` in that list.
+
+## Keys
+
+The page area holds a grid of 5x3 **cells**, 1U each (144x144 px on the device, packed edge to edge). A key is a rect on that grid: by default one cell, but it can be wider, taller, smaller, or sit off the whole-unit lines. Positions and sizes are in **grid units** (1U = one cell), in steps of **0.25U** (36 px).
+
+| Property | Type | Description |
+|---|---|---|
+| `x`, `y` | number (multiple of 0.25, ≥ 0) | The key's top-left corner, from the grid's top-left. Give both or neither |
+| `w`, `h` | number (multiple of 0.25, > 0) | Width and height. Default 1 |
+| `id` | integer 1..65535 | The key's id (optional, see below) |
+
+- **Placement:** entry `i` of a page's `keys` array goes in **slot `i`** (row-major: 0 top-left, 4 top-right, 5 the second row's first), 1U, unless it gives `x` and `y`. Without `x`/`y` a bigger key starts at its slot, so `[{ "w": 2 }, null, ...]` is a 2U key over slots 0 and 1 (entry 1 is `null` because that slot is taken). Entries past index 14 have no slot and need `x`/`y`. `null` is no key.
+- **Rects** must lie inside the 5x3 grid and must not overlap (keys that only touch are fine). Any part of the grid no key covers is black and only swipes.
+- **Up to 32 keys a page** (a group's keys each count).
+- **Ids** are unique across the **whole layout** (Home and every activity's pages). They name the key in its bindings (`touch[id]`, generated) and in the device's key events. By default:
+  - a key whose top-left corner is on a whole unit gets that slot's **plain grid id**, `g × 15 + slot + 1`, where `g` numbers the pages across the whole layout (Home 0, then each activity's pages in file order). So a plain 5x3 page keeps the same ids as before keys could move;
+  - any other key (corner off the whole-unit lines) gets the lowest free id above `pages × 15`, in layout order. That id changes if pages are added: name an `id` for a stable one.
+  - Two keys with the same id (named or default) are an error at the later one: give one of them another `id`.
+- **Groups:** an entry with a `keys` array of its own is a **group**: one picture split into several keys, each pressing alone (Volume `-`/`+` with one "Volume" label across both). The group has `x`, `y` (or its slot), `w`, `h` and look properties: its face, and its own `icon`/`label`, are drawn once across the whole group. Each of its keys has its own `id`, gestures, `longPressMs`, `icon` and `label`, at `x`/`y` (default 0 each) and `w`/`h` (default 1) **relative to the group**. Rules:
+  - The keys inherit the chain plus the group's look, but not its `icon`, `iconText`, `label` or `image`.
+  - They can't set `face`, `color`, `image` or `pressed.face`/`pressed.color` (an error: set it on the group).
+  - A group has no gestures and no `id` (unknown property), and groups don't nest.
+  - Its keys must lie inside the group and not overlap each other. If they don't cover it all, a warning (that part shows black).
+  - Pressing a key shows the group's pressed face (by default the overlay) and the key's pressed icon/label on that key only.
+- **The look scales to the key:** the face fills the key's rect less an 8 px black margin each side (128x128 on a 1U key), and the icon and label keep their 1U size in virtual pixels (text doesn't stretch on a wide key; the icon follows the face's height). See [Look properties](#look-properties-proposed).
+
+`examples/key-shapes.mjs` (Home only; each key types a different HID key, so a text editor shows which one fired):
+
+```
++-----------+-----+-----+-----+
+|   Wide    | 1U  |  -  Vol  +|     row 0 (Volume: one picture, two keys)
++-----+-----+-----+--+--+-----+
+|  A  |           |L |R |     |     row 1 (A over B: half height; L, R: half width)
+|  B  |    Big    |  |  |     |
++-----+           +--+--+Tall |
+| Esc |           | (q) |     |     row 2 (q: 0.5U square, 0.25U in from the cell's corner)
++-----+-----------+-----+-----+
+```
+
+```jsonc
+"keys": [
+  { "w": 2, "label": "Wide (w)", "tap": { "op": "hidKey", "keys": "w" } },     // slot 0, 2U: id 1
+  null,                                                                       // slot 1 is taken
+  { "label": "1U (1)", "tap": { "op": "hidKey", "keys": "1" } },               // slot 2: id 3
+  { "w": 2, "label": "Volume", "labelVAlign": "bottom", "color": "#2a9d8f",    // a group over slots 3 and 4
+    "keys": [
+      { "icon": "#volume-down", "iconOffset": { "x": 0, "y": -7 }, "tap": { "op": "hidKey", "keys": "minus" } },          // id 4
+      { "x": 1, "icon": "#volume-up", "iconOffset": { "x": 0, "y": -7 }, "tap": { "op": "hidKey", "keys": "plus" } }     // id 5
+    ] },
+  { "x": 0, "y": 1, "h": 0.5, "label": "A", "tap": { "op": "hidKey", "keys": "a" } },                     // id 6
+  { "x": 0, "y": 1.5, "h": 0.5, "label": "B", "tap": { "op": "hidKey", "keys": "b" } },                   // off the unit lines: id 16
+  { "x": 1, "y": 1, "w": 2, "h": 2, "label": "Big (g)", "color": "#8338ec", "tap": { "op": "hidKey", "keys": "g" } },  // id 7
+  { "x": 3, "y": 1, "w": 0.5, "label": "L", "tap": { "op": "hidKey", "keys": "left" } },                 // id 9
+  { "x": 3.5, "y": 1, "w": 0.5, "label": "R", "tap": { "op": "hidKey", "keys": "right" } },              // id 17
+  { "x": 4, "y": 1, "h": 2, "label": "Tall (t)", "color": "#e76f51", "tap": { "op": "hidKey", "keys": "t" } },        // id 10
+  { "x": 0, "y": 2, "label": "Esc", "tap": { "op": "hidKey", "keys": "esc" } },                          // id 11
+  { "id": 500, "x": 3.25, "y": 2.25, "w": 0.5, "h": 0.5, "label": "q", "tap": { "op": "hidKey", "keys": "q" } }       // named id
+]
+```
 
 ## Devices
 
@@ -136,16 +196,16 @@ A button has three parts: how it **looks**, what its **gestures do**, and (rarel
 
 ### Look properties *(proposed)*
 
-A key is drawn from **two layers** (the device draws them in order and swaps the pair when pressed; [`image-assets.md`](image-assets.md)):
+A key's look has **two layers**:
 
-- **Background ("face"):** the key's shape and fill. Opaque or with transparent padding at the edges.
-- **Foreground:** the icon and label on a transparent background.
+- **Background ("face"):** the key's shape and fill, inside an 8 px black margin.
+- **Foreground:** the icon and label.
 
-The look properties describe both layers; the pipeline renders four images per key: `normalBg`, `normalFg`, `pressedBg`, `pressedFg`.
+The look properties describe both layers. The pipeline renders them and composes them over black into **one opaque image per state**, exactly the key's size (144x144 for 1U, 288x144 for 2U): `normal` and `pressed`. The device shows the pressed one while the key is held ([`image-assets.md`](image-assets.md)).
 
 | Property | Type | Layer | Description |
 |---|---|---|---|
-| `face` | `"rounded"` \| `"square"` \| `"none"` \| object | bg | The face shape. `"none"` is a transparent face (the icon sits on black). The object form gives the face's own settings (`top`, `bottom`, `border`, `radius`, `padding`), the demo's rounded gradient being the default |
+| `face` | `"rounded"` \| `"square"` \| `"none"` \| object | bg | The face shape. `"none"` is no face (the icon sits on black). The object form gives the face's own settings (`top`, `bottom`, `border`, `radius`, `padding`), the demo's rounded gradient being the default |
 | `color` | CSS color | bg | The face fill. Shorthand for `face: { top: c, bottom: darker(c) }` |
 | `icon` | string | fg | An SVG file path, or `#name` for a built-in icon. Omit for a label-only key |
 | `iconColor` | CSS color | fg | Replaces `#848484` in the SVG (`svgForeColor`). Default white |
@@ -157,17 +217,17 @@ The look properties describe both layers; the pipeline renders four images per k
 | `labelAlign`, `labelVAlign` | as node-buttonImage | fg | `textAlign`, `textVAlign`. `labelVAlign` defaults to `"bottom"` with an icon and `"center"` without |
 | `font` | CSS font string | fg | e.g. `"bold 11px sans-serif"`. Defaults depend on whether there's an icon |
 | `labelPadding`, `labelOffset`, `labelLineSpacing` | as node-buttonImage | fg | `textPadding`, `textTranslate`, `textLineSpacing` |
-| `pressed` | object | both | Look properties **merged over** the above for the pressed pair. Omitted: a built-in pressed treatment *(open: darken the face, or shift the icon)* |
-| `image` | object | either | Escape hatch: `{ normalBg, normalFg, pressedBg, pressedFg }`, each a raw node-buttonImage settings object (`svgFile`, `svgCode`, `text`, ...), an `.svg`/`.png` path, or `null` for none. Overrides the generated layer outright |
+| `pressed` | object | both | Look properties **merged over** the above for the pressed image. Omitted: the normal face with a 35% black overlay |
+| `image` | object | either | Escape hatch: `{ normalBg, normalFg, pressedBg, pressedFg }`, each a raw node-buttonImage settings object (`svgFile`, `svgCode`, `text`, ...), an `.svg` path, or `null` for none. Overrides the generated layer outright (the layers are still composed into one image per state) |
 
-The sizes are virtual pixels (node-buttonImage's `virtualSize`, default 72) and scale to the rendered key size (128x128 cells, with the icon area about 80–96 px; the pipeline takes these from the same firmware constants that GET_INFO reports, never from this file).
+The sizes are virtual pixels (node-buttonImage's `virtualSize`: 72 across a 128 px face, the face of a 1U key, with the icon area about 80 px). On other key sizes the virtual size scales with the face (72 per 128 px each way), so text, padding and offsets keep their 1U size; the icon's size follows the face's height. The pixel sizes come from the same firmware constants that GET_INFO reports (`host/src/bake/consts.js`, checked against `key_geometry.h`), never from this file.
 
 Rules:
 
-- A key with **no look properties and no inherited ones** has no images at all (all four absent: they pack as length 0 with a null pointer, which the compositor draws as nothing). That is valid.
+- A key with **no look properties and no inherited ones** has no images at all (both absent: they pack as length 0 with a null pointer, and the device draws the key black). That is valid: it's still a touchable key.
 - `pressed` only needs the differences. A property merged in `pressed` may be `null` to clear an inherited value.
 - Colors are CSS color strings. Gradients and alpha are the face object's job.
-- The pipeline renders each distinct resolved image once. Two buttons that resolve to the same `normalBg` (say, every key inheriting the root `color`) share one encoded Buffer and the blob stores one copy ([`standalone.md`](standalone.md#build-pipeline-and-sources)).
+- The pipeline renders each distinct layer once and each distinct image once. Two keys of the same size that resolve to the same look share one encoded Buffer and the blob stores one copy ([`standalone.md`](standalone.md#build-pipeline-and-sources)). Since faces are baked into every image, keys that differ only in their icon or label no longer share anything.
 
 ### Gestures
 
@@ -287,6 +347,7 @@ root.defaults  →  (home | activity).defaults  →  page.defaults  →  button
 - **Only look properties and `longPressMs` inherit.** Gestures (`tap`, `long`, `press`, ...) and `label` do not: inheriting an action or a label across buttons is almost never intended. (A default `label` can be set explicitly where wanted.)
 - `defaults` takes the same look properties as a button, minus gestures and `label`.
 - **Empty slots** (`null`) never inherit anything.
+- **Groups** sit between the page and their keys in the chain (see [Keys](#keys)).
 - A button that has nothing of its own *and* nothing inherited is the all-absent key above; one with inherited backgrounds but no icon gets the inherited face only.
 
 ## What the pipeline produces
@@ -295,19 +356,20 @@ Stage 1 of the pipeline ([`standalone.md`](standalone.md#build-pipeline-and-sour
 
 | In the file | In the blob |
 |---|---|
-| `home.keys[i]` | `home.keys[i]`: four image pointers + `longPressMs` |
-| `home.keys[i]` gestures | `home.bindings[]`: `{ control: "touch[c,r]", event, ops }`, with `c = i % 5`, `r = floor(i / 5)` |
+| `home.keys` | `home.keys[]`: per key `{ id, rect: [x, y, w, h] (quarter units), normal, pressed (rle565, or absent), longPressMs }`; a group becomes its keys; `null` entries are left out |
+| `home.keys[i]` gestures | `home.bindings[]`: `{ control: "touch[id]", event, ops }` |
 | `activities` map | `activities[]` in file order; `switchActivity` names → indices |
-| `pages[p].keys[i]` gestures | the activity's `bindings[]`, with `control: "touch[5*(p+1) + i%5, floor(i/5)]"`: **the column index runs across the page strip** and counts Home as page 0, so the activity's first page starts at column 5 |
+| `pages[p].keys` | `pages[p].keys[]`, as for Home |
+| `pages[p].keys[i]` gestures | the activity's `bindings[]`, with `control: "touch[id]"`: ids are unique across the layout, so the name alone says which key |
 | `activity.devices` | `devices: int[]` (indices into the root `devices` order) |
 | `activity.bindings[]` | appended to the activity's `bindings[]` after the generated touch ones |
 | `devices.<name>` | `devices[]` in file order |
 | `use` references | expanded inline |
 | `script` ops | Lua source strings (deduplicated), already compile-checked |
 | `hidKey.keys` | HID usage codes + modifier bits |
-| look properties | four rle565 Buffers per key (one shared Buffer per distinct encoding) |
+| look properties | two opaque rle565 Buffers per key, the key's size (one shared Buffer per distinct encoding) |
 
-The generated binding order is: touch bindings in page, then key, then gesture order (`press`, `release`, `tap`, `long`), followed by the activity's own `bindings`. A button's `action` becomes `tap`.
+The generated binding order is: touch bindings in page, then key (layout order, a group's keys in place), then gesture order (`press`, `release`, `tap`, `long`), followed by the activity's own `bindings`. A button's `action` becomes `tap`.
 
 Stage 1 is pure and synchronous and its output (a plain object tree) is the unit-test surface. Stage 2 renders the images and stage 3 packs.
 
@@ -319,7 +381,8 @@ Errors:
 
 - Unknown property, wrong type, out-of-range number; unsupported `version`.
 - Duplicate or empty names; `devices` entry, `switchActivity` target or `use` that doesn't exist; a `use` cycle.
-- More than 15 keys on a page; an activity with no pages; more pages than the firmware allows.
+- More than 32 keys on a page; an activity with no pages; more pages than the firmware allows.
+- A key or group outside the 5x3 grid, overlapping another, or with a position or size that isn't a multiple of 0.25; `x` without `y` (or the reverse); an entry past index 14 without `x`/`y`; a group's key outside its group or overlapping another; `face`/`color`/`image` on a group's key; a duplicate `id` (named or default), or no id left.
 - `switchActivity` in an activity hook or a device `turnOn`/`turnOff` list (also through `use`).
 - `hold` outside `press`/`release`; both `action` and `tap`; `hidKey` with an unknown key name; bad MAC, port or URL scheme.
 - A `script` with both or neither of `lua` and `file`; a missing file; a Lua syntax error; a source over 16 KB.
@@ -332,6 +395,7 @@ Warnings:
 - A `long` op list on a button whose `tap` is absent (legal, just unusual).
 - A device listed by no activity; an action that nothing uses.
 - Two buttons that resolve to identical images *and* actions (a likely copy-paste), at most once per page.
+- A group whose keys don't cover it (that part shows black).
 - An `icon` larger than the icon area will be clipped.
 
 ## Example
@@ -397,14 +461,15 @@ Warnings:
 }
 ```
 
-In "Watch TV"'s first page, `Mute` is at index 4 (column 4, row 0), so on the page strip (Home is page 0) its generated binding is `touch[9,0]` / `tap`. `back` is at index 5 (column 0, row 1), giving `touch[5,1]` / `tap` and `touch[5,1]` / `long`.
+Home's keys get ids 1 and 2 (slots 0 and 1 of page 0). "Watch TV"'s first page is page 1 of the layout, so `Mute` at index 4 (slot 4) gets id 1 × 15 + 4 + 1 = 20, and its generated binding is `touch[20]` / `tap`. `back` is at index 5 (slot 5): id 21, giving `touch[21]` / `tap` and `touch[21]` / `long`. Listen's page is page 2, so its key is id 31.
 
 ## Testing
 
 Unit tested in `host/test/bake/` (`npm test` in `host/`; Node's test runner; stage 1 needs no device, no `sharp`):
 
 - Valid layouts: the example above, a minimal one (`version` + empty `home`), and a maximal one (15 keys on every page).
-- Resolution: the defaults chain (each level overrides, recursive merge, `null` clears, gestures and labels don't inherit); name → index; `use` expansion (nested, cycle error); touch control names across the page strip (Home columns 0..4, page 1 from 5); `action` → `tap`; generated binding order.
+- Resolution: the defaults chain (each level overrides, recursive merge, `null` clears, gestures and labels don't inherit); name → index; `use` expansion (nested, cycle error); `action` → `tap`; generated binding order.
+- Keys (`keys.test.js`, with the example in `fixtures.js` `exampleKeys()`): slot placement, `x`/`y`/`w`/`h`, groups, rect and overlap errors, default and named ids across the layout, `touch[id]` names. `render-real.test.js` renders 1U, span, fractional and group keys for real (opaque, the right sizes, no seam inside a group, each group key pressing alone) and checks the constants against the firmware headers.
 - Validation: each error and warning above, with the exact path and message; several errors reported at once.
 - Scripts: syntax error is reported; `file` and `lua` forms; identical sources deduplicated.
 - Images: through an injected fake renderer, the same resolved look gives the same Buffer object (and so one stored copy); different looks give different ones; an absent look gives none.
@@ -414,7 +479,7 @@ The browser run of the pipeline (`sharp`, rle565 encoder, Lua checker) is untest
 
 ## Open points
 
-- **Look properties** (above) are a proposal and need to be checked against what node-buttonImage and the demo's face SVG can produce at 128x128; in particular the exact split into background and foreground, and the default pressed look.
+- **Look properties** (above) are a proposal and need to be checked against what node-buttonImage and the demo's face SVG can produce, especially on spans, fractional keys and groups.
 - **The defaults chain** (root → activity/home → page → key) is proposed and needs a decision.
 - **Face shade bands:** a plain `color` gets a gentle top-to-bottom shade, which bands visibly in RGB565 on dark
   faces (seen on the hardware, 2026-11-07; flat faces look clean). Options: make a plain `color` flat by default

@@ -7,6 +7,7 @@
 #include "Core.h"
 #include "rle565.h"
 #include "store_env.h"
+#include "key_geometry.h"
 
 using namespace SimpleLib;
 
@@ -14,14 +15,18 @@ using namespace SimpleLib;
 
 namespace
 {
+    // The store takes images up to max_w x max_h; require_opaque refuses any
+    // with a transparent pixel. The default is the interim 128 policy the
+    // model still uses (any opacity).
     struct Fixture
     {
         StoreEnv   env;
         ImageStore store;
 
-        explicit Fixture(uint32_t capacity = CAPACITY)
+        explicit Fixture(uint32_t capacity = CAPACITY, uint32_t max_w = TEST_KEYS_FACE_SIZE,
+                         uint32_t max_h = TEST_KEYS_FACE_SIZE, bool require_opaque = false)
         {
-            store.Init(env.Host(), capacity, COMP_KEY_SIZE, COMP_KEY_SIZE);
+            store.Init(env.Host(), capacity, max_w, max_h, require_opaque);
         }
 
         // The sweep runs, then the store frees what it can
@@ -161,14 +166,98 @@ Fact("ImageStore Rejects Bad Images")
     f.store.PutData(junk, sizeof(junk));
     Assert(f.store.PutEnd() == ImageResult::BadImage);
 
-    // A valid image of the wrong size (a 24x6 pager pill)
+    // A valid image larger than the maximum (a 144 key in a 128 store)
+    Assert(get_image_width(f.env.Key1U()) > TEST_KEYS_FACE_SIZE);
+    Assert(f.env.Upload(f.store, 9, f.env.Key1U()) == ImageResult::BadImage);
+    Assert(f.env.LiveBlocks() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// Sizes and opacity: any size up to the maximum, opaque only if required
+// ---------------------------------------------------------------------------
+
+Fact("ImageStore Accepts Any Size Up To The Maximum")
+{
+    Fixture f(CAPACITY, KEY_GRID_W, KEY_GRID_H, true);
+    Assert(f.env.Upload(f.store, 1, f.env.Key1U(0)) == ImageResult::Ok);
+    Assert(f.env.Upload(f.store, 2, f.env.Key2U(0)) == ImageResult::Ok);
+    Assert(f.env.Upload(f.store, 3, f.env.Face(0, true)) == ImageResult::Ok);     // 128, opaque
+
+    // A small image (a 24x6 pager pill) in a store with no opacity rule
+    Fixture g;
     static BLOBPACK *ui = LoadAsset("ui.bin");
     const void *pill = get_blob(ui, 1);
     Assert(check_image(pill, get_blob_size(ui, 1), nullptr));
-    Assert(f.store.PutBegin(9, get_image_packed_size(pill), 0, get_image_packed_size(pill)) == ImageResult::Ok);
-    f.store.PutData(pill, get_image_packed_size(pill));
-    Assert(f.store.PutEnd() == ImageResult::BadImage);
+    Assert(g.env.Upload(g.store, 9, pill) == ImageResult::Ok);
+}
+
+Fact("ImageStore Refuses Images Wider Or Taller Than The Maximum")
+{
+    Fixture narrow(CAPACITY, KEY_CELL, KEY_CELL, true);
+    Assert(narrow.env.Upload(narrow.store, 1, narrow.env.Key1U(0)) == ImageResult::Ok);     // exactly the maximum
+    Assert(narrow.env.Upload(narrow.store, 2, narrow.env.Key2U(0)) == ImageResult::BadImage);
+    Assert(!narrow.store.IsLive(2));
+
+    Fixture low(CAPACITY, 2 * KEY_CELL, KEY_CELL - 1, true);
+    Assert(low.env.Upload(low.store, 1, low.env.Key1U(0)) == ImageResult::BadImage);
+    Assert(low.env.Upload(low.store, 2, low.env.Key2U(0)) == ImageResult::BadImage);
+    Assert(low.env.LiveBlocks() == 0);
+
+    // External images too
+    Fixture ext(CAPACITY, KEY_CELL, KEY_CELL, true);
+    uint32_t size = get_image_packed_size(ext.env.Key2U(0));
+    void *copy = malloc(size);
+    memcpy(copy, ext.env.Key2U(0), size);
+    Assert(ext.store.AddExternal(1, copy, size) == ImageResult::BadImage);
+    Assert(!ext.store.IsLive(1));
+    free(copy);
+}
+
+Fact("ImageStore Refuses Transparent Images When Opaque Is Required")
+{
+    Fixture f(CAPACITY, KEY_GRID_W, KEY_GRID_H, true);
+    Assert(f.env.Upload(f.store, 1, f.env.Face(0, false)) == ImageResult::BadImage);
+    Assert(f.env.Upload(f.store, 2, f.env.Icon(0)) == ImageResult::BadImage);
+    Assert(!f.store.IsLive(1) && !f.store.IsLive(2));
     Assert(f.env.LiveBlocks() == 0);
+
+    // A refused replace keeps the old image
+    Assert(f.env.Upload(f.store, 3, f.env.Key1U(0)) == ImageResult::Ok);
+    Assert(f.env.Upload(f.store, 3, f.env.Icon(1)) == ImageResult::BadImage);
+    Assert(f.store.Find(3)->opaque && f.store.Find(3)->width == KEY_CELL);
+
+    // External images too
+    uint32_t size = get_image_packed_size(f.env.Icon(0));
+    void *copy = malloc(size);
+    memcpy(copy, f.env.Icon(0), size);
+    Assert(f.store.AddExternal(4, copy, size) == ImageResult::BadImage);
+    Assert(!f.store.IsLive(4));
+    free(copy);
+}
+
+Fact("ImageStore Entries Expose The Image Size")
+{
+    Fixture f(CAPACITY, KEY_GRID_W, KEY_GRID_H, true);
+    Listener l;
+    f.store.SetListener(&l);
+    Assert(f.env.Upload(f.store, 1, f.env.Key1U(1)) == ImageResult::Ok);
+    ImageEntry *e = f.store.Find(1);
+    Assert(e->width == KEY_CELL && e->height == KEY_CELL && e->opaque);
+
+    // A replace may change the size; the listener sees the new one
+    Assert(f.env.Upload(f.store, 1, f.env.Key2U(1)) == ImageResult::Ok);
+    Assert(f.store.Find(1) == e && l.replaced.GetCount() == 1);
+    Assert(e->width == 2 * KEY_CELL && e->height == KEY_CELL);
+
+    // External
+    uint32_t size = get_image_packed_size(f.env.Key2U(2));
+    void *copy = malloc(size);
+    memcpy(copy, f.env.Key2U(2), size);
+    Assert(f.store.AddExternal(2, copy, size) == ImageResult::Ok);
+    ImageEntry *x = f.store.Find(2);
+    Assert(x->external && x->width == 2 * KEY_CELL && x->height == KEY_CELL && x->opaque);
+    f.store.Reset();
+    free(copy);
 }
 
 Fact("ImageStore Accepts Padding After The Image")
@@ -518,7 +607,7 @@ Fact("ImageStore Freeing An External Image Frees Nothing")
     f.store.Free(5);
     f.store.Release(e);
     Assert(!f.store.HasRetired() && f.env.sweeps_requested == 0);
-    Assert(get_image_width(blob.px) == COMP_KEY_SIZE);          // the memory is untouched
+    Assert(get_image_width(blob.px) == TEST_KEYS_FACE_SIZE);          // the memory is untouched
 }
 
 Fact("ImageStore Reset Drops External Images Without Touching Them")
@@ -529,7 +618,7 @@ Fact("ImageStore Reset Drops External Images Without Touching Them")
     Assert(f.env.Upload(f.store, 6, f.env.Icon(1)) == ImageResult::Ok);
     f.store.Reset();
     Assert(!f.store.IsLive(5) && !f.store.IsLive(6));
-    Assert(f.env.LiveBlocks() == 0 && get_image_width(blob.px) == COMP_KEY_SIZE);
+    Assert(f.env.LiveBlocks() == 0 && get_image_width(blob.px) == TEST_KEYS_FACE_SIZE);
     ImageStoreStats st;
     f.store.GetStats(&st);
     Assert(st.count == 0 && st.used == 0);
@@ -559,13 +648,34 @@ Fact("ImageStore Uploading Over An External ID Replaces It")
     Assert(f.store.HasRetired());
 }
 
-// RUN_STRESS uploads every test_keys.bin image with its blob size (main.cpp load_demo_images)
+// RUN_STRESS (main.cpp load_demo_images) uploads the opaque keys with their blob size; the 128
+// faces and icons are the host tests' small and transparent images
 Fact("ImageStore Accepts Every Test Key Image At Its Blob Size")
 {
+    static BLOBPACK *pack = LoadAsset("test_keys.bin");
+    int first_key = TEST_KEYS_FIRST_KEY(pack->count);
+    Assert(first_key > TEST_KEYS_FIRST_ICON);
+
+    // The 128 faces and icons, in a store that takes transparent images
     StoreEnv env;
     ImageStore store;
-    store.Init(env.Host(), 1u << 20, COMP_KEY_SIZE, COMP_KEY_SIZE);
-    static BLOBPACK *pack = LoadAsset("test_keys.bin");
-    for (uint32_t b = 0; b + 1 < pack->count; b++)
+    store.Init(env.Host(), 1u << 20, TEST_KEYS_FACE_SIZE, TEST_KEYS_FACE_SIZE, false);
+    for (int b = 0; b < first_key; b++) {
+        Assert(get_image_width(get_blob(pack, b)) == TEST_KEYS_FACE_SIZE);
         Assert(store.Put(0xDE000000u + b, get_blob(pack, b), get_blob_size(pack, b)) == ImageResult::Ok);
+    }
+
+    // The opaque keys, under the opaque policy: 1U then 2U
+    StoreEnv env2;
+    ImageStore opaque;
+    opaque.Init(env2.Host(), 1u << 20, KEY_GRID_W, KEY_GRID_H, true);
+    for (int i = 0; i < TEST_KEYS_KEYS; i++) {
+        int b = first_key + i;
+        uint32_t w = i < TEST_KEYS_KEYS_1U ? KEY_CELL : 2 * KEY_CELL;
+        Assert(store.Put(0xDE100000u + b, get_blob(pack, b), get_blob_size(pack, b)) == ImageResult::BadImage);
+        Assert(opaque.Put(0xDE000000u + b, get_blob(pack, b), get_blob_size(pack, b)) == ImageResult::Ok);
+        ImageEntry *e = opaque.Find(0xDE000000u + b);
+        Assert(e->opaque && e->width == w && e->height == KEY_CELL);
+    }
+    Assert(TEST_KEYS_KEY_2U(pack->count, TEST_KEYS_KEYS_2U - 1) == (int)pack->count - 2);
 }

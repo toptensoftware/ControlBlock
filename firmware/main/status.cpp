@@ -38,7 +38,7 @@ static_assert(STATUS_BAND_ROWS_ONE_PAGE <= STATUS_BAR_BAND_ROWS_MAX &&
 static StatusBar          s_bar;
 static status_bar_style_t s_style;
 static TaskHandle_t       s_task;
-static fill_gap_client_t  s_gap_client = { NULL, WAKE_GAP, false };
+static fill_gap_client_t  s_gap_client = { NULL, WAKE_GAP, false, 0 };
 static uint16_t          *s_scratch;        // SCREEN_W x STATUS_BAR_BAND_ROWS_MAX, internal RAM
 
 static StatusIcons        s_icons;          // under s_icons_lock

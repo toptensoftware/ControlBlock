@@ -2,12 +2,12 @@
 
 How the host uploads, references, replaces and frees key images on the device. Message byte layouts are in [`protocol.md`](protocol.md); this doc covers what they mean and how the firmware implements them, between the protocol and the [page compositor](page-compositor.md).
 
-Status: **implemented and host tested**, not yet run on the hardware.
+Status: **implemented and host tested**. Since protocol v2 (2026-11-12) every key image is one **fully opaque** image per state, the size of its key; before that a key had four 128x128 images with alpha (background and foreground, normal and pressed).
 
 | Piece | Where |
 |---|---|
 | Image store | `firmware/main/image_store.cpp/.h` (tests: `TestImageStore.cpp`) |
-| Key layout (four slots per key, the compositor's client) | `key_layout.cpp/.h` (`TestKeyLayout.cpp`) |
+| Key layout (two images per key, the compositor's client) | `key_layout.cpp/.h` (`TestKeyLayout.cpp`) |
 | Sweep | `PageCompositor::RequestSweep()` (`TestCompositor.cpp`, fuzzed in `TestCompositorFuzz.cpp`) |
 | Messages | `protocol.cpp/.h` (`TestProtocol.cpp`) |
 | Device wiring | `model.cpp` (store + key layout + lock), `host_link.cpp` (protocol task), `usb.cpp` |
@@ -16,9 +16,10 @@ Status: **implemented and host tested**, not yet run on the hardware.
 ## Summary
 
 - **The host names images.** Each image is uploaded under a 32-bit ID the host chooses. The firmware treats it as opaque; a CRC or hash of the encoded file makes a good ID. **ID 0 means "no image".**
-- **Keys reference images by ID.** A key definition names four images: a **background** and a **foreground** for the **normal** state, and the same pair for the **pressed** state. The device switches to the pressed pair on its own while a key is held, so press feedback needs no USB traffic.
+- **Keys reference images by ID.** A key definition names two images: **normal** and **pressed**. The device shows the pressed one on its own while the key is held, so press feedback needs no USB traffic.
+- **One opaque image per state.** Face, icon, label and anti-aliasing are composed by the host over the black background into one image with no transparent pixel, exactly the key's size in pixels. The device refuses an image that isn't fully opaque.
 - **The host draws everything.** Faces, icons and labels are all host images (labels are baked in). The firmware has no stock face, tint or font.
-- **Images live on their own.** An image can sit on the device unused (the "off" version of a toggle, say), and one image can be used by any number of keys and slots. Changing what a key shows is just a key definition naming other IDs.
+- **Images live on their own.** An image can sit on the device unused (the "off" version of a toggle, say), and one image can be used by any number of keys (of its size). Changing what a key shows is just a key definition naming other IDs.
 - **Replace in place.** Uploading to an ID that's already live replaces its pixels, and every key using it updates.
 - **rle565 in PSRAM.** Images are uploaded already encoded (`.rle565`, with alpha), checked once on arrival, and kept in PSRAM in 4-byte-aligned allocations.
 - **Free is deferred, never refused.** Freeing an image removes its ID at once. Its memory is released only when no key uses it **and** the compositor no longer references it.
@@ -30,9 +31,9 @@ Status: **implemented and host tested**, not yet run on the hardware.
 | Term | Meaning |
 |---|---|
 | **Image ID** | `u32` chosen by the host. `0` = null. Unique among *live* images. |
-| **Entry** | What an ID names (an `ImageEntry`): its current pixels and how many key slots use it. |
+| **Entry** | What an ID names (an `ImageEntry`): its current pixels, their size, and how many key slots use it. |
 | **Pixels** | One rle565 allocation (an `ImageData`). An entry has one at a time; replacing an image gives the entry new pixels and retires the old ones. |
-| **Slot** | One of a key's four image references: normal `bg`/`fg`, pressed `bg`/`fg`. |
+| **Slot** | One of a key's two image references: `normal` and `pressed`. |
 | **Live** | In the ID map: keys can reference it, uploads replace it and `QUERY_IMAGES` reports it. |
 | **Key refs** | How many slots (on any key, any page) point at an entry. |
 | **Dying** | Freed by the host but key refs > 0. Not in the ID map: new key definitions can't use it, but keys that already do keep showing it. |
@@ -49,55 +50,62 @@ Status: **implemented and host tested**, not yet run on the hardware.
 
 ## Image format
 
-- **rle565** with alpha, exactly **`key_w`×`key_h`** (128x128, from `GET_INFO`). This is what the compositor draws (`comp_key_t`, see [page-compositor.md](page-compositor.md#keys)).
-- **Smaller artwork is padded, not shrunk.** An 80–96 px icon is encoded centred in a 128x128 image with transparent edges. rle565 only stores rows from `firstRow` to `firstRow + rowCount` and skips transparent runs, so the padding costs next to nothing. `icon_w`×`icon_h` in `GET_INFO` is the area icons are designed to fill.
-- **No size limit** beyond the store's capacity. The host keeps images sensible.
-- **Checked on arrival**, in every build (the data comes from outside):
-  1. `check_image_header()`, and the width and height must equal the key size.
-  2. `check_image()`: every row's runs, bounds checked (no out-of-range runs, rows or palette indexes). It also reports whether every pixel is opaque; if so the pixels are flagged, and a key drawn with them as `bg` gets `COMP_KEY_BG_OPAQUE`.
-- `check_image()` was added to rle565 for this. It walks the image the way `decode_image_argb8888` does, sharing its code, but writes no pixels. Decoding into a buffer would have meant a 64 KB write to PSRAM per upload. `comp_image_is_opaque()` uses it too.
+- **rle565**, **fully opaque**, any size from 1x1 up to the key grid (720x432: `max_image_w`×`max_image_h` in `GET_INFO`). This is what the compositor draws (`comp_key_t`, see [page-compositor.md](page-compositor.md#keys)).
+- **Sizes are key rects in pixels.** A key's images must be exactly its rect's size: `w × quarter` by `h × quarter` (1U = `key_w` = 144 px, 0.25U = `quarter` = 36 px), so a 1U key's images are 144x144 and a 2U key's 288x144. The size is checked against the rect when keys are set (`SET_KEYS`: `BAD_IMAGE`; the layout blob at boot), not at upload, since an image doesn't know its key.
+- **The usual look:** a 128x128 face centred in a 144x144 image with 8 px of black round it, the icon filling about `icon_w`×`icon_h` (80) of the face, the label baked in. Bigger keys keep the 8 px margin. The host library's `keyImage()` composes layers over black (`host/src/images.js`).
+- **No size limit** beyond the grid and the store's capacity.
+- **Checked on arrival**, in every build (the data comes from outside), on upload and for every image of a layout blob (`AddExternal`):
+  1. `check_image_header()`, and the width and height must be 1 to the maximum.
+  2. `check_image()`: every row's runs, bounds checked (no out-of-range runs, rows or palette indexes). It also reports whether every pixel is opaque, and **an image with any transparent pixel is refused** (`BAD_IMAGE`; the store is set up with `require_opaque`).
+- `check_image()` was added to rle565 for this. It walks the image the way `decode_image_argb8888` does, sharing its code, but writes no pixels. Decoding into a buffer would have meant a large write to PSRAM per upload.
 - Bytes after the image (padding to 4, say) are allowed.
 - Data that fails is discarded and the upload returns `BAD_IMAGE`. On a replace, the old pixels stay.
 
 ## Storage
 
 ```cpp
-struct ImageData                // one allocation: this header, then the pixels
+struct ImageData                // one allocation: this 16-byte header, then the pixels
 {
     uint32_t size;              // bytes of rle565 data
-    uint8_t  flags;             // IMAGE_OPAQUE, IMAGE_RETIRED
+    uint32_t flags;             // IMAGE_OPAQUE, IMAGE_RETIRED
     uint32_t sweep;             // sweep generation it waits for (retired only)
+    uint32_t reserved;
     // rle565 data follows, 4-byte aligned; comp_key_t points here
 };
 
 struct ImageEntry
 {
-    uint32_t   id;
-    ImageData *data;            // current pixels
-    uint16_t   key_refs;        // slots using it
-    uint8_t    state;           // Live or Dying
+    uint32_t    id;
+    ImageData  *data;           // current pixels; null for an external image
+    const void *pixels;         // what the compositor draws (data's pixels, or the external pointer)
+    bool        opaque;
+    uint16_t    width, height;  // set on install and replace
+    bool        external;       // AddExternal: pixels inside the layout blob, never copied or freed
+    uint32_t    key_refs;       // slots using it
+    bool        live;           // false = dying
 };
 ```
 
 - **Pixels** are allocated with `heap_caps_aligned_alloc(4, …, MALLOC_CAP_SPIRAM)` on the first chunk of an upload. rle565 needs 4-byte alignment and USB payloads have none, so the data is always copied in. The header sits just before the data, so the compositor's sweep callback can get from a data pointer to its flags.
 - **Entries** are kept in a SimpleLib `Map<uint32_t, ImageEntry *>` for live images and a `List<ImageEntry *>` for dying ones. Retired pixels go in a `List<ImageData *>`. Entries are small (~16 B), so whether they go in internal RAM or PSRAM is up to the allocator setup.
-- **Capacity:** PSRAM free after init, less a reserve for everything else (`IMAGE_RESERVE`, e.g. 512 KB). That's ~5 MB with three page buffers, or ~250–1,000 icons at 5–20 KB each. Faces shared across keys cost one image, not one per key. `GET_INFO` reports capacity, bytes used (including retired pixels and a replace in progress, since that memory isn't back yet), the image count and the largest free block.
-- **Fragmentation:** images are all similar sizes, so the PSRAM heap should cope. If `NO_SPACE` comes back while the free total says there's room, the largest free block shows why, and `RESET` gets the memory back.
+- **Capacity:** PSRAM free after init, less a reserve for everything else (`IMAGE_RESERVE`, e.g. 512 KB). That's ~5 MB with three page buffers, or ~250–1,000 icons at 5–20 KB each. Every key state is its own image (faces are baked in), so a page of 1U keys is ~30 images of ~3–5 KB; two keys that look identical share one. `GET_INFO` reports capacity, bytes used (including retired pixels and a replace in progress, since that memory isn't back yet), the image count and the largest free block.
+- **Fragmentation:** images are mostly similar sizes, so the PSRAM heap should cope. If `NO_SPACE` comes back while the free total says there's room, the largest free block shows why, and `RESET` gets the memory back.
 - **Not saved to flash** in v1, the same as the rest of the hosted keys (only the standalone layout is saved: [`protocol.md`](protocol.md#layout-upload)). Modes 2 and 3 will want images in flash; the IDs and format here are meant to carry over.
 
 ## Key definitions and references
 
 The page model (the compositor's client, under the model lock) holds per key:
-- its four `ImageEntry *` slots,
-- whether it's pressed (set by the touch router: PRESS to RELEASE/CANCEL, see interactions.md),
-- and the `comp_key_t` the compositor sees, derived from these: the normal or pressed pair's current `data` pointers, plus `COMP_KEY_BG_OPAQUE` if that `bg` is opaque.
+- its id, page, rect and flags (`KeyState` in `key_layout.h`),
+- its two `ImageEntry *` slots, `normal` and `pressed`,
+- whether it's pressed (set by the touch router from touch-down to RELEASE/CANCEL, see interactions.md),
+- and the `comp_key_t` the compositor sees, derived from these (`KeyLayout::GetPage`): the key's pixel rect and the shown entry's current pixels, or NULL (background) if that entry isn't the rect's size.
 
-**Pressed pair:**
-- **Both pressed IDs 0** means "no press feedback": the normal pair is shown while pressed. A key that should blank while pressed uses a fully transparent image.
-- Press and release just change which pair goes into `comp_key_t`, followed by `comp_page_changed()` (incremental). Press highlighting is a model change on the device, and the compositor treats it like any other. The un-highlight on a press that turns into a drag is delayed, as described in [page-compositor.md](page-compositor.md#swipe-start).
+**Pressed image:**
+- **Pressed ID 0** means "no press feedback": the normal image is shown while pressed, and a press changes nothing on screen. A disabled key never shows its pressed image.
+- Press and release just change which image goes into `comp_key_t`, followed by `comp_page_changed()` (incremental). Press highlighting is a model change on the device, and the compositor treats it like any other. The un-highlight on a press that turns into a drag is delayed, as described in [page-compositor.md](page-compositor.md#swipe-start).
 
 **Applying `SET_KEYS`:**
-- **All or nothing.** Every ID it names must be live (or 0), otherwise nothing changes and the response is `NOT_FOUND`. This is checked before anything changes.
+- **All or nothing.** Every ID it names must be live (or 0 for `pressed`), otherwise nothing changes and the response is `NOT_FOUND`; an image that isn't its key's size gives `BAD_IMAGE`. This is checked before anything changes. (A key may keep naming an image that has since been freed, if it already holds it; see [protocol.md](protocol.md#0x21-set_keys).)
 - **Ref counting** happens under the model lock while keys are applied. Each new reference is counted first and each old one released afterwards, so a key that keeps the same image never takes its count to 0 in between.
 - **When the last ref goes:** a dying entry's pixels are retired and the entry deleted. A live entry is left alone; unused images stay until the host frees them.
 - `comp_page_changed(page, COMP_FLUSH)` is called for each changed page before the model lock is released, so the whole message appears in one frame.
@@ -106,9 +114,10 @@ The page model (the compositor's client, under the model lock) holds per key:
 
 An upload to a live ID builds new pixels alongside the old ones. The old pixels stay on screen and in use while the upload is in progress. When the new pixels pass their checks, under the model lock:
 1. The entry's `data` is pointed at the new pixels.
-2. Every key with a slot on this entry has its `comp_key_t` rebuilt, and each page affected gets `comp_page_changed(page, COMP_FLUSH)`. A scan of the whole model is pages × 15 × 4 compares, which is microseconds.
+2. Each page with a key using this entry gets `comp_page_changed(page, COMP_FLUSH)`, so its keys are drawn from the new pixels. A scan of the whole model is pages × keys × 2 compares, which is microseconds.
 3. The old pixels are retired.
 
+- **A replace may change the size.** It's accepted (the image is checked, not its use), but keys whose rect no longer matches show background until they're set again with an image of their size.
 - **Memory:** a replace needs room for both copies until it finishes. If there isn't room, the response is `NO_SPACE` and the old image stays.
 - **Retries:** resending the same upload replaces it again with identical pixels, which is harmless but costs a redraw of every key using it. The host library skips images `QUERY_IMAGES` says are already present, unless it means to replace them.
 
@@ -135,7 +144,7 @@ So once pixels are retired, the store needs the compositor to let go before free
 
 ```c
 // Drop every reference to pixels for which `retired(img, ctx)` returns
-// true. Done on the compositor task at the next key boundary. Returns a
+// true. Done on the compositor task at its next step. Returns a
 // generation; comp_swept() reaches it once the sweep is done. Any task.
 uint32_t comp_request_sweep(void);
 uint32_t comp_swept(void);
@@ -145,10 +154,11 @@ uint32_t comp_swept(void);
 typedef bool (*comp_is_retired_t)(const void *img, void *ctx);
 ```
 
-At the next key boundary (once any key being copied is finished), the compositor:
-1. **Records:** marks unknown every record whose `bg` or `fg` is retired. That's 3 buffers × 15 keys × 2 pointers, so 90 calls. An unknown key is redrawn the next time that buffer is used for that page. The pixels in the buffer aren't touched, so whatever is on screen stays as it is.
+At its next step, the compositor:
+1. **Records:** marks unknown every record whose image is retired. That's at most 3 buffers × 32 keys, so 96 calls. An unknown key is redrawn the next time that buffer is used for that page. The pixels in the buffer aren't touched, so whatever is on screen stays as it is.
 2. **Snapshot:** if the current job's snapshot names retired pixels, the job is dropped, as for a page that's no longer asked for. Retired pixels are no longer in the model, so the next snapshot of that page won't name them. The page is then rebuilt from records that are still accurate.
-3. Publishes the generation (`comp_swept()`), with a release store.
+3. **Unit:** abandons the key being drawn if it's drawn from retired pixels (it stays unknown and is drawn again).
+4. Publishes the generation (`comp_swept()`), with a release store.
 
 **The store side:** when pixels retire, they're tagged with the generation from `comp_request_sweep()`. The compositor serves every request made so far in one sweep. The protocol task then frees every retired allocation whose generation is ≤ `comp_swept()`. It checks after every message, and every 20 ms while anything is retired. A reset (`comp_reset()`) also serves every sweep requested before it. `comp_is_retired` reads `IMAGE_RETIRED` from the header in front of the data. That flag is set before the sweep is requested and the request is a release, so no lock is needed.
 
@@ -165,7 +175,7 @@ Rejected alternatives:
 
 ## Uploading
 
-Images are the only large traffic: ~5–20 KB per image, so 100 KB–1 MB for a full set of keys. At USB full speed that's ~1 MB/s at best.
+Images are the only large traffic: ~3–8 KB per 1U opaque image (more for big or busy keys), so a full page of keys (15 × 2 states) is ~100 KB, and a whole hosted layout a few hundred KB. At USB full speed that's ~1 MB/s at best (`examples/bench.js` measures it; not yet run). Compressing uploads (deflate) is a later option if hosted updates feel slow.
 
 **Flow** (`PUT_IMAGE`, see [protocol.md](protocol.md#0x10-put_image)):
 - **Start** (`offset = 0`): allocates `total_size` (`NO_SPACE` if it can't). Starting a new upload abandons any upload already in progress.
@@ -176,16 +186,16 @@ Images are the only large traffic: ~5–20 KB per image, so 100 KB–1 MB for a 
 
 **Streaming.** `PUT_IMAGE` data isn't buffered. After the 12-byte prefix, the protocol copies it from the USB read buffer (512 B at a time) straight into the image's own allocation.
 
-**PSRAM writes during an upload.** The bounce fill rule is that nothing may write PSRAM heavily while fills run ([CLAUDE.md](../CLAUDE.md#bounce-fill-rules)). An upload writes at most ~1 MB/s, about 500 B per fill period, far less than the compositor's 3–8 KB per gap. The check reads PSRAM too, in bursts of one image. This should be safe, but it needs measuring:
+**PSRAM writes during an upload.** The bounce fill rule is that nothing may write PSRAM heavily while fills run ([CLAUDE.md](../CLAUDE.md#bounce-fill-rules)). An upload writes at most ~1 MB/s, about 500 B per fill period, far less than the compositor's ~5 KB per gap. The check reads PSRAM too, in bursts of one image. This should be safe, but it needs measuring:
 - **Done:** chunks are copied straight into PSRAM by the protocol task (core 0). `RUN_STRESS` has two "image replaces" cases (at rest and mid-swipe): two icons replaced per tick (~1 MB/s), with every key in view using the icon, so the compositor redraws while the uploads write.
 - **To do:** run it on the hardware.
-- **If fills go late:** stage chunks in a small internal-RAM buffer and copy them into PSRAM in fill gaps, the way `CopySlice` does.
+- **If fills go late:** stage chunks in a small internal-RAM buffer and copy them into PSRAM in fill gaps, the way the compositor draws.
 
 ## Reset
 
 `RESET`:
 1. Takes the model lock and clears every key on every page. The page count goes to 1.
-2. Calls `comp_reset()`, which blocks until no key is being drawn and no pixels are referenced.
+2. Calls `comp_reset()`, which blocks until the compositor has abandoned any key it was drawing and references no pixels.
 3. Abandons any upload in progress and frees every image: live, dying and retired.
 
 The old keys stay on screen until the new page 0 has been built (blank until the host defines keys), as described in [page-compositor.md, Reload](page-compositor.md#reload).
@@ -195,7 +205,7 @@ The old keys stay on screen until the new page 0 has been built (blank until the
 | Who | Does | Locking |
 |---|---|---|
 | Protocol task (core 0) | Uploads, replaces, `FREE_IMAGES`, `SET_KEYS`, `RESET`, freeing swept pixels | Model lock for ref counts, key slots, entry state and the ID map |
-| Swipe task (touch router) | PRESS and RELEASE/CANCEL: picks a key's pair | Model lock |
+| Swipe task (touch router) | Touch-down to RELEASE/CANCEL: picks a key's image | Model lock |
 | Compositor task (core 1) | Reads pixels from its snapshot; sweeps | None for reading; `comp_is_retired` reads one header flag (see above) |
 | Bounce fill | Never sees images | |
 
@@ -204,8 +214,8 @@ The store is **platform independent** (`image_store.cpp/.h`, with the allocator 
 ## Testing
 
 Host tests in `firmware/test/`, written first:
-- **Store:** uploads (single and chunked, out of order, abandoned, bad data, wrong size, `NO_SPACE`), replace (success, bad data keeps the old pixels, `NO_SPACE` keeps the old pixels, freed mid-replace), query, free in every state, re-uploading a dying ID, reset, and the stats.
-- **References:** `SET_KEYS` is all or nothing. Counts stay right across replace, swaps, the same image in several slots and on many keys, and pressed pairs. A dying entry retires exactly when its last slot goes. A replace rebuilds exactly the keys that use the ID and flags exactly their pages.
-- **Press:** the pressed pair is shown while pressed, and both pressed IDs 0 falls back to the normal pair.
+- **Store:** uploads (single and chunked, out of order, abandoned, bad data, any size up to the maximum, too wide or tall, transparent pixels refused, `NO_SPACE`), replace (success, bad data keeps the old pixels, `NO_SPACE` keeps the old pixels, freed mid-replace), query, free in every state, re-uploading a dying ID, reset, and the stats.
+- **References:** `SET_KEYS` is all or nothing. Counts stay right across replace, swaps, the same image in both slots and on many keys, and pressed images. Images must be their key's size; a replace with another size draws background until the keys are set again. A dying entry retires exactly when its last slot goes. A replace rebuilds exactly the keys that use the ID and flags exactly their pages.
+- **Press:** the pressed image is shown while pressed, and pressed ID 0 keeps the normal image.
 - **Compositor sweep:** in the `World` harness, the fuzzer adds random uploads, replaces, frees and key changes. A test allocator poisons freed memory and reuses addresses straight away. The invariants: the compositor never reads freed pixels, and no record or snapshot holds a freed pointer once a sweep has completed.
 - **Not automatable:** the USB transport and the PSRAM impact of uploads. These need the device and the `RUN_STRESS` upload case.

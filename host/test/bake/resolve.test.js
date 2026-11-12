@@ -10,9 +10,9 @@ const act = (extra = {}) => ({ pages: [{ keys: [] }], ...extra });
 test("a minimal layout resolves to an empty Home", () => {
     const t = ok({ version: 1, home: {} });
     assert.equal(t.version, BLOB_VERSION);
+    assert.equal(BLOB_VERSION, 2);
     assert.equal(t.longPressMs, 0);
-    assert.equal(t.home.keys.length, 15);
-    assert.ok(t.home.keys.every(k => k.normalBg === null && k.longPressMs === 0));
+    assert.deepEqual(t.home.keys, []);
     assert.deepEqual(t.home.bindings, []);
     assert.deepEqual(t.devices, []);
     assert.deepEqual(t.activities, []);
@@ -36,26 +36,6 @@ test("settings.longPressMs goes to the root; a key's own value wins", () => {
     assert.match(errorText(run({ version: 1, settings: { nope: 1 }, home: {} })), /settings\.nope/);
 });
 
-test("keys: padded to 15, more than 15 is an error, null is an empty slot", () => {
-    assert.equal(ok({ version: 1, home: { keys: [{}, null] } }).home.keys.length, 15);
-    const r = run({ version: 1, home: { keys: new Array(16).fill(null) } });
-    assert.match(errorText(r), /home\.keys: .*15/);
-    assert.match(errorText(run({ version: 1, home: { keys: [5] } })), /home\.keys\[0\]/);
-    assert.match(errorText(run({ version: 1, home: { keys: {} } })), /home\.keys/);
-});
-
-test("Home touch bindings use columns 0..4", () => {
-    const t = ok({ version: 1, home: { keys: [{ tap: delay(1) }, null, null, null, null, null, null, { tap: delay(2) }, null, null, null, null, null, null, { tap: delay(3) }] } });
-    assert.deepEqual(t.home.bindings.map(b => [b.control, b.event, b.ops[0].duration]),
-        [["touch[0,0]", "tap", 1], ["touch[2,1]", "tap", 2], ["touch[4,2]", "tap", 3]]);
-});
-
-test("activity page keys use columns across the page strip (Home is page 0)", () => {
-    const keys = n => { const k = new Array(15).fill(null); k[n] = { tap: delay(n) }; return k; };
-    const t = ok({ version: 1, home: {}, activities: { A: { pages: [{ keys: keys(4) }, { keys: keys(5) }] } } });
-    assert.deepEqual(t.activities[0].bindings.map(b => b.control), ["touch[9,0]", "touch[10,1]"]);
-});
-
 test("binding order: page, key, then press/release/tap/long; the activity's own bindings follow", () => {
     const t = ok({
         version: 1, home: {},
@@ -65,7 +45,7 @@ test("binding order: page, key, then press/release/tap/long; the activity's own 
         } },
     });
     assert.deepEqual(t.activities[0].bindings.map(b => `${b.control}/${b.event}`),
-        ["touch[5,0]/press", "touch[5,0]/release", "touch[5,0]/tap", "touch[5,0]/long", "touch[6,0]/tap", "macro1/tap"]);
+        ["touch[16]/press", "touch[16]/release", "touch[16]/tap", "touch[16]/long", "touch[17]/tap", "macro1/tap"]);
     assert.deepEqual(t.activities[0].bindings.map(b => b.ops[0].duration), [1, 2, 3, 4, 5, 6]);
 });
 
@@ -96,7 +76,7 @@ test("devices and activities keep file order; names become indices", () => {
     assert.deepEqual(t.activities[0].willActivate, []);
     assert.deepEqual(t.activities[0].didDeactivate, []);
     assert.equal(t.activities[0].pages.length, 1);
-    assert.equal(t.activities[0].pages[0].keys.length, 15);
+    assert.deepEqual(t.activities[0].pages[0].keys, []);
 });
 
 test("activity errors: no pages, unknown device, unknown hook, unknown property", () => {
@@ -138,14 +118,6 @@ test("switchActivity ops see all activity names, including later ones", () => {
     assert.deepEqual(t.home.bindings[0].ops, [{ op: OP.switch_activity, index: 1 }]);
 });
 
-test("the strip example from the docs: Mute is touch[9,0] and back is touch[5,1]", () => {
-    const k = new Array(15).fill(null);
-    k[4] = { tap: delay(1) };
-    k[5] = { tap: delay(2), long: delay(3) };
-    const t = ok({ version: 1, home: {}, activities: { A: { pages: [{ keys: k }] } } });
-    assert.deepEqual(t.activities[0].bindings.map(b => `${b.control}/${b.event}`), ["touch[9,0]/tap", "touch[5,1]/tap", "touch[5,1]/long"]);
-});
-
 test("all errors are collected, not just the first", () => {
     const r = run({
         version: 1,
@@ -159,7 +131,7 @@ test("all errors are collected, not just the first", () => {
 test("the result is plain data: tree has no undefined and survives a JSON round trip for non-Buffer parts", () => {
     const t = ok({ version: 1, home: { keys: [{ color: "red", icon: "#a", label: "x", tap: delay(1) }] } });
     const copy = JSON.parse(JSON.stringify(t));
-    assert.deepEqual(copy.home.keys[0].normalBg, t.home.keys[0].normalBg);
+    assert.deepEqual(copy.home.keys[0], t.home.keys[0]);
 });
 
 test("resolve does not modify its input", () => {

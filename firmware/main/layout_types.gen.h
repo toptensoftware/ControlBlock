@@ -135,17 +135,16 @@ static_assert(sizeof(scriptOp) == 12, "Size of scriptOp must be 12 bytes");
 // key
 struct key
 {
-	/*    0 */	uint32_t normalBg_count;
-	/*    4 */	uint8_t* normalBg;
-	/*    8 */	uint32_t normalFg_count;
-	/*   12 */	uint8_t* normalFg;
-	/*   16 */	uint32_t pressedBg_count;
-	/*   20 */	uint8_t* pressedBg;
-	/*   24 */	uint32_t pressedFg_count;
-	/*   28 */	uint8_t* pressedFg;
-	/*   32 */	uint32_t longPressMs;
+	/*    0 */	uint16_t id;
+	uint8_t _pad1[2];
+	/*    4 */	uint8_t rect[4];
+	/*    8 */	uint32_t normal_count;
+	/*   12 */	uint8_t* normal;
+	/*   16 */	uint32_t pressed_count;
+	/*   20 */	uint8_t* pressed;
+	/*   24 */	uint32_t longPressMs;
 };
-static_assert(sizeof(key) == 36, "Size of key must be 36 bytes");
+static_assert(sizeof(key) == 28, "Size of key must be 28 bytes");
 
 // binding
 struct binding
@@ -160,18 +159,20 @@ static_assert(sizeof(binding) == 16, "Size of binding must be 16 bytes");
 // page
 struct page
 {
-	/*    0 */	key keys[15];
+	/*    0 */	uint32_t keys_count;
+	/*    4 */	key* keys;
 };
-static_assert(sizeof(page) == 540, "Size of page must be 540 bytes");
+static_assert(sizeof(page) == 8, "Size of page must be 8 bytes");
 
 // home
 struct home
 {
-	/*    0 */	key keys[15];
-	/*  540 */	uint32_t bindings_count;
-	/*  544 */	binding* bindings;
+	/*    0 */	uint32_t keys_count;
+	/*    4 */	key* keys;
+	/*    8 */	uint32_t bindings_count;
+	/*   12 */	binding* bindings;
 };
-static_assert(sizeof(home) == 548, "Size of home must be 548 bytes");
+static_assert(sizeof(home) == 16, "Size of home must be 16 bytes");
 
 // device
 struct device
@@ -212,12 +213,12 @@ struct layoutRoot
 	/*    0 */	uint32_t version;
 	/*    4 */	uint32_t longPressMs;
 	/*    8 */	home homePage;
-	/*  556 */	uint32_t devices_count;
-	/*  560 */	device* devices;
-	/*  564 */	uint32_t activities_count;
-	/*  568 */	activity* activities;
+	/*   24 */	uint32_t devices_count;
+	/*   28 */	device* devices;
+	/*   32 */	uint32_t activities_count;
+	/*   36 */	activity* activities;
 };
-static_assert(sizeof(layoutRoot) == 572, "Size of layoutRoot must be 572 bytes");
+static_assert(sizeof(layoutRoot) == 40, "Size of layoutRoot must be 40 bytes");
 
 #pragma pack(pop)
 

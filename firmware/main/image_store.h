@@ -17,7 +17,7 @@
 #define IMAGE_ID_NONE   0
 
 // ImageData flags
-#define IMAGE_OPAQUE    0x01        // every pixel is opaque (comp_image_is_opaque)
+#define IMAGE_OPAQUE    0x01        // every pixel is opaque (check_image)
 #define IMAGE_RETIRED   0x02        // no key draws it any more; freed after a sweep
 
 // One allocation: this header, then the rle565 data
@@ -42,6 +42,8 @@ struct ImageEntry
     ImageData  *data;       // the allocation holding the pixels; null for an external image
     const void *pixels;     // the rle565 data the compositor draws (data->Pixels(), or the external pointer)
     bool        opaque;     // every pixel is opaque
+    uint16_t    width;      // the image's size in pixels
+    uint16_t    height;
     bool        external;   // the pixels belong to someone else (AddExternal)
     uint32_t    key_refs;   // key slots using it
     bool        live;       // in the ID map (false = dying: freed while keys use it)
@@ -89,9 +91,11 @@ class ImageStore
 public:
     ~ImageStore();
 
-    // Images must be `width` x `height`. At most `capacity` bytes are
-    // allocated (headers included).
-    void Init(const ImageStoreHost &host, uint32_t capacity, uint32_t width, uint32_t height);
+    // Images may be any size up to `max_w` x `max_h`; with `require_opaque`,
+    // an image with any transparent pixel is refused (BadImage). At most
+    // `capacity` bytes are allocated (headers included).
+    void Init(const ImageStoreHost &host, uint32_t capacity, uint32_t max_w, uint32_t max_h,
+              bool require_opaque);
     void SetListener(ImageStoreListener *listener) { m_listener = listener; }
 
     // --- Uploads (PUT_IMAGE) ---
@@ -162,7 +166,8 @@ private:
     ImageStoreHost      m_host = {};
     ImageStoreListener *m_listener = nullptr;
     uint32_t            m_capacity = 0, m_used = 0;
-    uint32_t            m_width = 0, m_height = 0;
+    uint32_t            m_max_w = 0, m_max_h = 0;
+    bool                m_require_opaque = false;
     uintptr_t           m_ext_lo = 0, m_ext_hi = 0;     // [lo, hi) spans the external images
 
     SimpleLib::Map<uint32_t, ImageEntry *> m_live;

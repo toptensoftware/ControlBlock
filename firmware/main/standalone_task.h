@@ -18,9 +18,9 @@ ScriptPlatform standalone_script_platform(void);
 // start the op task. Standalone to begin with.
 esp_err_t standalone_init(const uint8_t *blob);
 
-// A router key event (TOUCH_KEY_*), on the swipe task. Callers decide first
-// whether the host or standalone gets it (host_link.cpp on_key).
-void standalone_key(int page, int key, int action, uint32_t time_ms);
+// A router key event (TOUCH_KEY_*) for the key with `id`, on the swipe task.
+// Callers decide first whether the host or standalone gets it (host_link.cpp on_key).
+void standalone_key(uint16_t id, int action, uint32_t time_ms);
 
 // Once per frame, on the swipe task: `long` presses that are due
 void standalone_tick(void);

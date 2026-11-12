@@ -20,9 +20,12 @@
 #define CB_OFF(type, field) ((uint32_t)offsetof(layoutdata::type, field))      // within a struct
 #define CB_ROOT             BPAK_HEADER_SIZE
 #define CB_ROOT_LONGPRESS   (CB_ROOT + CB_OFF(layoutRoot, longPressMs))
-#define CB_HOME_KEY(i)      (CB_ROOT + CB_OFF(layoutRoot, homePage) + CB_OFF(home, keys) + (i) * (uint32_t)sizeof(layoutdata::key))
-#define CB_KEY_COUNT(k, s)  ((k) + LayoutKeyImageOffset(s))             // the image's (count, ptr) pair
+#define CB_HOME_KEYS        (CB_ROOT + CB_OFF(layoutRoot, homePage) + CB_OFF(home, keys_count))       // count
+#define CB_HOME_KEYS_PTR    (CB_ROOT + CB_OFF(layoutRoot, homePage) + CB_OFF(home, keys))
+#define CB_KEY_COUNT(k, s)  ((k) + LayoutKeyImageOffset(s))             // image `s`'s (count, ptr) pair (LAYOUT_KEY_*)
 #define CB_KEY_PTR(k, s)    ((k) + LayoutKeyImagePtrOffset(s))
+#define CB_KEY_ID(k)        ((k) + CB_OFF(key, id))
+#define CB_KEY_RECT(k)      ((k) + CB_OFF(key, rect))
 #define CB_HOME_BINDINGS    (CB_ROOT + CB_OFF(layoutRoot, homePage) + CB_OFF(home, bindings_count))     // count
 #define CB_HOME_BINDINGS_PTR (CB_ROOT + CB_OFF(layoutRoot, homePage) + CB_OFF(home, bindings))
 #define CB_ROOT_DEVICES     (CB_ROOT + CB_OFF(layoutRoot, devices_count))
@@ -75,6 +78,12 @@ namespace layout_env
     {
         LayoutRelocate(b.GetBuffer(), (uint32_t)b.GetCount(), (uint32_t)(uintptr_t)b.GetBuffer());
         return LayoutRoot(b.GetBuffer());
+    }
+
+    // File offset of Home's key `i` in a blob as baked (not relocated)
+    inline uint32_t HomeKey(const SimpleLib::List<uint8_t> &b, uint32_t i)
+    {
+        return U32(b, CB_HOME_KEYS_PTR) + i * (uint32_t)sizeof(layoutdata::key);
     }
 
     inline uint32_t TableOffset(const SimpleLib::List<uint8_t> &b) { return U32(b, 12); }

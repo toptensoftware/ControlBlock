@@ -35,7 +35,7 @@ test("cli: bakes a layout file with real images to a .bin", { timeout: 120000 },
         assert.equal(blob.length % 4, 0);
         const root = unpack(ROOT_TYPE, blob, 32);
         // real rle565 data: starts with the "R565" signature
-        const img = Buffer.from(root.home.keys[0].normalBg);
+        const img = Buffer.from(root.home.keys[0].normal);
         assert.equal(img.readUInt32LE(0), 0x35363552);
     } finally {
         cleanup();

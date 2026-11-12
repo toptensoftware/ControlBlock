@@ -6,11 +6,14 @@ import assert from "node:assert/strict";
 import { ROOT_DEFAULTS, COLORS, ICON_SCALE, BORDER, PRESSED, icon, label } from "./look.mjs";
 import { cleanLayout } from "../test/resolve.mjs";
 
-// A Home of `keys` under the root defaults -> the resolved keys
+// A Home of `keys` under the root defaults -> each resolved key's layer definitions (face "bg",
+// icon and label "fg") per state. Empty slots have no key.
+const layerOf = (spec, layer) => spec?.layers.find(l => l.layer === layer)?.def ?? null;
 async function resolveKeys(keys)
 {
     const tree = await cleanLayout({ version: 1, defaults: ROOT_DEFAULTS, home: { keys } });
-    return tree.home.keys;
+    return tree.home.keys.map(k => ({ normalBg: layerOf(k.normal, "bg"), normalFg: layerOf(k.normal, "fg"),
+                                      pressedBg: layerOf(k.pressed, "bg"), pressedFg: layerOf(k.pressed, "fg") }));
 }
 
 test("icon multiplies ICON_SCALE into the key's scale", () => {
@@ -57,12 +60,13 @@ test("an icon key gets the border face and the grey pressed fill, no overlay", a
     assert.equal(k.normalFg.svgForeColor, "orange");
 });
 
-test("a label-only key gets the same face; an empty slot has no images", async () => {
-    const [iconKey, labelKey, empty] = await resolveKeys([
+test("a label-only key gets the same face; an empty slot has no key", async () => {
+    const keys = await resolveKeys([
         icon("#play"), label("Steam"), null,
     ]);
+    const [iconKey, labelKey] = keys;
+    assert.equal(keys.length, 2);
     assert.equal(labelKey.normalBg.svgCode, iconKey.normalBg.svgCode);
     assert.equal(labelKey.pressedBg.svgCode, iconKey.pressedBg.svgCode);
     assert.equal(labelKey.normalFg.text, "Steam");
-    assert.deepEqual([empty.normalBg, empty.normalFg, empty.pressedBg, empty.pressedFg], [null, null, null, null]);
 });

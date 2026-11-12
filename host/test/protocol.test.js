@@ -9,6 +9,7 @@ import {
     encodeWifiSet, decodeWifiCredentials, decodeWifiStatus,
     ClockSource, TIME_VALID_FROM_MS, CLOCK_FIELD_MAX_BYTES, encodeTimeSet, decodeTime, encodeClockSet,
     DEVICE_NAME_MAX_BYTES, encodeNameSet, decodeName,
+    KEY_EVENT_SIZE, keySlot, keyPixelSize,
 } from "../src/protocol.js";
 import { infoPayload } from "./FakeDevice.js";
 
@@ -45,25 +46,56 @@ test("the parser skips garbage to the next message", () => {
     assert.equal(p.resyncs, 1);
 });
 
-test("key definitions match the firmware's KeyDef", () => {
+test("key definitions match the firmware's v2 KeyDef: id, page, quarter-unit rect, flags, two images", () => {
     const b = encodeKeys([
-        { page: 2, key: 14, bg: 0x11223344, fg: 5, pressedBg: 6 },
-        { page: 0, key: 1, bg: 9, empty: true },
-        { page: 1, key: 3, fg: 7, disabled: true },
+        { id: 0x1234, page: 2, x: 1.25, y: 2, w: 1.5, h: 0.75, normal: 0x11223344, pressed: 5 },
+        { id: 7, remove: true, page: 3, x: 1, normal: 9 },
+        { id: 65535, page: 1, x: 4, y: 0, normal: { id: 8, data: Uint8Array.of(1) }, disabled: true },
     ]);
+    assert.equal(KEYDEF_SIZE, 20);
     assert.equal(b.length, 2 + 3 * KEYDEF_SIZE);
     const v = new DataView(b.buffer, b.byteOffset);
     assert.equal(v.getUint16(0, true), 3);
-    assert.equal(v.getUint8(2), 2);
-    assert.equal(v.getUint8(3), 14);
-    assert.equal(v.getUint16(4, true), 0);
-    assert.equal(v.getUint32(6, true), 0x11223344);
-    assert.equal(v.getUint32(10, true), 5);
-    assert.equal(v.getUint32(14, true), 6);
-    assert.equal(v.getUint32(18, true), 0);
-    assert.equal(v.getUint16(2 + KEYDEF_SIZE + 2, true), KeyFlags.EMPTY);
-    assert.equal(v.getUint32(2 + KEYDEF_SIZE + 4, true), 0);      // empty: IDs zeroed
-    assert.equal(v.getUint16(2 + 2 * KEYDEF_SIZE + 2, true), KeyFlags.DISABLED);
+    const at = i => 2 + i * KEYDEF_SIZE;
+    assert.deepEqual([...b.subarray(at(0), at(0) + 8)], [0x34, 0x12, 2, 5, 8, 6, 3, 0]);   // id, page, x y w h (quarters), reserved
+    assert.equal(v.getUint16(at(0) + 8, true), 0);              // flags
+    assert.equal(v.getUint16(at(0) + 10, true), 0);             // reserved
+    assert.equal(v.getUint32(at(0) + 12, true), 0x11223344);
+    assert.equal(v.getUint32(at(0) + 16, true), 5);
+    // REMOVE: only the id (everything else zero)
+    assert.deepEqual([...b.subarray(at(1), at(2))], [7, 0, 0, 0, 0, 0, 0, 0, KeyFlags.REMOVE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    // w and h default to 1U, y to 0; an image may be given as { id } (keyImage's result)
+    assert.deepEqual([...b.subarray(at(2), at(2) + 8)], [0xFF, 0xFF, 1, 16, 0, 4, 4, 0]);
+    assert.equal(v.getUint16(at(2) + 8, true), KeyFlags.DISABLED);
+    assert.equal(v.getUint32(at(2) + 12, true), 8);
+    assert.equal(v.getUint32(at(2) + 16, true), 0);             // no pressed image
+    assert.deepEqual({ ...KeyFlags }, { REMOVE: 0x0001, DISABLED: 0x0002 });
+});
+
+test("key definitions refuse what can't be encoded, before anything is sent", () => {
+    const ok = { id: 1, page: 0, x: 0, y: 0 };
+    assert.equal(encodeKeys([ok]).length, 2 + KEYDEF_SIZE);
+    assert.equal(encodeKeys([]).length, 2);
+    for (const bad of [
+        { ...ok, id: 0 }, { ...ok, id: 65536 }, { ...ok, id: 1.5 }, { ...ok, id: undefined },
+        { ...ok, x: 0.3 }, { ...ok, y: -0.25 }, { ...ok, w: 0 }, { ...ok, h: -1 }, { ...ok, w: 1.1 },
+        { ...ok, x: 64 }, { ...ok, w: "1" }, { ...ok, page: 256 }, { ...ok, page: -1 }, { ...ok, page: undefined },
+        { ...ok, normal: -1 }, { ...ok, pressed: 2 ** 32 },
+        { id: 0, remove: true },
+    ])
+        assert.throws(() => encodeKeys([ok, bad]), RangeError, JSON.stringify(bad));
+});
+
+test("keySlot places a 1U key in a plain grid slot; keyPixelSize is the image size a key needs", () => {
+    assert.deepEqual(keySlot(0), { x: 0, y: 0, w: 1, h: 1 });
+    assert.deepEqual(keySlot(7), { x: 2, y: 1, w: 1, h: 1 });
+    assert.deepEqual(keySlot(14), { x: 4, y: 2, w: 1, h: 1 });
+    assert.deepEqual(keySlot(5, 4), { x: 1, y: 1, w: 1, h: 1 });
+    const info = decodeInfo(infoPayload());
+    assert.deepEqual(keyPixelSize({}, info), { width: 144, height: 144 });
+    assert.deepEqual(keyPixelSize({ w: 2 }, info), { width: 288, height: 144 });
+    assert.deepEqual(keyPixelSize({ w: 1.5, h: 0.25 }, info), { width: 216, height: 36 });
+    assert.throws(() => keyPixelSize({ w: 0.1 }, info), RangeError);
 });
 
 test("ids and image chunks", () => {
@@ -85,18 +117,30 @@ test("status text is a field, a length and UTF-8", () => {
 });
 
 test("get info decodes every field", () => {
-    const info = decodeInfo(infoPayload({ maxPayload: 4096, pageCount: 3 }));
-    assert.equal(info.protocolVersion, 1);
+    const info = decodeInfo(infoPayload({ maxPayload: 4096, pageCount: 3, currentPage: 2 }));
+    assert.equal(info.protocolVersion, 2);
     assert.equal(info.maxPayload, 4096);
-    assert.equal(info.imageCount, 3);
+    assert.equal(info.imageCount, 0);
     assert.equal(info.screenWidth, 800);
     assert.equal(info.cols, 5);
     assert.equal(info.rows, 3);
+    assert.equal(info.maxPages, 8);
     assert.equal(info.pageCount, 3);
-    assert.equal(info.keyWidth, 128);
+    assert.equal(info.keyWidth, 144);
+    assert.equal(info.keyHeight, 144);
     assert.equal(info.iconWidth, 80);
+    assert.equal(info.currentPage, 2);
     assert.equal(info.firmwareVersion, "1.0");
     assert.equal(info.serial, "SERIAL1");
+    // v2's fields, after the layout's
+    assert.equal(info.gridX, 40);
+    assert.equal(info.gridY, 44);
+    assert.equal(info.gridWidth, 720);
+    assert.equal(info.gridHeight, 432);
+    assert.equal(info.quarter, 36);
+    assert.equal(info.maxImageWidth, 720);
+    assert.equal(info.maxImageHeight, 432);
+    assert.equal(info.maxKeys, 32);
 });
 
 test("query results are a bitmap", () => {
@@ -105,8 +149,10 @@ test("query results are a bitmap", () => {
 });
 
 test("events", () => {
-    const key = decodeEvent({ type: Msg.KEY, seq: 4, payload: Uint8Array.of(1, 7, 2, 1, 0x10, 0x27, 0, 0) });
-    assert.deepEqual(key, { type: "key", seq: 4, page: 1, key: 7, action: 2, lost: true, timeMs: 10000 });
+    // KEY (v2, 12 bytes): u16 id, u8 page, u8 action, u8 lost, u8[3] reserved, u32 time
+    const key = decodeEvent({ type: Msg.KEY, seq: 4, payload: Uint8Array.of(0x34, 0x12, 1, 2, 1, 0, 0, 0, 0x10, 0x27, 0, 0) });
+    assert.deepEqual(key, { type: "key", seq: 4, id: 0x1234, page: 1, action: 2, lost: true, timeMs: 10000 });
+    assert.equal(KEY_EVENT_SIZE, 12);
     const page = decodeEvent({ type: Msg.PAGE_CHANGED, seq: 5, payload: Uint8Array.of(3, 1) });
     assert.deepEqual(page, { type: "pageChanged", seq: 5, page: 3, cause: 1 });
     assert.equal(decodeEvent({ type: 0x99, seq: 0, payload: new Uint8Array(0) }), null);
@@ -168,11 +214,12 @@ test("GET_INFO ends with the stored layout, and older devices have none", () => 
     assert.equal(info.layoutCapacity, 4190208);
     assert.equal(info.layoutSize, 1234);
     assert.equal(info.layoutCrc, 0xDEADBEEF);
-    const old = decodeInfo(infoPayload());
-    assert.equal(old.layoutCapacity, 0);
-    assert.equal(old.layoutSize, 0);
-    assert.equal(old.layoutCrc, 0);
-    assert.equal(old.serial, "SERIAL1");
+    const none = decodeInfo(infoPayload());
+    assert.equal(none.layoutCapacity, 0);
+    assert.equal(none.layoutSize, 0);
+    assert.equal(none.layoutCrc, 0);
+    assert.equal(none.serial, "SERIAL1");
+    assert.equal(none.quarter, 36);                         // the v2 fields after it still line up
 });
 
 // --- Wi-Fi (docs/wifi.md) ---

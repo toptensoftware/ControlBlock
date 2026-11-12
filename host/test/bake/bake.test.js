@@ -16,9 +16,9 @@ test("the docs example bakes to a valid BPAK file", async () => {
     assert.equal(blob.readUInt32LE(0), 0x4B415042);
     assert.equal(warnings.length, 0, JSON.stringify(warnings));
 
-    // Mute is touch[9,0], back is touch[5,1]
+    // Watch TV is the layout's page 1 (Home is 0): Play is id 16, Mute (slot 4) 20, back (slot 5) 21
     const controls = tree.activities[0].bindings.map(b => `${b.control}/${b.event}`);
-    assert.deepEqual(controls, ["touch[5,0]/tap", "touch[6,0]/tap", "touch[9,0]/tap", "touch[5,1]/tap", "touch[5,1]/long",
+    assert.deepEqual(controls, ["touch[16]/tap", "touch[17]/tap", "touch[20]/tap", "touch[21]/tap", "touch[21]/long",
                                 "macro1/tap", "volEnc/turnLeft", "volEnc/turnRight"]);
 });
 

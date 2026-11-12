@@ -105,5 +105,5 @@ test("padPage: unbound controls leave their slots empty", () => {
 test("padPage resolves clean (icons included)", async () => {
     const spec = { key1: { tap: ops.atvKey("menu") }, key3: { tap: ops.atvKey("select") }, ...padArrows(ops.atvKey) };
     const tree = await cleanLayout({ version: 1, defaults: ROOT_DEFAULTS, home: { keys: grid(padPage(ctx, spec)) } });
-    assert.equal(tree.home.keys.filter(k => k.normalFg).length, 9);
+    assert.equal(tree.home.keys.filter(k => k.normal).length, 9);
 });

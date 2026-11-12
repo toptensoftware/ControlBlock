@@ -11,7 +11,7 @@
 // Call before the display starts. `is_retired` may be NULL (no sweeps).
 esp_err_t comp_init(comp_get_page_t get_page, comp_is_retired_t is_retired, void *ctx);
 
-// Drop references to retired images at the next key boundary (see
+// Drop references to retired images at the compositor's next step (see
 // PageCompositor::RequestSweep). Returns a generation; comp_swept() reaches
 // it (compare as int32_t) once done. Any task.
 uint32_t comp_request_sweep(void);
@@ -23,8 +23,9 @@ uint32_t comp_swept(void);
 // Any task.
 void comp_page_changed(int page, uint32_t flags);
 
-// Whole-layout reload. Blocks until no key is being drawn. On return no
-// client image is referenced. Any task except the compositor's.
+// Whole-layout reload. Blocks until the compositor task has done it (a key
+// being drawn is abandoned). On return no client image is referenced. Any
+// task except the compositor's.
 void comp_reset(void);
 
 // Bounce fill (screen.cpp), ISR context, at frame start.

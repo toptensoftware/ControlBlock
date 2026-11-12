@@ -7,9 +7,11 @@ root. Nothing here needs an `npm install`: the scripts import the library by rel
 
 | File | What it is |
 | --- | --- |
-| `demo.js` | Host-controlled (mode 1) demo: takes control, uploads faces and icons, defines two pages, shows off the image store. `node examples/demo.js` |
-| `bench.js` | Link benchmark: request latency, pipelined throughput, image upload speed. `node examples/bench.js` |
+| `demo.js` | Host-controlled (mode 1, protocol v2) demo: takes control, renders and uploads each key's opaque normal and pressed images, defines two pages (with a 2U key and two half-height keys), shows off the image store. `node examples/demo.js` |
+| `bench.js` | Link benchmark: request latency, pipelined throughput, image upload speed (a noisy 1U image, and a page of realistic keys: 30 opaque images). `node examples/bench.js` |
 | `upload-test.json` | A small standalone layout: a few `hidKey` keys on Home. |
+| `key-shapes.mjs` | Standalone layout showing the key shapes on Home: a 2U span, a 2x2 and a 2U-tall key, a grouped Volume -/+ (one picture, two keys), half-height and half-width keys, and a 0.5U key off the whole-unit grid with a named id. Each key types a different key over USB HID. |
+| `bake-check.mjs`, `layouts.test.mjs` | Test helper and tests: every layout here (and urem2) bakes and its keys pass the device's checks (ids, rects, opaque images of the key's size). `node --test "examples/**/*.test.mjs"` |
 | `net-test.json` | Standalone layout for the net ops (`httpGet`, `httpPost`, `udpPacket`, `sendWol`), against the test server. |
 | `activity-test.mjs` | Standalone layout for activity switching and devices; every hook announces itself to the test server. |
 | `script-test.mjs` | Standalone layout for the Lua `script` op (checklist in `wip/wip-lua-hardware-checks.md`). |

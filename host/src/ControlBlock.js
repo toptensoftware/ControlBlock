@@ -4,7 +4,8 @@
 //
 // Requests are pipelined: each method sends at once and resolves when its
 // response arrives (responses come back in order, matched by seq).
-// Events: "key" ({ page, key, action, lost, timeMs }), "pageChanged"
+// Events: "key" ({ id, page, action, lost, timeMs }: the key's id from setKeys, the page it
+// was touched on), "pageChanged"
 // ({ page, cause }), "wake" ({ lost, timeMs }: the screen was touched while
 // the backlight is off; docs/backlight.md), "wifiState" ({ state, stateName,
 // lost, ip }: the Wi-Fi connection changed; docs/wifi.md), "error" (the read loop failed), "close".
@@ -458,14 +459,28 @@ export class ControlBlock extends Emitter
             this.info.pageCount = count;
     }
 
-    // keys: [{ page, key, bg, fg, pressedBg, pressedFg, disabled, empty }]
-    // (image IDs, 0 or missing = none). Applied in one go, all or nothing.
+    // Define, replace or remove keys by id (docs/protocol.md, SET_KEYS):
+    //   { id, page, x, y, w = 1, h = 1, normal, pressed, disabled }   add the key, or replace the one with this id
+    //   { id, remove: true }                                         remove it
+    // id: 1..65535, unique across all pages; a key stays on its page (remove it first to move it).
+    // x, y, w, h: in grid units (1U = info.keyWidth px), multiples of 0.25 (keySlot(i) gives a
+    // plain grid slot). normal / pressed: image IDs (or keyImage results), each exactly the key's
+    // size (keyPixelSize(key, info)) and opaque; pressed 0 or missing = no press feedback. Keys not
+    // named stay. Applied in one go, all or nothing: the device refuses overlaps, keys outside the
+    // grid, more than info.maxKeys on a page (BAD_ARG), a missing image (NOT_FOUND) or one of the
+    // wrong size (BAD_IMAGE). A value that can't be encoded throws before anything is sent.
     async setKeys(keys)
     {
         const max = Math.floor((this._maxPayload() - 2) / KEYDEF_SIZE);
         if (keys.length > max)
             throw new Error(`Too many keys in one SET_KEYS (${keys.length}, max ${max})`);
         await this.call(Msg.SET_KEYS, encodeKeys(keys));
+    }
+
+    // Remove keys by id (ids with no key are ignored)
+    async removeKeys(ids)
+    {
+        await this.setKeys(ids.map(id => ({ id, remove: true })));
     }
 
     async setPage(page, { animate = false } = {})

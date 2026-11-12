@@ -42,7 +42,9 @@ esp_err_t model_init(void)
     host.largest_free  = psram_largest;
     host.request_sweep = request_sweep;
     host.swept         = swept;
-    s_store.Init(host, capacity, COMP_KEY_SIZE, COMP_KEY_SIZE);
+    // Opaque key images, any size up to the grid (a stored layout blob of version 1, with its
+    // transparent 128 images, is refused before this: Home boots empty until it is re-uploaded)
+    s_store.Init(host, capacity, KEY_GRID_W, KEY_GRID_H, true);
     s_store.SetListener(&s_layout);
     s_layout.Init(&s_store, page_changed, nullptr);
     s_ready = true;
@@ -57,12 +59,12 @@ void model_unlock(void) { xSemaphoreGive(s_lock); }
 ImageStore *model_store(void)  { return &s_store; }
 KeyLayout  *model_layout(void) { return &s_layout; }
 
-bool model_get_page(int page, comp_key_t keys[COMP_KEYS], void *)
+bool model_get_page(int page, comp_page_t *out, void *)
 {
     if (!s_ready)
         return false;
     model_lock();
-    bool ok = s_layout.GetPage(page, keys);
+    bool ok = s_layout.GetPage(page, out);
     model_unlock();
     return ok;
 }
@@ -72,18 +74,30 @@ bool model_is_retired(const void *img, void *)
     return s_store.PixelsRetired(img);
 }
 
-bool model_key_active(int page, int key)
+int model_page_keys(int page, TouchKey *out)
 {
     model_lock();
-    bool active = s_layout.IsActive(page, key);
+    int count;
+    const KeyState *keys = s_layout.PageKeys(page, &count);
+    for (int i = 0; i < count; i++)
+        out[i] = TouchKey{ keys[i].id, KeyRectPixels(keys[i].rect) };
+    model_unlock();
+    return count;
+}
+
+bool model_key_active(int page, uint16_t id)
+{
+    model_lock();
+    int key_page = -1;
+    bool active = s_layout.IsActive(id) && s_layout.Find(id, &key_page) && key_page == page;
     model_unlock();
     return active;
 }
 
-void model_set_key_pressed(int page, int key, bool pressed)
+void model_set_key_pressed(uint16_t id, bool pressed)
 {
     model_lock();
-    s_layout.SetPressed(page, key, pressed);
+    s_layout.SetPressed(id, pressed);
     model_unlock();
 }
 

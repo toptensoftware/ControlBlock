@@ -57,7 +57,7 @@ for (const [name, target] of Object.entries(targets))
 
     test(`${name}: atv resolves clean`, async () => {
         const tree = await cleanLayout(layoutWith(ctx, { activities: { atv: atv(ctx) } }));
-        assert.equal(tree.activities[0].pages[1].keys.filter(k => k.normalFg).length, 9);
+        assert.equal(tree.activities[0].pages[1].keys.filter(k => k.normal).length, 9);
     });
 }
 

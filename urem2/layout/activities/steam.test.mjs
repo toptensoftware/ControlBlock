@@ -66,7 +66,7 @@ for (const [name, target] of Object.entries(targets))
 
     test(`${name}: steam resolves clean`, async () => {
         const tree = await cleanLayout(layoutWith(ctx, { activities: { steam: steam(ctx) } }));
-        assert.deepEqual(tree.activities[2].pages.map(p => p.keys.filter(k => k.normalFg).length), [7, 10, 6]);
+        assert.deepEqual(tree.activities[2].pages.map(p => p.keys.filter(k => k.normal).length), [7, 10, 6]);
     });
 }
 

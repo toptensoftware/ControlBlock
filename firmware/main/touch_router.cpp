@@ -1,18 +1,17 @@
 #include <stdlib.h>
 #include "touch_router.h"
 
-static bool in_key(int key, int x, int y, int margin)
+bool touch_in_rect(const KeyPixelRect &r, int x, int y, int margin)
 {
-    int left = COMP_KEY_X(key);
-    int top  = SCREEN_PAGE_TOP + COMP_KEY_Y(key);
-    return x >= left + margin && x < left + COMP_KEY_SIZE - margin &&
-           y >= top + margin  && y < top + COMP_KEY_SIZE - margin;
+    int top = SCREEN_PAGE_TOP + r.y;
+    return x >= r.x + margin && x < r.x + r.w - margin &&
+           y >= top + margin && y < top + r.h - margin;
 }
 
-int touch_key_at(int x, int y, int margin)
+int touch_key_at(const TouchKey *keys, int count, int x, int y, int margin)
 {
-    for (int k = 0; k < COMP_KEYS; k++)
-        if (in_key(k, x, y, margin))
+    for (int k = 0; k < count; k++)
+        if (touch_in_rect(keys[k].rect, x, y, margin))
             return k;
     return -1;
 }
@@ -52,16 +51,18 @@ void TouchRouter::Down(int x, int y, int64_t now_us, int page, bool swipe_busy)
     m_page    = page;
     m_down_x  = x;
     m_down_us = now_us;
-    m_key     = -1;
+    m_key     = KEY_ID_NONE;
 
     if (swipe_busy) {
         m_state = State::Swiping;
         return;
     }
 
-    int key = touch_key_at(x, y, TOUCH_EDGE_AMBIGUOUS_PX);
-    if (key >= 0 && m_host.key_active(page, key, m_host.ctx)) {
-        m_key   = key;
+    int count = m_host.page_keys(page, m_keys, m_host.ctx);
+    int k = touch_key_at(m_keys, count, x, y, TOUCH_EDGE_AMBIGUOUS_PX);
+    if (k >= 0 && m_host.key_active(page, m_keys[k].id, m_host.ctx)) {
+        m_key   = m_keys[k].id;
+        m_rect  = m_keys[k].rect;
         m_state = State::Pending;
     } else {
         m_state = State::SwipeOnly;
@@ -79,14 +80,14 @@ bool TouchRouter::Move(int x, int y, int64_t now_us)
         if (abs(x - m_down_x) > TOUCH_DRAG_SLOP_PX) {
             m_state = State::Swiping;
             swipe = true;
-        } else if (m_state == State::Pending && !in_key(m_key, x, y, -TOUCH_KEY_EXIT_SLOP_PX)) {
+        } else if (m_state == State::Pending && !touch_in_rect(m_rect, x, y, -TOUCH_KEY_EXIT_SLOP_PX)) {
             // Out of the key before the window ended: no key, but still free to swipe
             m_state = State::SwipeOnly;
         }
         break;
 
     case State::Held:
-        if (!in_key(m_key, x, y, -TOUCH_KEY_EXIT_SLOP_PX)) {
+        if (!touch_in_rect(m_rect, x, y, -TOUCH_KEY_EXIT_SLOP_PX)) {
             Emit(TOUCH_KEY_CANCEL, now_us);
             m_state = State::Dead;
         }

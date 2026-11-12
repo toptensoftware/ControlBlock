@@ -86,7 +86,8 @@ namespace
         LayoutSummary home = {};
 
         // `hosted`: take control first (most tests are of a hosted session);
-        // the device boots standalone, and the takeover's effects are not counted
+        // the device boots standalone, and the takeover's effects are not counted.
+        // The store refuses non-opaque images, as the device's does.
         explicit Fixture(uint32_t capacity = 1u << 20, bool hosted = true) : flash(16 * LAYOUT_SECTOR)
         {
             layout_store.Init(flash.Host());
@@ -98,7 +99,7 @@ namespace
             name.Init(name_storage.Host(), mac);
             name.SetChangedCallback([](const char *, void *c) { ((Fixture *)c)->name_changes++; }, this);
 
-            store.Init(env.Host(), capacity, COMP_KEY_SIZE, COMP_KEY_SIZE);
+            store.Init(env.Host(), capacity, KEY_GRID_W, KEY_GRID_H, true);
             store.SetListener(&layout);
             layout.Init(&store, Changed, this);
 
@@ -171,13 +172,29 @@ namespace
             changed_pages.Clear();
         }
 
-        // Is page 0's key `k` showing Home's image for it?
-        bool ShowsHome(int k)
+        // Is Home's key `i` (in the blob's order) there on page 0, showing its image?
+        bool ShowsHome(int i)
         {
-            comp_key_t keys[COMP_KEYS];
-            layout.GetPage(0, keys);
-            return keys[k].bg == home_blob.GetBuffer() + home.home[k][KEY_SLOT_BG].offset;
+            const LayoutKey &k = home.home[i];
+            int page = -1;
+            return layout.Find(k.id, &page) && page == 0 &&
+                   ShownId(k.id) == home_blob.GetBuffer() + k.normal.offset;
         }
+
+        // What key `id` shows now (null: no such key, or no image)
+        const void *ShownId(uint16_t id)
+        {
+            const KeyState *key = layout.Find(id);
+            const ImageEntry *e = key ? KeyLayout::ShownEntry(*key) : nullptr;
+            return e ? e->pixels : nullptr;
+        }
+
+        // The same for a plain grid slot's key (the tests' Slot() keys and Home's,
+        // which have the plain grid's ids)
+        const void *Shown(int page, int k) { return ShownId(KeySlotId(page, k)); }
+        bool Active(int page, int k) { return layout.IsActive(KeySlotId(page, k)); }
+
+        const void *Pixels(uint32_t image) { return store.Find(image)->data->Pixels(); }
 
         static void Changed(int page, uint32_t, void *c)
         {
@@ -259,17 +276,38 @@ namespace
         return p;
     }
 
-    Bytes Keys(int count, const KeyDef *defs)
+    // SET_KEYS' KeyDef (docs/protocol.md): rect in quarter units
+    struct WireKey
+    {
+        uint16_t id;
+        uint8_t  page, x, y, w, h;
+        uint16_t flags;
+        uint32_t normal, pressed;
+    };
+
+    Bytes Keys(int count, const WireKey *defs)
     {
         Bytes p;
         p.U16(count);
         for (int i = 0; i < count; i++) {
-            p.U8(defs[i].page).U8(defs[i].key).U16(defs[i].flags);
-            for (int s = 0; s < KEY_SLOTS; s++)
-                p.U32(defs[i].ids[s]);
+            const WireKey &d = defs[i];
+            int start = p.Count();
+            p.U16(d.id).U8(d.page).U8(d.x).U8(d.y).U8(d.w).U8(d.h).U8(0);
+            p.U16(d.flags).U16(0).U32(d.normal).U32(d.pressed);
+            Check(p.Count() - start == PROTO_KEYDEF_SIZE);
         }
         return p;
     }
+
+    // A 1U key in plain grid slot `slot` with the plain grid's id
+    WireKey Slot(int page, int slot, uint32_t normal, uint32_t pressed = 0, uint16_t flags = 0)
+    {
+        KeyRect r = KeySlotRect(slot);
+        return WireKey{ KeySlotId(page, slot), (uint8_t)page, r.x, r.y, r.w, r.h, flags, normal, pressed };
+    }
+
+    // Removes key `id`
+    WireKey Remove(uint16_t id) { return WireKey{ id, 0, 0, 0, 0, 0, PROTO_KEYDEF_REMOVE, 0, 0 }; }
 }
 
 Fact("Protocol Ping Echoes And Copies Seq")
@@ -293,7 +331,7 @@ Fact("Protocol Messages Can Arrive In Any Pieces And Pipelined")
         p.U8(i);
         all.Add(Message(MSG_PING, (uint16_t)(1000 + i), p));
     }
-    all.Add(Message(MSG_PUT_IMAGE, 2000, f.PutImage(5, f.env.Icon(0))));
+    all.Add(Message(MSG_PUT_IMAGE, 2000, f.PutImage(5, f.env.Key1U(0))));
     all.Add(Message(MSG_PING, 2001));
 
     static const int pieces[] = { 1, 3, 7, 64, 1000 };
@@ -313,37 +351,44 @@ Fact("Protocol Get Info")
 {
     Fixture f;
     f.current = 0;
-    Assert(f.Upload(1, f.env.Icon(0)) == ST_OK);
+    Assert(f.Upload(1, f.env.Key1U(0)) == ST_OK);
     Msg m = f.Request(MSG_GET_INFO);
     Assert(m.Status() == ST_OK);
     int i = 4;
+    Assert(PROTO_VERSION == 2);
     Assert(m.U16At(i) == PROTO_VERSION);                      i += 2;
     Assert(m.U16At(i) == (INFO_FLAG_BACKLIGHT | INFO_FLAG_HOSTED)); i += 2;     // flags: backlight on, hosted
     Assert(m.U32At(i) == PROTO_MAX_PAYLOAD);                  i += 4;
     Assert(m.U32At(i) == 1u << 20);                           i += 4;     // capacity
-    Assert(m.U32At(i) == sizeof(ImageData) + f.env.Size(f.env.Icon(0))); i += 4;
+    Assert(m.U32At(i) == sizeof(ImageData) + f.env.Size(f.env.Key1U(0))); i += 4;
     Assert(m.U32At(i) == 1);                                  i += 4;     // count
     Assert(m.U32At(i) > 0);                                   i += 4;     // largest free
     Assert(m.U16At(i) == SCREEN_W && m.U16At(i + 2) == SCREEN_H); i += 4;
-    Assert(m.U8At(i) == COMP_COLS && m.U8At(i + 1) == COMP_ROWS);  i += 2;
+    Assert(m.U8At(i) == 5 && m.U8At(i + 1) == 3);             i += 2;     // grid cols, rows (1U cells)
     Assert(m.U8At(i) == KEY_LAYOUT_MAX_PAGES && m.U8At(i + 1) == 1);   i += 2;
-    Assert(m.U16At(i) == COMP_KEY_SIZE && m.U16At(i + 2) == COMP_KEY_SIZE); i += 4;
+    Assert(m.U16At(i) == 144 && m.U16At(i + 2) == 144);       i += 4;     // key_w/h: the 1U cell
     Assert(m.U16At(i) == KEY_ICON_SIZE && m.U16At(i + 2) == KEY_ICON_SIZE); i += 4;
     Assert(m.U8At(i) == 0);                                   i += 1;     // current page
     Assert(m.U8At(i) == 5 && memcmp(m.data + i + 1, "1.2.3", 5) == 0); i += 6;
     Assert(m.U8At(i) == 6 && memcmp(m.data + i + 1, "ABCDEF", 6) == 0); i += 7;
     Assert(m.U32At(i) == 15 * LAYOUT_SECTOR);                 i += 4;     // layout capacity
     Assert(m.U32At(i) == 0 && m.U32At(i + 4) == 0);           i += 8;     // nothing stored
+    // v2: the grid on the screen, the quarter unit, the largest image, keys per page
+    Assert(m.U16At(i) == 40 && m.U16At(i + 2) == SCREEN_PAGE_TOP + 4); i += 4;  // grid origin
+    Assert(m.U16At(i) == 720 && m.U16At(i + 2) == 432);       i += 4;     // grid size
+    Assert(m.U16At(i) == 36);                                 i += 2;     // quarter unit
+    Assert(m.U16At(i) == 720 && m.U16At(i + 2) == 432);       i += 4;     // max image size
+    Assert(m.U8At(i) == 32);                                  i += 1;     // max keys per page
     Assert(m.len == i);
 }
 
 Fact("Protocol Upload Query And Set Keys")
 {
     Fixture f;
-    Assert(f.Upload(1, f.env.Face(0)) == ST_OK);
+    Assert(f.Upload(1, f.env.Key1U(0)) == ST_OK);
 
     // In chunks, with other messages between them
-    const void *icon = f.env.Icon(3);
+    const void *icon = f.env.Key1U(3);
     uint32_t size = f.env.Size(icon), half = size / 2;
     Assert(f.Request(MSG_PUT_IMAGE, f.PutImage(2, icon, 0, half)).Status() == ST_OK);
     Assert(f.Request(MSG_PING).Status() == ST_OK);
@@ -355,18 +400,208 @@ Fact("Protocol Upload Query And Set Keys")
     Assert(q.Status() == ST_OK && q.U16At(4) == 4 && q.len == 7);
     Assert(q.U8At(6) == 0x03);
 
-    KeyDef defs[] = { { 0, 3, 0, { 1, 2, 0, 0 } } };
+    WireKey defs[] = { { 500, 0, 4, 0, 4, 4, 0, 1, 2 } };     // slot 1, any id
     Assert(f.Request(MSG_SET_KEYS, Keys(1, defs)).Status() == ST_OK);
-    comp_key_t keys[COMP_KEYS];
-    f.layout.GetPage(0, keys);
-    Assert(keys[3].bg == f.store.Find(1)->data->Pixels() && keys[3].fg == f.store.Find(2)->data->Pixels());
+    Assert(f.ShownId(500) == f.Pixels(1));
+    const KeyState *k = f.layout.Find(500);
+    Assert(k && k->rect.x == 4 && k->rect.y == 0 && k->rect.w == 4 && k->rect.h == 4 && k->flags == 0);
     Assert(f.changed_pages.GetCount() == 1 && f.changed_pages[0] == 0);
+    f.lock_depth++;                     // model changes are made under the lock
+    Assert(f.layout.SetPressed(500, true));
+    f.lock_depth--;
+    Assert(f.ShownId(500) == f.Pixels(2));
+
+    // Another key on the page leaves this one as it is (still pressed)
+    WireKey more[] = { Slot(0, 4, 2) };
+    Assert(f.Request(MSG_SET_KEYS, Keys(1, more)).Status() == ST_OK);
+    Assert(f.layout.KeyCount(0) == 2 && f.ShownId(500) == f.Pixels(2));
+    Assert(f.Shown(0, 4) == f.Pixels(2));
+}
+
+Fact("Protocol Set Keys Spans And Quarter Units")
+{
+    Fixture f;
+    Assert(f.Upload(1, f.env.Key2U(0)) == ST_OK);       // 288x144
+    Assert(f.Upload(2, f.env.Key1U(0)) == ST_OK);
+    Assert(f.Upload(3, f.env.Key1U(1)) == ST_OK);
+    // A 2U key, a 1U key a quarter unit to its right (x 2.25U), and a disabled
+    // 1U key in the bottom right corner
+    WireKey defs[] = {
+        { 10, 0, 0, 0, 8, 4, 0, 1, 0 },
+        { 11, 0, 9, 0, 4, 4, 0, 2, 3 },
+        { 12, 0, 16, 8, 4, 4, PROTO_KEYDEF_DISABLED, 3, 0 },
+    };
+    Assert(f.Request(MSG_SET_KEYS, Keys(3, defs)).Status() == ST_OK);
+    Assert(f.layout.KeyCount(0) == 3);
+    Assert(f.ShownId(10) == f.Pixels(1) && f.ShownId(11) == f.Pixels(2) && f.ShownId(12) == f.Pixels(3));
+    Assert(f.layout.IsActive(10) && f.layout.IsActive(11) && !f.layout.IsActive(12));
+    comp_page_t page;
+    f.lock_depth++;
+    Assert(f.layout.GetPage(0, &page));
+    f.lock_depth--;
+    Assert(page.count == 3);
+    Assert(page.keys[1].rect.x == KEY_GRID_X0 + 9 * KEY_QUARTER && page.keys[1].rect.w == KEY_CELL);
+}
+
+Fact("Protocol Set Keys Edits Keys By Id")
+{
+    Fixture f;
+    Assert(f.Upload(1, f.env.Key1U(0)) == ST_OK);
+    Assert(f.Upload(2, f.env.Key1U(1)) == ST_OK);
+    Bytes n;
+    n.U8(3);
+    Assert(f.Request(MSG_SET_PAGE_COUNT, n).Status() == ST_OK);
+    WireKey defs[] = { Slot(0, 0, 1), Slot(0, 1, 2), Slot(1, 0, 1) };
+    Assert(f.Request(MSG_SET_KEYS, Keys(3, defs)).Status() == ST_OK);
+
+    // Same id: the key is redefined (new image, new place); the others stay
+    WireKey moved[] = { Slot(0, 0, 2) };
+    moved[0].x = 8;
+    moved[0].y = 4;                     // slot 7
+    Assert(f.Request(MSG_SET_KEYS, Keys(1, moved)).Status() == ST_OK);
+    const KeyState *k = f.layout.Find(KeySlotId(0, 0));
+    Assert(k && k->rect.x == 8 && k->rect.y == 4 && f.Shown(0, 0) == f.Pixels(2));
+    Assert(f.layout.KeyCount(0) == 2 && f.layout.KeyCount(1) == 1);
+
+    // A key stays on its page: naming its id on another page is refused...
+    WireKey other_page[] = { Slot(0, 1, 1) };
+    other_page[0].page = 2;
+    Assert(f.Request(MSG_SET_KEYS, Keys(1, other_page)).Status() == ST_BAD_ARG);
+    // ...so it moves by being removed, then defined there
+    f.changed_pages.Clear();
+    WireKey gone[] = { Remove(KeySlotId(0, 1)), Remove(999) };      // an unknown id is ignored
+    Assert(f.Request(MSG_SET_KEYS, Keys(2, gone)).Status() == ST_OK);
+    Assert(!f.layout.Find(KeySlotId(0, 1)) && f.layout.KeyCount(0) == 1);
+    Assert(f.changed_pages.GetCount() == 1 && f.changed_pages[0] == 0);
+    Assert(f.Request(MSG_SET_KEYS, Keys(1, other_page)).Status() == ST_OK);
+    int page = -1;
+    Assert(f.layout.Find(KeySlotId(0, 1), &page) && page == 2);
+
+    // In one message: page 2's key moves from slot 1 to slot 0 while a new key
+    // takes slot 1 (applied together, so they never overlap), and page 1's key
+    // gets a new image
+    WireKey moved_key = Slot(0, 1, 2);
+    moved_key.page = 2;
+    moved_key.x = 0;
+    WireKey new_key = Slot(2, 1, 1);
+    WireKey restyled = Slot(1, 0, 2);
+    WireKey together[] = { new_key, moved_key, restyled };
+    Assert(f.Request(MSG_SET_KEYS, Keys(3, together)).Status() == ST_OK);
+    Assert(f.layout.KeyCount(2) == 2 && f.layout.Find(KeySlotId(0, 1))->rect.x == 0);
+    Assert(f.layout.Find(KeySlotId(2, 1))->rect.x == 4 && f.Shown(1, 0) == f.Pixels(2));
+
+    // Nothing at all
+    Assert(f.Request(MSG_SET_KEYS, Keys(0, nullptr)).Status() == ST_OK);
+}
+
+Fact("Protocol Set Keys Refusals Change Nothing")
+{
+    Fixture f;
+    Assert(f.Upload(1, f.env.Key1U(0)) == ST_OK);
+    Assert(f.Upload(2, f.env.Key2U(0)) == ST_OK);
+    Assert(f.Upload(3, f.env.Face(0, true)) == ST_OK);   // opaque, but 128x128
+    Bytes n;
+    n.U8(2);
+    Assert(f.Request(MSG_SET_PAGE_COUNT, n).Status() == ST_OK);
+    WireKey base[] = { Slot(0, 0, 1), Slot(1, 0, 1) };
+    Assert(f.Request(MSG_SET_KEYS, Keys(2, base)).Status() == ST_OK);
+    f.changed_pages.Clear();
+
+    struct Case { WireKey key; WireKey second; int count; uint16_t status; };
+    WireKey none = {};
+    WireKey overlap = Slot(0, 2, 1);
+    overlap.x = 2;                                          // half over slot 0's key
+    WireKey out_x = Slot(0, 4, 1);
+    out_x.x = 17;                                           // past the right edge
+    WireKey out_y = Slot(0, 10, 1);
+    out_y.y = 9;                                            // past the bottom
+    WireKey empty = Slot(0, 3, 1);
+    empty.w = 0;
+    WireKey zero_id = Slot(0, 3, 1);
+    zero_id.id = 0;
+    WireKey dup_other = Slot(0, 3, 1);
+    dup_other.id = KeySlotId(1, 0);                         // page 1's key's id
+    WireKey wrong_size = Slot(0, 3, 2);                     // a 2U image on a 1U key
+    WireKey wrong_pressed = Slot(0, 3, 1, 2);
+    WireKey small = Slot(0, 3, 3);                          // a 128 image
+    WireKey missing = Slot(0, 3, 9);
+    WireKey bad_page = Slot(0, 3, 1);
+    bad_page.page = 2;                                      // past the page count
+    WireKey bad_flag = Slot(0, 3, 1, 0, 0x8000);
+    const Case cases[] = {
+        { overlap,       none,              1, ST_BAD_ARG },
+        { out_x,         none,              1, ST_BAD_ARG },
+        { out_y,         none,              1, ST_BAD_ARG },
+        { empty,         none,              1, ST_BAD_ARG },
+        { zero_id,       none,              1, ST_BAD_ARG },
+        { dup_other,     none,              1, ST_BAD_ARG },
+        { Slot(0, 3, 1), Slot(0, 3, 1),     2, ST_BAD_ARG },   // the same id twice in one message
+        { Slot(0, 3, 1), Remove(KeySlotId(0, 3)), 2, ST_BAD_ARG },
+        { wrong_size,    none,              1, ST_BAD_IMAGE },
+        { wrong_pressed, none,              1, ST_BAD_IMAGE },
+        { small,         none,              1, ST_BAD_IMAGE },
+        { missing,       none,              1, ST_NOT_FOUND },
+        { bad_page,      none,              1, ST_BAD_ARG },
+        { bad_flag,      none,              1, ST_BAD_ARG },
+        { Remove(0),     none,              1, ST_BAD_ARG },
+    };
+    for (const Case &c : cases) {
+        WireKey defs[] = { c.key, c.second };
+        Assert(f.Request(MSG_SET_KEYS, Keys(c.count, defs)).Status() == c.status);
+        // A bad key alongside a good one changes nothing either
+        WireKey with_good[] = { Slot(0, 14, 1), c.key, c.second };
+        Assert(f.Request(MSG_SET_KEYS, Keys(c.count + 1, with_good)).Status() == c.status);
+    }
+    Assert(f.changed_pages.GetCount() == 0);
+    Assert(f.layout.KeyCount(0) == 1 && f.layout.KeyCount(1) == 1 && f.Shown(0, 0) == f.Pixels(1));
+    Assert(f.store.Find(2)->key_refs == 0 && f.store.Find(3)->key_refs == 0);
+
+    // Too many keys on a page: 0.25U x 1U keys to the right of slot 0's key
+    List<WireKey> many;
+    for (int i = 0; i < COMP_MAX_KEYS + 1; i++) {
+        WireKey k = { (uint16_t)(100 + i), 0, (uint8_t)(8 + i % 12), (uint8_t)(i / 12 * 4), 1, 4, 0, 0, 0 };
+        many.Add(k);
+    }
+    Assert(f.Request(MSG_SET_KEYS, Keys(COMP_MAX_KEYS + 1, many.GetBuffer())).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_SET_KEYS, Keys(COMP_MAX_KEYS - 1, many.GetBuffer())).Status() == ST_OK);  // + slot 0's
+    WireKey one_more[] = { many[COMP_MAX_KEYS - 1] };
+    Assert(f.Request(MSG_SET_KEYS, Keys(1, one_more)).Status() == ST_BAD_ARG);
+    Assert(f.layout.KeyCount(0) == COMP_MAX_KEYS);
+}
+
+Fact("Protocol Set Keys Length Errors")
+{
+    Fixture f;
+    Assert(f.Upload(1, f.env.Key1U(0)) == ST_OK);
+    WireKey defs[] = { Slot(0, 0, 1) };
+    Bytes p = Keys(1, defs);
+    p.b.GetBuffer()[0] = 2;             // count says more than there is
+    Assert(f.Request(MSG_SET_KEYS, p).Status() == ST_BAD_LENGTH);
+    Bytes cut;
+    cut.Raw(Keys(1, defs).b.GetBuffer(), 2 + PROTO_KEYDEF_SIZE - 1);
+    Assert(f.Request(MSG_SET_KEYS, cut).Status() == ST_BAD_LENGTH);
+    Assert(f.Request(MSG_SET_KEYS).Status() == ST_BAD_LENGTH);
+    Assert(f.store.Find(1)->key_refs == 0 && f.changed_pages.GetCount() == 0);
+}
+
+Fact("Protocol Put Image Refuses A Non-Opaque Image")
+{
+    Fixture f;
+    Assert(f.Upload(1, f.env.Icon(0)) == ST_BAD_IMAGE);     // transparent padding
+    Assert(f.Upload(2, f.env.Face(0)) == ST_BAD_IMAGE);
+    Assert(!f.store.IsLive(1) && !f.store.IsLive(2));
+    // Any opaque size up to the grid
+    Assert(f.Upload(3, f.env.Face(0, true)) == ST_OK);
+    Assert(f.Upload(4, f.env.Key2U(0)) == ST_OK);
+    // A replace with a transparent image keeps the old one
+    Assert(f.Upload(4, f.env.Icon(1)) == ST_BAD_IMAGE);
+    Assert(f.Pixels(4) && memcmp(f.Pixels(4), f.env.Key2U(0), f.env.Size(f.env.Key2U(0))) == 0);
 }
 
 Fact("Protocol Upload Errors")
 {
     Fixture f;
-    const void *icon = f.env.Icon(0);
+    const void *icon = f.env.Key1U(0);
     uint32_t size = f.env.Size(icon);
 
     // Out of order: the data is skipped and the stream stays in step
@@ -393,43 +628,30 @@ Fact("Protocol Upload Errors")
     Assert(f.Upload(4, icon) == ST_OK);
 }
 
-Fact("Protocol Set Keys Errors Change Nothing")
-{
-    Fixture f;
-    Assert(f.Upload(1, f.env.Face(0)) == ST_OK);
-    KeyDef ok[] = { { 0, 0, 0, { 1, 0, 0, 0 } }, { 0, 1, 0, { 9, 0, 0, 0 } } };
-    Assert(f.Request(MSG_SET_KEYS, Keys(2, ok)).Status() == ST_NOT_FOUND);
-    KeyDef page[] = { { 1, 0, 0, { 1, 0, 0, 0 } } };
-    Assert(f.Request(MSG_SET_KEYS, Keys(1, page)).Status() == ST_BAD_ARG);
-
-    // Count says more than there is
-    Bytes p = Keys(1, ok);
-    p.b.GetBuffer()[0] = 2;
-    Assert(f.Request(MSG_SET_KEYS, p).Status() == ST_BAD_LENGTH);
-    Assert(f.store.Find(1)->key_refs == 0);
-    Assert(f.changed_pages.GetCount() == 0);
-}
-
 Fact("Protocol Free Images Is Never Refused")
 {
     Fixture f;
-    Assert(f.Upload(1, f.env.Face(0)) == ST_OK);
-    Assert(f.Upload(2, f.env.Icon(0)) == ST_OK);
-    KeyDef defs[] = { { 0, 0, 0, { 1, 2, 0, 0 } } };
+    Assert(f.Upload(1, f.env.Key1U(0)) == ST_OK);
+    Assert(f.Upload(2, f.env.Key1U(1)) == ST_OK);
+    WireKey defs[] = { Slot(0, 0, 2) };
     Assert(f.Request(MSG_SET_KEYS, Keys(1, defs)).Status() == ST_OK);
-    const void *px = f.store.Find(2)->data->Pixels();
+    const void *px = f.Pixels(2);
 
     uint32_t ids[] = { 2, 77 };
     Assert(f.Request(MSG_FREE_IMAGES, Ids(2, ids)).Status() == ST_OK);
     Msg q = f.Request(MSG_QUERY_IMAGES, Ids(2, ids));
     Assert(q.U8At(6) == 0);
-    comp_key_t keys[COMP_KEYS];
-    f.layout.GetPage(0, keys);
-    Assert(keys[0].fg == px);           // still drawn
+    Assert(f.Shown(0, 0) == px);        // still drawn
 
-    // Its key goes; once swept, the next message frees it
-    KeyDef none[] = { { 0, 0, 0, { 1, 0, 0, 0 } } };
-    Assert(f.Request(MSG_SET_KEYS, Keys(1, none)).Status() == ST_OK);
+    // Another key on its page leaves it there, and so does re-sending its key
+    WireKey other[] = { Slot(0, 1, 1) };
+    Assert(f.Request(MSG_SET_KEYS, Keys(1, other)).Status() == ST_OK);
+    Assert(f.Request(MSG_SET_KEYS, Keys(1, defs)).Status() == ST_OK);
+    Assert(f.Shown(0, 0) == px);
+
+    // Its key changes image; once swept, the next message frees it
+    WireKey changed[] = { Slot(0, 0, 1) };
+    Assert(f.Request(MSG_SET_KEYS, Keys(1, changed)).Status() == ST_OK);
     Assert(f.env.IsAllocated(px));
     Assert(f.proto.Idle());             // still waiting
     f.env.Sweep();
@@ -440,23 +662,21 @@ Fact("Protocol Free Images Is Never Refused")
 Fact("Protocol Replace Via Put Image")
 {
     Fixture f;
-    Assert(f.Upload(2, f.env.Icon(0)) == ST_OK);
-    KeyDef defs[] = { { 0, 4, 0, { 0, 2, 0, 0 } } };
+    Assert(f.Upload(2, f.env.Key1U(0)) == ST_OK);
+    WireKey defs[] = { Slot(0, 4, 2) };
     Assert(f.Request(MSG_SET_KEYS, Keys(1, defs)).Status() == ST_OK);
-    Assert(f.Upload(2, f.env.Icon(1)) == ST_OK);
-    comp_key_t keys[COMP_KEYS];
-    f.layout.GetPage(0, keys);
-    Assert(memcmp(keys[4].fg, f.env.Icon(1), f.env.Size(f.env.Icon(1))) == 0);
+    Assert(f.Upload(2, f.env.Key1U(1)) == ST_OK);
+    Assert(memcmp(f.Shown(0, 4), f.env.Key1U(1), f.env.Size(f.env.Key1U(1))) == 0);
 }
 
 Fact("Protocol Reset Clears Keys And Images")
 {
     Fixture f;
-    Assert(f.Upload(1, f.env.Face(0)) == ST_OK);
+    Assert(f.Upload(1, f.env.Key1U(0)) == ST_OK);
     Bytes n;
     n.U8(3);
     Assert(f.Request(MSG_SET_PAGE_COUNT, n).Status() == ST_OK);
-    KeyDef defs[] = { { 2, 0, 0, { 1, 0, 0, 0 } } };
+    WireKey defs[] = { Slot(2, 0, 1) };
     Assert(f.Request(MSG_SET_KEYS, Keys(1, defs)).Status() == ST_OK);
     Bytes part;
     part.U32(9).U32(5000).U32(0).U32(0);           // an upload in progress
@@ -560,11 +780,11 @@ Fact("Protocol Content Requests Work While The Backlight Is Off")
 {
     Fixture f;
     f.Request(MSG_SET_BACKLIGHT, OnByte(0));
-    Assert(f.Upload(1, f.env.Face(0)) == ST_OK);
+    Assert(f.Upload(1, f.env.Key1U(0)) == ST_OK);
     Bytes n;
     n.U8(3);
     Assert(f.Request(MSG_SET_PAGE_COUNT, n).Status() == ST_OK);
-    KeyDef defs[] = { { 2, 4, 0, { 1, 0, 0, 0 } } };
+    WireKey defs[] = { Slot(2, 4, 1) };
     Assert(f.Request(MSG_SET_KEYS, Keys(1, defs)).Status() == ST_OK);
     Bytes go;
     go.U8(2).U8(1);
@@ -575,9 +795,7 @@ Fact("Protocol Content Requests Work While The Backlight Is Off")
 
     // Same content after the light comes on
     f.Request(MSG_SET_BACKLIGHT, OnByte(1));
-    comp_key_t keys[COMP_KEYS];
-    f.layout.GetPage(2, keys);
-    Assert(keys[4].bg == f.store.Find(1)->data->Pixels());
+    Assert(f.Shown(2, 4) == f.Pixels(1));
     Assert(f.layout.PageCount() == 3 && f.page_set == 2);
 }
 
@@ -615,7 +833,7 @@ Fact("Protocol Wake Comes After The Cancel Queued Before It")
     f.proto.SendEvents();
     List<Msg> e = f.Read();
     Assert(e.GetCount() == 3);
-    Assert(e[1].type == EVT_KEY && e[1].U8At(2) == KEY_ACTION_CANCEL);
+    Assert(e[1].type == EVT_KEY && e[1].U8At(3) == KEY_ACTION_CANCEL);
     Assert(e[2].type == EVT_WAKE && e[2].U32At(4) == 30);
     Assert(e[2].seq == (uint16_t)(e[1].seq + 1));
 }
@@ -733,28 +951,30 @@ Fact("Protocol Reset Stream Drops A Partial Message And Upload")
 Fact("Protocol Events Are Queued And Report Overflow")
 {
     Fixture f;
-    f.proto.PostKey(1, 7, KEY_ACTION_DOWN, 1234);
+    f.proto.PostKey(1, 0xBEEF, KEY_ACTION_DOWN, 1234);
     f.proto.PostPageChanged(2, PAGE_CAUSE_USER);
     Assert(f.proto.SendEvents());
     List<Msg> e = f.Read();
     Assert(e.GetCount() == 2);
     Assert(e[0].type == EVT_KEY && e[0].flags == PROTO_FLAG_EVENT);
-    Assert(e[0].len == 8);
-    Assert(e[0].U8At(0) == 1 && e[0].U8At(1) == 7 && e[0].U8At(2) == KEY_ACTION_DOWN && e[0].U8At(3) == 0);
-    Assert(e[0].U32At(4) == 1234);
+    // u16 id, u8 page, u8 action, u8 lost, u8[3] reserved, u32 time_ms
+    Assert(e[0].len == 12);
+    Assert(e[0].U16At(0) == 0xBEEF && e[0].U8At(2) == 1 && e[0].U8At(3) == KEY_ACTION_DOWN);
+    Assert(e[0].U8At(4) == 0 && e[0].U8At(5) == 0 && e[0].U8At(6) == 0 && e[0].U8At(7) == 0);
+    Assert(e[0].U32At(8) == 1234);
     Assert(e[1].type == EVT_PAGE_CHANGED && e[1].U8At(0) == 2 && e[1].U8At(1) == PAGE_CAUSE_USER);
     Assert(e[1].seq == (uint16_t)(e[0].seq + 1));
     Assert(!f.proto.SendEvents());
 
     // Overflow: the oldest go, and the next KEY event says so
     for (int i = 0; i < PROTO_EVENT_QUEUE + 10; i++)
-        f.proto.PostKey(0, i % COMP_KEYS, KEY_ACTION_UP, i);
+        f.proto.PostKey(0, (uint16_t)(1 + i), KEY_ACTION_UP, i);
     f.proto.SendEvents();
     e = f.Read();
     Assert(e.GetCount() == PROTO_EVENT_QUEUE);
-    Assert(e[0].U32At(4) == 10);
-    Assert(e[0].U8At(3) == 1);
-    Assert(e[1].U8At(3) == 0);
+    Assert(e[0].U32At(8) == 10 && e[0].U16At(0) == 11);
+    Assert(e[0].U8At(4) == 1);
+    Assert(e[1].U8At(4) == 0);
 
     // A stream reset drops queued events
     f.proto.PostKey(0, 0, KEY_ACTION_DOWN, 0);
@@ -765,7 +985,7 @@ Fact("Protocol Events Are Queued And Report Overflow")
 Fact("Protocol Events Wait While The Host Isn't Reading")
 {
     Fixture f;
-    f.space = 30;                       // room for one event (12 + 8 bytes), not two
+    f.space = 30;                       // room for one event (12 + 12 bytes), not two
     f.proto.PostKey(0, 1, KEY_ACTION_DOWN, 1);
     f.proto.PostKey(0, 1, KEY_ACTION_UP, 2);
     Assert(f.proto.SendEvents());
@@ -775,7 +995,7 @@ Fact("Protocol Events Wait While The Host Isn't Reading")
     f.space = 1000;
     Assert(f.proto.SendEvents());
     List<Msg> e = f.Read();
-    Assert(e.GetCount() == 1 && e[0].U8At(2) == KEY_ACTION_UP);
+    Assert(e.GetCount() == 1 && e[0].U8At(3) == KEY_ACTION_UP);
 }
 
 // ---------------------------------------------------------------------------
@@ -832,13 +1052,13 @@ Fact("Protocol Heartbeat Does Not Use The Event Queue")
 {
     Fixture f;
     for (int i = 0; i < PROTO_EVENT_QUEUE; i++)
-        f.proto.PostKey(0, 0, KEY_ACTION_DOWN, i);
+        f.proto.PostKey(0, 1, KEY_ACTION_DOWN, i);
     Assert(f.proto.SendHeartbeat(7000));
     f.proto.SendEvents();
     List<Msg> e = f.Read();
     Assert(e.GetCount() == PROTO_EVENT_QUEUE + 1);
     Assert(e[0].type == EVT_HEARTBEAT);
-    Assert(e[1].U8At(3) == 0);                              // nothing lost: the queue was untouched
+    Assert(e[1].U8At(4) == 0);                            // nothing lost: the queue was untouched
 }
 
 // ---------------------------------------------------------------------------
@@ -912,12 +1132,14 @@ Fact("Protocol Get Info Reports The Stored Layout")
     uint8_t scratch[512];
     Assert(f.layout_store.Begin(5000, CrcOf(blob)) == LayoutStoreResult::Ok);
     Assert(f.layout_store.Data(0, blob.b.GetBuffer(), 5000) == LayoutStoreResult::Ok);
+    const int V2_FIELDS = 15;                            // after the layout fields (Get Info)
     Msg during = f.Request(MSG_GET_INFO);                   // an upload under way stores nothing yet
-    Assert(during.U32At(during.len - 8) == 0 && during.U32At(during.len - 4) == 0);
+    int at = during.len - V2_FIELDS - 12;
+    Assert(during.U32At(at + 4) == 0 && during.U32At(at + 8) == 0);
     Assert(f.layout_store.Commit(scratch, sizeof(scratch)) == LayoutStoreResult::Ok);
 
     Msg m = f.Request(MSG_GET_INFO);
-    int tail = m.len - 12;
+    int tail = m.len - V2_FIELDS - 12;
     Assert(m.U32At(tail) == 15 * LAYOUT_SECTOR && m.U32At(tail + 4) == 5000 && m.U32At(tail + 8) == CrcOf(blob));
 }
 
@@ -1072,7 +1294,7 @@ Fact("Protocol Layout Upload Is Independent Of Image Uploads")
 {
     Fixture f;
     Bytes blob = Blob(2000);
-    const void *icon = f.env.Icon(0);
+    const void *icon = f.env.Key1U(0);
     uint32_t size = f.env.Size(icon), half = size / 2;
     Assert(f.Request(MSG_PUT_IMAGE, f.PutImage(2, icon, 0, half)).Status() == ST_OK);
     Assert(f.Request(MSG_LAYOUT_BEGIN, LayoutBegin(2000, CrcOf(blob))).Status() == ST_OK);
@@ -1341,11 +1563,11 @@ namespace
         go.U8(0);
         text.U8(STATUS_TEXT_LEFT).U8(2).Raw("hi", 2);
         uint32_t ids[] = { 1 };
-        KeyDef defs[] = { { 0, 0, 0, { 1, 0, 0, 0 } } };
+        WireKey defs[] = { Slot(0, 0, 1) };
         switch (i) {
         case 0:  return f.Request(MSG_RESET, Bytes(), piece).Status();
         case 1:  return f.Request(MSG_SET_STATUS_TEXT, text, piece).Status();
-        case 2:  return f.Request(MSG_PUT_IMAGE, f.PutImage(1, f.env.Icon(0)), piece).Status();
+        case 2:  return f.Request(MSG_PUT_IMAGE, f.PutImage(1, f.env.Key1U(0)), piece).Status();
         case 3:  return f.Request(MSG_FREE_IMAGES, Ids(1, ids), piece).Status();
         case 4:  return f.Request(MSG_SET_PAGE_COUNT, count, piece).Status();
         case 5:  return f.Request(MSG_SET_KEYS, Keys(1, defs), piece).Status();
@@ -1357,10 +1579,10 @@ namespace
     uint32_t HomeImageCount(const LayoutSummary &home)
     {
         Set<uint32_t> s;
-        for (int k = 0; k < COMP_KEYS; k++)
-            for (int j = 0; j < KEY_SLOTS; j++)
-                if (home.home[k][j].offset)
-                    s.Add(home.home[k][j].offset);
+        for (uint32_t i = 0; i < home.home_count; i++)
+            for (const LayoutImage &im : { home.home[i].normal, home.home[i].pressed })
+                if (im.offset)
+                    s.Add(im.offset);
         return (uint32_t)s.GetCount();
     }
 }
@@ -1431,16 +1653,15 @@ Fact("Protocol Take Control Resets The Model Like Reset")
     Assert(InfoFlagsRaw(f) == (INFO_FLAG_BACKLIGHT | INFO_FLAG_HOSTED));
     Assert(f.comp_resets == 1 && f.page_count == 1);
     Assert(f.status_sets == 2 && f.status_text[0][0] == 0 && f.status_text[1][0] == 0);
-    Assert(f.store.Find(f.home.home[0][KEY_SLOT_BG].offset) == nullptr);   // Home's images are gone
-    for (int k = 0; k < COMP_KEYS; k++)
-        Assert(!f.layout.IsActive(0, k));
+    Assert(f.store.Find(f.home.home[0].normal.offset) == nullptr);   // Home's images are gone
+    Assert(f.layout.KeyCount(0) == 0);
     Assert(f.mode_changes.GetCount() == 1 && f.mode_changes[0] == 1);
 
     // Now the layout requests work
-    Assert(f.Upload(1, f.env.Icon(0)) == ST_OK);
-    KeyDef defs[] = { { 0, 3, 0, { 1, 0, 0, 0 } } };
+    Assert(f.Upload(1, f.env.Key1U(0)) == ST_OK);
+    WireKey defs[] = { Slot(0, 3, 1) };
     Assert(f.Request(MSG_SET_KEYS, Keys(1, defs)).Status() == ST_OK);
-    Assert(f.layout.IsActive(0, 3));
+    Assert(f.Active(0, 3));
 }
 
 Fact("Protocol Take Control Abandons An Image Upload In Progress")
@@ -1457,7 +1678,7 @@ Fact("Protocol Take Control Abandons An Image Upload In Progress")
 Fact("Protocol Take Control While Hosted Resets Again And Stays Hosted")
 {
     Fixture f;
-    Assert(f.Upload(1, f.env.Icon(0)) == ST_OK);
+    Assert(f.Upload(1, f.env.Key1U(0)) == ST_OK);
     Assert(f.Request(MSG_TAKE_CONTROL).Status() == ST_OK);
     Assert(f.proto.Hosted() && !f.store.IsLive(1));
     Assert(f.comp_resets == 1);
@@ -1468,7 +1689,7 @@ Fact("Protocol Release Rebuilds Home And Goes Standalone")
     Fixture f(1u << 20, false);
     f.UseHome();
     f.Request(MSG_TAKE_CONTROL);
-    f.Upload(1, f.env.Icon(0));
+    f.Upload(1, f.env.Key1U(0));
     Bytes n;
     n.U8(3);
     f.Request(MSG_SET_PAGE_COUNT, n);
@@ -1489,8 +1710,8 @@ Fact("Protocol Release Rebuilds Home And Goes Standalone")
     Assert(f.page_set == 0 && !f.animate);
     Assert(f.status_text[0][0] == 0 && !strcmp(f.status_text[1], STATUS_TEXT_STANDALONE_RIGHT));
     Assert(!f.store.IsLive(1));
-    Assert(f.ShowsHome(0) && f.layout.IsActive(0, 0) && !f.layout.IsActive(0, 3));
-    Assert(f.store.Find(f.home.home[0][KEY_SLOT_BG].offset) != nullptr);
+    Assert(f.ShowsHome(0) && f.Active(0, 0) && !f.Active(0, 3));
+    Assert(f.store.Find(f.home.home[0].normal.offset) != nullptr);
     Assert(f.mode_changes.GetCount() == 1 && f.mode_changes[0] == 0);
 
     // Standalone again: layout requests refused
@@ -1501,13 +1722,12 @@ Fact("Protocol Release Rebuilds Home And Goes Standalone")
 Fact("Protocol Release Without A Layout Leaves An Empty Home")
 {
     Fixture f;
-    f.Upload(1, f.env.Icon(0));
-    KeyDef defs[] = { { 0, 3, 0, { 1, 0, 0, 0 } } };
-    f.Request(MSG_SET_KEYS, Keys(1, defs));
+    f.Upload(1, f.env.Key1U(0));
+    WireKey defs[] = { Slot(0, 3, 1) };
+    Assert(f.Request(MSG_SET_KEYS, Keys(1, defs)).Status() == ST_OK);
     Assert(f.Request(MSG_RELEASE_CONTROL).Status() == ST_OK);
     Assert(!f.proto.Hosted() && f.layout.PageCount() == 1);
-    for (int k = 0; k < COMP_KEYS; k++)
-        Assert(!f.layout.IsActive(0, k));
+    Assert(f.layout.KeyCount(0) == 0);
     Assert(f.env.LiveBlocks() == 0);
 }
 
@@ -1516,12 +1736,10 @@ Fact("Protocol Release When Home Can't Be Shown Leaves It Empty But Standalone")
     Fixture f(1u << 20, false);
     f.UseHome();
     f.Request(MSG_TAKE_CONTROL);
-    f.home.home[7][KEY_SLOT_BG] = f.home.home[0][KEY_SLOT_BG];
-    f.home.home[7][KEY_SLOT_FG] = LayoutImage{ 700, 64 };           // refused by the store
+    f.home.home[7].pressed = LayoutImage{ 700, 64 };                // refused by the store
     Assert(f.Request(MSG_RELEASE_CONTROL).Status() == ST_OK);
     Assert(!f.proto.Hosted());
-    for (int k = 0; k < COMP_KEYS; k++)
-        Assert(!f.layout.IsActive(0, k));
+    Assert(f.layout.KeyCount(0) == 0);
     ImageStoreStats st;
     f.store.GetStats(&st);
     Assert(st.count == 0);
@@ -1541,7 +1759,7 @@ Fact("Protocol Release And Take Control Are Repeatable")
     f.UseHome();
     for (int i = 0; i < 3; i++) {
         Assert(f.Request(MSG_TAKE_CONTROL).Status() == ST_OK && f.proto.Hosted());
-        Assert(f.Upload(1, f.env.Icon(0)) == ST_OK);
+        Assert(f.Upload(1, f.env.Key1U(0)) == ST_OK);
         Assert(f.Request(MSG_RELEASE_CONTROL).Status() == ST_OK && !f.proto.Hosted());
         Assert(f.ShowsHome(0) && !f.store.IsLive(1));
     }
@@ -1555,7 +1773,7 @@ Fact("Protocol Disconnect Releases Like The Message")
     Fixture f(1u << 20, false);
     f.UseHome();
     f.Request(MSG_TAKE_CONTROL);
-    f.Upload(1, f.env.Icon(0));
+    f.Upload(1, f.env.Key1U(0));
     f.Request(MSG_SET_BACKLIGHT, OnByte(0));
     f.mode_changes.Clear();
 

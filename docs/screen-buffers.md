@@ -1,6 +1,6 @@
 # Screen Buffers
 
-How the firmware allocates, draws and swaps the pixel buffers the bounce fill reads from. Status: **partly superseded by [`page-compositor.md`](page-compositor.md)**, which is implemented. Page tags and dirty bits, the frame table, the swipe task's wanted set and hold, and the page background cost are replaced there (see its [Changes to screen-buffers.md](page-compositor.md#changes-to-screen-buffersmd)). Key render timings, the status bar and pager, the memory budget, reload deferral and modes 2 and 3 still apply. It replaced two earlier designs: neighbours pre-rendered in a 4-buffer pool, and in-place drawing timed against the fill. See [Alternatives considered](#alternatives-considered).
+How the firmware allocates, draws and swaps the pixel buffers the bounce fill reads from. Status: **partly superseded by [`page-compositor.md`](page-compositor.md)**, which is implemented. Page tags and dirty bits, the frame table, the swipe task's wanted set and hold, and the page background cost are replaced there (see its [Changes to screen-buffers.md](page-compositor.md#changes-to-screen-buffersmd)). The key render timings are superseded too: keys are now single opaque images drawn straight into PSRAM in fill gaps, with no render step (page-compositor.md, [Drawing a key](page-compositor.md#drawing-a-key-straight-into-psram-in-fill-gaps)). The status bar and pager, the memory budget, reload deferral and modes 2 and 3 still apply. It replaced two earlier designs: neighbours pre-rendered in a 4-buffer pool, and in-place drawing timed against the fill. See [Alternatives considered](#alternatives-considered).
 
 ## Summary
 
@@ -37,6 +37,8 @@ How the firmware allocates, draws and swaps the pixel buffers the bounce fill re
 - Labels, an rle565 key face, the `-Og` build and 120x112 keys will all add to these. See [Measurements to make](#measurements-to-make).
 
 ## Key render timings (measured)
+
+**Superseded** (2026-11-12): keys are no longer rendered from layers; see [page-compositor.md, Costs](page-compositor.md#costs). Kept for the history.
 
 Measured 2026-11-02 by `firmware/main/bench.c` (since removed; see git history) at boot, release build (`-O2`, asserts off), on core 1. The LCD ISR is on core 0.
 

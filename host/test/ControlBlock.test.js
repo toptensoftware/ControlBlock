@@ -1,10 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ControlBlock, ControlBlockError } from "../src/ControlBlock.js";
-import { Msg, Status, Reader, encodeIds, crc32, HEARTBEAT_INTERVAL_MS, WifiState, encodeWifiSet, encodeTimeSet, ClockSource } from "../src/protocol.js";
-import { imageId, keyImage, encodeImage } from "../src/images.js";
-import { readRleHeader } from "rle565/unpack.js";
-import { FakeDevice } from "./FakeDevice.js";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+    Msg, Status, Reader, encodeIds, crc32, HEARTBEAT_INTERVAL_MS, WifiState, encodeWifiSet, encodeTimeSet, ClockSource,
+    PROTOCOL_VERSION, KEYDEF_SIZE, KEY_EVENT_SIZE, KeyAction, encodeKeys, keySlot, keyPixelSize,
+} from "../src/protocol.js";
+import { keyImage, encodeImage } from "../src/images.js";
+import { FakeDevice, DEVICE } from "./FakeDevice.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 // Most tests are of a hosted session; FakeDevice itself boots standalone, like the device
 async function connected(options)
@@ -82,13 +89,14 @@ test("uploadLayout works when the last chunk ends on a whole USB packet", async 
 
 test("a failed request throws ControlBlockError", async () => {
     const { cb } = await connected({ handler: () => ({ status: Status.NOT_FOUND, data: new Uint8Array(0) }) });
-    await assert.rejects(cb.setKeys([{ page: 0, key: 0, bg: 99 }]),
+    await assert.rejects(cb.setKeys([{ id: 1, page: 0, normal: 99 }]),
                          err => err instanceof ControlBlockError && err.status === Status.NOT_FOUND);
     await cb.close();
 });
 
 test("putImage splits into chunks the device can take", async () => {
-    const { dev, cb } = await connected({ maxPayload: 100 });
+    // (not an image: a handler takes the chunks instead of the fake's image store)
+    const { dev, cb } = await connected({ maxPayload: 100, handler: () => ({ status: Status.OK, data: new Uint8Array(0) }) });
     const data = new Uint8Array(250).map((_, i) => i);
     await cb.putImage(42, data);
 
@@ -215,21 +223,245 @@ test("a lost response times out and resets the stream", async () => {
     await cb.close();
 });
 
-test("key images are rle565 with a stable content ID", async () => {
-    const icon = new Uint8Array(80 * 80 * 4);
-    for (let i = 0; i < icon.length; i += 4)
-        icon.set([255, 128, 0, (i / 4) % 80 < 40 ? 255 : 0], i);
-    const a = await keyImage(icon, 80, 80, 128);
-    const b = await keyImage(icon, 80, 80, 128);
-    const h = readRleHeader(Buffer.from(a.data));
-    assert.equal(h.width, 128);
-    assert.equal(h.height, 128);
-    assert.equal(a.id, b.id);
-    assert.notEqual(a.id, 0);
-    assert.equal(a.id, imageId(a.data));
+// --- Keys and images (protocol v2), against FakeDevice's model of the firmware ---
 
-    const other = await encodeImage(new Uint8Array(128 * 128 * 4).fill(255), 128, 128);
-    assert.notEqual(imageId(other), a.id);
+// An opaque width x height key image of one colour (images.js's keyImage), cached
+const images = new Map();
+async function plain(width, height, shade = 1)
+{
+    const key = `${width}x${height}/${shade}`;
+    if (!images.has(key)) {
+        const rgba = new Uint8Array(width * height * 4);
+        for (let i = 0; i < rgba.length; i += 4)
+            rgba.set([shade * 40 & 0xFF, 80, 160, 255], i);
+        images.set(key, await keyImage({ rgba, width, height }, width, height));
+    }
+    return images.get(key);
+}
+
+const statusOf = p => p.then(() => Status.OK, err => { if (!(err instanceof ControlBlockError)) throw err; return err.status; });
+
+test("FakeDevice's geometry and wire sizes match the firmware's headers", () => {
+    const header = name => fs.readFileSync(path.join(here, "../../firmware/main", name), "utf8");
+    const define = (text, name) => {
+        const m = text.match(new RegExp(`#define\\s+${name}\\s+(\\d+)`));
+        assert.ok(m, `${name} not found`);
+        return Number(m[1]);
+    };
+    const geometry = header("key_geometry.h"), screen = header("screen_layout.h"), proto = header("protocol.h"), keys = header("key_layout.h");
+    assert.equal(DEVICE.cell, define(geometry, "KEY_CELL"));
+    assert.equal(DEVICE.cols, define(geometry, "KEY_GRID_COLS"));
+    assert.equal(DEVICE.rows, define(geometry, "KEY_GRID_ROWS"));
+    assert.equal(DEVICE.quarter, DEVICE.cell / 4);              // KEY_QUARTER = KEY_CELL / 4
+    assert.equal(DEVICE.maxKeys, define(geometry, "COMP_MAX_KEYS"));
+    assert.equal(DEVICE.screenWidth, define(screen, "SCREEN_W"));
+    assert.equal(DEVICE.screenHeight, define(screen, "SCREEN_H"));
+    assert.equal(DEVICE.statusHeight, define(screen, "SCREEN_STATUS_H"));
+    assert.equal(define(screen, "SCREEN_PAGER_H"), 0);          // DEVICE.gridY assumes no pager bar
+    assert.equal(DEVICE.maxPages, define(screen, "SCREEN_MAX_PAGES"));
+    assert.equal(DEVICE.icon, define(keys, "KEY_ICON_SIZE"));
+    assert.equal(PROTOCOL_VERSION, define(proto, "PROTO_VERSION"));
+    assert.equal(KEYDEF_SIZE, define(proto, "PROTO_KEYDEF_SIZE"));
+    assert.equal(KEY_EVENT_SIZE, define(proto, "PROTO_KEY_EVENT_SIZE"));
+    assert.deepEqual([DEVICE.gridX, DEVICE.gridY, DEVICE.gridWidth, DEVICE.gridHeight], [40, 44, 720, 432]);
+});
+
+test("connect reads the v2 geometry", async () => {
+    const { cb } = await connected();
+    const i = cb.info;
+    assert.equal(i.protocolVersion, 2);
+    assert.deepEqual([i.keyWidth, i.quarter, i.gridX, i.gridY, i.gridWidth, i.gridHeight, i.maxKeys, i.maxImageWidth, i.maxImageHeight],
+                     [144, 36, 40, 44, 720, 432, 32, 720, 432]);
+    assert.deepEqual(keyPixelSize({ w: 2 }, i), { width: 288, height: 144 });
+    await cb.close();
+});
+
+test("connect refuses a device that speaks another protocol version", async () => {
+    const dev = new FakeDevice({ hosted: true });
+    const send = dev.respond.bind(dev);
+    dev.respond = (msg, status, data) => {
+        if (msg.type === Msg.GET_INFO)
+            data[0] = 1;                                        // a v1 device
+        send(msg, status, data);
+    };
+    const cb = new ControlBlock(dev, { timeoutMs: 300 });
+    await assert.rejects(cb.connect(), /protocol 1, expected 2/);
+    await cb.close();
+});
+
+test("putImage: opaque images are stored (and replaced); anything else is BAD_IMAGE", async () => {
+    const { dev, cb } = await connected();
+    const one = await plain(144, 144), two = await plain(288, 144);
+    await cb.putImage(one.id, one.data);
+    await cb.putImage(two.id, two.data);
+    assert.deepEqual(await cb.queryImages([one.id, two.id, 5]), [true, true, false]);
+    assert.deepEqual([dev.images.get(two.id).width, dev.images.get(two.id).height], [288, 144]);
+    assert.equal((await cb.getInfo()).imageCount, 2);
+
+    const seeThrough = await encodeImage(new Uint8Array(36 * 36 * 4).fill(128), 36, 36);     // alpha 128
+    assert.equal(await statusOf(cb.putImage(7, seeThrough)), Status.BAD_IMAGE);
+    assert.equal(await statusOf(cb.putImage(8, Uint8Array.of(1, 2, 3, 4))), Status.BAD_IMAGE);
+    const tooWide = await plain(721, 36);
+    assert.equal(await statusOf(cb.putImage(9, tooWide.data)), Status.BAD_IMAGE);
+    assert.deepEqual(await cb.queryImages([7, 8, 9]), [false, false, false]);
+
+    // A refused replace keeps the old image; a good one changes it in place
+    assert.equal(await statusOf(cb.putImage(one.id, seeThrough)), Status.BAD_IMAGE);
+    assert.equal(dev.images.get(one.id).width, 144);
+    await cb.putImage(one.id, two.data);
+    assert.equal(dev.images.get(one.id).width, 288);
+    await cb.close();
+});
+
+test("setKeys: keys by id with quarter-unit rects, images the key's size", async () => {
+    const { dev, cb } = await connected();
+    const one = await plain(144, 144), onePressed = await plain(144, 144, 2), two = await plain(288, 144), small = await plain(36, 72);
+    await cb.syncImages([one, onePressed, two, small]);
+    await cb.setPageCount(2);
+    await cb.setKeys([
+        { id: 1, page: 0, ...keySlot(0), normal: one, pressed: onePressed },
+        { id: 2, page: 0, x: 1, y: 0, w: 2, normal: two.id },
+        { id: 3, page: 0, x: 3.25, y: 1.5, w: 0.25, h: 0.5, normal: small, disabled: true },
+        { id: 40, page: 1, ...keySlot(14) },                    // no image: black
+    ]);
+    assert.deepEqual(dev.keys(0), [
+        { id: 1, page: 0, x: 0, y: 0, w: 4, h: 4, disabled: false, normal: one.id, pressed: onePressed.id },
+        { id: 2, page: 0, x: 4, y: 0, w: 8, h: 4, disabled: false, normal: two.id, pressed: 0 },
+        { id: 3, page: 0, x: 13, y: 6, w: 1, h: 2, disabled: true, normal: small.id, pressed: 0 },
+    ]);
+    assert.deepEqual(dev.keys(1), [{ id: 40, page: 1, x: 16, y: 8, w: 4, h: 4, disabled: false, normal: 0, pressed: 0 }]);
+
+    // The wrong size, or an image the device doesn't have
+    assert.equal(await statusOf(cb.setKeys([{ id: 4, page: 1, ...keySlot(0), normal: two }])), Status.BAD_IMAGE);
+    assert.equal(await statusOf(cb.setKeys([{ id: 4, page: 1, ...keySlot(0), normal: one, pressed: two }])), Status.BAD_IMAGE);
+    assert.equal(await statusOf(cb.setKeys([{ id: 4, page: 1, ...keySlot(0), normal: 12345 }])), Status.NOT_FOUND);
+    assert.equal(dev.keys(1).length, 1);
+    await cb.close();
+});
+
+test("setKeys refuses what the device refuses, and changes nothing", async () => {
+    const { dev, cb } = await connected();
+    await cb.setPageCount(2);
+    await cb.setKeys([{ id: 1, page: 0, ...keySlot(0) }, { id: 2, page: 1, ...keySlot(0) }]);
+    const before = [dev.keys(0), dev.keys(1)];
+    const good = { id: 9, page: 0, ...keySlot(5) };
+    const cases = {
+        "overlap":                    [{ id: 10, page: 0, x: 0.75, y: 0 }],
+        "overlap within the message": [{ id: 10, page: 0, ...keySlot(2) }, { id: 11, page: 0, x: 2.5, y: 0 }],
+        "past the grid's right":      [{ id: 10, page: 0, x: 4.25, y: 0 }],
+        "past the grid's bottom":     [{ id: 10, page: 0, x: 0, y: 2.5 }],
+        "a page past the count":      [{ id: 10, page: 2, ...keySlot(0) }],
+        "an id twice":                [{ id: 10, page: 0, ...keySlot(1) }, { id: 10, page: 0, ...keySlot(2) }],
+        "removed and defined":        [{ id: 2, remove: true }, { id: 2, page: 0, ...keySlot(3) }],
+        "an id on another page":      [{ id: 2, page: 0, ...keySlot(3) }],
+        "too many keys on a page":    Array.from({ length: 33 }, (_, i) => ({ id: 100 + i, page: 1, x: (i % 20) / 4, y: 1 + Math.floor(i / 20) / 4, w: 0.25, h: 0.25 })),
+    };
+    for (const [name, keys] of Object.entries(cases)) {
+        assert.equal(await statusOf(cb.setKeys(keys)), Status.BAD_ARG, name);
+        assert.equal(await statusOf(cb.setKeys([good, ...keys])), Status.BAD_ARG, `${name}, with a good key`);
+        assert.deepEqual([dev.keys(0), dev.keys(1)], before, name);
+    }
+    // 32 is fine (key 2 is already there)
+    await cb.setKeys(cases["too many keys on a page"].slice(0, 31));
+    assert.equal(dev.keys(1).length, 32);
+
+    // What the library can't encode never reaches the device
+    const sent = dev.requests.length;
+    await assert.rejects(cb.setKeys([{ id: 0, page: 0 }]), RangeError);
+    await assert.rejects(cb.setKeys([{ id: 5, page: 0, x: 0.1 }]), RangeError);
+    assert.equal(dev.requests.length, sent);
+
+    // Raw: an unknown flag, and a payload shorter than its count
+    const raw = encodeKeys([{ id: 5, page: 0, ...keySlot(4) }]);
+    raw[2 + 8] = 0x04;
+    assert.equal((await cb.request(Msg.SET_KEYS, raw)).status, Status.BAD_ARG);
+    assert.equal((await cb.request(Msg.SET_KEYS, raw.subarray(0, 21))).status, Status.BAD_LENGTH);
+    assert.equal(dev.keys(0).length, 1);
+    await cb.close();
+});
+
+test("setKeys edits keys by id: replace, move within a page, swap, remove; keys not named stay", async () => {
+    const { dev, cb } = await connected();
+    await cb.setPageCount(2);
+    await cb.setKeys([{ id: 1, page: 0, ...keySlot(0) }, { id: 2, page: 0, ...keySlot(1) }, { id: 3, page: 1, ...keySlot(0) }]);
+    const where = page => dev.keys(page).map(k => [k.id, k.x, k.y, k.w]);
+
+    await cb.setKeys([{ id: 2, page: 0, ...keySlot(1), disabled: true }]);          // replace
+    assert.deepEqual(where(0), [[1, 0, 0, 4], [2, 4, 0, 4]]);
+    assert.equal(dev.keys(0)[1].disabled, true);
+
+    await cb.setKeys([{ id: 1, page: 0, ...keySlot(1) }, { id: 2, page: 0, ...keySlot(0) }]);   // swap: checked on the result
+    assert.deepEqual(where(0), [[1, 4, 0, 4], [2, 0, 0, 4]]);
+
+    await cb.setKeys([{ id: 1, page: 0, x: 1, y: 0, w: 2 }, { id: 4, page: 0, ...keySlot(5) }, { id: 5, page: 1, ...keySlot(1) }]);
+    assert.deepEqual(where(0), [[2, 0, 0, 4], [1, 4, 0, 8], [4, 0, 4, 4]]);
+    assert.deepEqual(where(1), [[3, 0, 0, 4], [5, 4, 0, 4]]);
+
+    await cb.removeKeys([2, 99]);                                                    // unknown ids are ignored
+    assert.deepEqual(where(0), [[1, 4, 0, 8], [4, 0, 4, 4]]);
+    await cb.setKeys([{ id: 3, remove: true }]);                                     // then it may go elsewhere
+    await cb.setKeys([{ id: 3, page: 0, ...keySlot(14) }]);
+    assert.deepEqual(where(1), [[5, 4, 0, 4]]);
+    assert.deepEqual(where(0).at(-1), [3, 16, 8, 4]);
+    await cb.setKeys([]);                                                            // nothing: fine
+    await cb.close();
+});
+
+test("a freed image: the key showing it keeps it, a new key can't take it", async () => {
+    const { dev, cb } = await connected();
+    const one = await plain(144, 144);
+    await cb.putImage(one.id, one.data);
+    await cb.setKeys([{ id: 1, page: 0, ...keySlot(0), normal: one }]);
+    await cb.freeImages([one.id]);
+    assert.deepEqual(await cb.queryImages([one.id]), [false]);
+    assert.equal(dev.keys(0)[0].normal, one.id);
+    await cb.setKeys([{ id: 1, page: 0, ...keySlot(0), normal: one, disabled: true }]);     // re-sending its key is fine
+    await cb.setKeys([{ id: 2, page: 0, ...keySlot(1) }]);                                  // so is an edit beside it
+    assert.equal(await statusOf(cb.setKeys([{ id: 3, page: 0, ...keySlot(2), normal: one }])), Status.NOT_FOUND);
+    await cb.close();
+});
+
+test("setPageCount drops removed pages' keys; setPage; reset and takeControl clear everything", async () => {
+    const { dev, cb } = await connected({ hosted: false });
+    await cb.takeControl();
+    const one = await plain(144, 144);
+    await cb.putImage(one.id, one.data);
+    await cb.setPageCount(3);
+    await cb.setKeys([{ id: 1, page: 2, ...keySlot(0), normal: one }, { id: 2, page: 0, ...keySlot(0) }]);
+    await cb.setPage(2);
+    assert.equal((await cb.getInfo()).currentPage, 2);
+    assert.equal(await statusOf(cb.setPage(3)), Status.BAD_ARG);
+    assert.equal(await statusOf(cb.setPageCount(9)), Status.BAD_ARG);
+
+    await cb.setPageCount(2);
+    assert.equal(cb.info.pageCount, 2);
+    assert.equal((await cb.getInfo()).currentPage, 1);
+    assert.deepEqual(dev.keys(2), []);
+    await cb.setKeys([{ id: 1, page: 1, ...keySlot(0) }]);                          // its id is free again
+
+    await cb.reset();
+    assert.equal(dev.pageCount, 1);
+    assert.deepEqual(dev.keys(0), []);
+    assert.deepEqual(await cb.queryImages([one.id]), [false]);
+
+    await cb.putImage(one.id, one.data);
+    await cb.setStatusText({ left: "x" });
+    await cb.takeControl();                                                          // again: like reset
+    assert.deepEqual(await cb.queryImages([one.id]), [false]);
+    assert.deepEqual(dev.statusText, ["", ""]);
+    await cb.close();
+});
+
+test("key events carry the key's id and the page", async () => {
+    const { dev, cb } = await connected();
+    await cb.setPageCount(2);
+    await cb.setKeys([{ id: 300, page: 1, x: 0, y: 0, w: 2 }, { id: 7, page: 0, ...keySlot(0), disabled: true }]);
+    const got = new Promise(resolve => cb.on("key", resolve));
+    dev.keyEvent(300, KeyAction.RELEASE, { timeMs: 1234, lost: true });
+    assert.deepEqual(await got, { type: "key", seq: 0, id: 300, page: 1, action: KeyAction.RELEASE, lost: true, timeMs: 1234 });
+    assert.throws(() => dev.keyEvent(7, KeyAction.PRESS), /disabled/);              // the device sends none for these
+    assert.throws(() => dev.keyEvent(8, KeyAction.PRESS), /no such key/);
+    await cb.close();
 });
 
 // --- Standalone layout upload (docs/protocol.md "Layout upload") ---

@@ -5,6 +5,7 @@
 #include "color.h"
 #include "compositor.h"
 #include "fill_gap.h"
+#include "fill_px.h"
 #include "screen_view.h"
 #include "status_bar.h"
 #include "screen.h"
@@ -53,29 +54,50 @@ static volatile uint32_t s_late_two_pages;
 static volatile uint32_t s_late_status_drawing;
 static volatile bool     s_status_drawing;
 
-// Fill with a solid colour, two pixels per 32-bit store. A plain per-pixel
-// loop was ~350 us for a 15-line chunk, more than copying a page from PSRAM.
-IRAM_ATTR static void fill_px(uint16_t *dest, int n, uint16_t color)
+// Fill start timing (see screen_stats_t), ISR only
+static uint32_t  s_expect_start;        // when this fill should have started, on the grid of fills
+static bool      s_grid_valid;
+static int       s_last_y = -1;
+static uint16_t *s_buffer0;             // the bounce buffer that holds even chunks
+static volatile uint32_t s_max_late_cycles;
+static volatile uint32_t s_max_end_cycles;
+static volatile uint32_t s_missed;
+static volatile uint32_t s_seq_breaks;
+static volatile uint32_t s_buffer_mismatches;
+
+// How late this fill started, in cycles. Within a frame the DMA asks for a fill every BUDGET_CYCLES:
+// the fills for lines 30, 45 ... 465, 0, 15 (the last two prefill the next frame) are evenly spaced,
+// then the vertical blanking. So the grid restarts at line 2 x LINES, and moves to any fill that
+// comes earlier than the grid says (then the reference was the late one). Also checks the driver's
+// order: lines follow on (a break means the driver resynced the frame, LCD_RGB_RESTART_IN_VSYNC),
+// and chunk k is in bounce buffer k % 2 (the driver prefills buffer 0 with line 0 at start): a
+// mismatch means the fill is writing the buffer the DMA is sending (a lasting desync).
+IRAM_ATTR static uint32_t fill_start_late(const uint16_t *dest, int y, uint32_t start)
 {
-    if (n > 0 && ((uintptr_t)dest & 2)) {
-        *dest++ = color;
-        n--;
-    }
+    int next = s_last_y + DISPLAY_BOUNCE_BUFFER_LINES;
+    if (next >= DISPLAY_V_RES)
+        next = 0;
+    if (s_last_y >= 0 && y != next)
+        s_seq_breaks = s_seq_breaks + 1;
+    s_last_y = y;
 
-    uint32_t  c2 = color | ((uint32_t)color << 16);
-    uint32_t *d  = (uint32_t *)dest;
-    int pairs = n / 2;
-    while (pairs >= 8) {
-        d[0] = c2; d[1] = c2; d[2] = c2; d[3] = c2;
-        d[4] = c2; d[5] = c2; d[6] = c2; d[7] = c2;
-        d += 8;
-        pairs -= 8;
-    }
-    while (pairs--)
-        *d++ = c2;
+    if (!s_buffer0 && y == 0)
+        s_buffer0 = (uint16_t *)dest;
+    if (s_buffer0 && (dest == s_buffer0) != (((y / DISPLAY_BOUNCE_BUFFER_LINES) & 1) == 0))
+        s_buffer_mismatches = s_buffer_mismatches + 1;
 
-    if (n & 1)
-        *(uint16_t *)d = color;
+    if (y == 2 * DISPLAY_BOUNCE_BUFFER_LINES || !s_grid_valid) {
+        s_expect_start = start;
+        s_grid_valid   = true;
+        return 0;
+    }
+    s_expect_start += BUDGET_CYCLES;
+    int32_t late = (int32_t)(start - s_expect_start);
+    if (late < 0) {
+        s_expect_start = start;
+        return 0;
+    }
+    return (uint32_t)late;
 }
 
 // Copy `n` pixels from src, or fill with background if src is NULL.
@@ -168,6 +190,7 @@ IRAM_ATTR static bool fill_lines(uint16_t *dest, int y, int count, void *ctx)
     return false;
 #endif
     uint32_t start = esp_cpu_get_cycle_count();
+    uint32_t late  = fill_start_late(dest, y, start);
     BaseType_t woken = pdFALSE;
     const int y0 = y;
 
@@ -206,11 +229,18 @@ IRAM_ATTR static bool fill_lines(uint16_t *dest, int y, int count, void *ctx)
 
     // The gap before the next fill is when the compositor and the status bar
     // write PSRAM
-    fill_gap_done();
+    fill_gap_done(start);
 
     uint32_t cycles = esp_cpu_get_cycle_count() - start;
     if (cycles > s_max_fill_cycles)
         s_max_fill_cycles = cycles;
+    // A fill that starts late has less of its budget left
+    if (late > s_max_late_cycles)
+        s_max_late_cycles = late;
+    if (late + cycles > s_max_end_cycles)
+        s_max_end_cycles = late + cycles;
+    if (late + cycles > BUDGET_CYCLES)
+        s_missed = s_missed + 1;
     if (cycles > BUDGET_CYCLES) {
         // Where late fills happen, to find what's slowing them
         s_overruns = s_overruns + 1;
@@ -292,6 +322,16 @@ void screen_get_stats(screen_stats_t *stats)
     stats->late_one_page       = s_late_one_page;
     stats->late_two_pages      = s_late_two_pages;
     stats->late_status_drawing = s_late_status_drawing;
+    stats->max_late_us         = s_max_late_cycles / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    stats->max_end_us          = s_max_end_cycles / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    stats->missed              = s_missed;
+    stats->seq_breaks          = s_seq_breaks;
+    stats->buffer_mismatches   = s_buffer_mismatches;
+    s_max_late_cycles     = 0;
+    s_max_end_cycles      = 0;
+    s_missed              = 0;
+    s_seq_breaks          = 0;
+    s_buffer_mismatches   = 0;
     s_max_fill_cycles     = 0;
     s_overruns            = 0;
     s_late_status         = 0;

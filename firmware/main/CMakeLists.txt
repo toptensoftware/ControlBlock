@@ -36,6 +36,8 @@ idf_component_register(
         "fill_gap.cpp"
         "compositor.cpp"
         "page_compositor.cpp"
+        "key_geometry.cpp"
+        "opaque_row.cpp"
         "image_store.cpp"
         "key_layout.cpp"
         "model.cpp"

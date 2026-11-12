@@ -1,24 +1,56 @@
-// Look properties -> the four image definitions per key (docs/layout-format.md, "Button definition").
+// Look properties -> one image per key state (docs/layout-format.md, "Button definition"). Each state's
+// image is a spec: { width, height, layers: [{ layer: "bg" | "fg", def, x, y, width, height }] }, the
+// layers (node-buttonImage definitions) drawn in order over black at the key's pixel size.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { run, ok, errorText } from "./helpers.js";
 
-// Resolve one Home key (plus optional layout extras) and return that key
-const keyOf = (button, extra = {}, files) =>
-    ok({ version: 1, ...extra, home: { ...(extra.home ?? {}), keys: [button] } }, files).home.keys[0];
+// A state's layer definition ("bg" = face, "fg" = icon and label), or null
+const layerOf = (spec, layer) => spec?.layers.find(l => l.layer === layer)?.def ?? null;
+
+// Resolve one Home key (plus optional layout extras) and return its layer definitions
+const keyOf = (button, extra = {}, files) => {
+    const k = ok({ version: 1, ...extra, home: { ...(extra.home ?? {}), keys: [button] } }, files).home.keys[0];
+    return { normalBg: layerOf(k.normal, "bg"), normalFg: layerOf(k.normal, "fg"),
+             pressedBg: layerOf(k.pressed, "bg"), pressedFg: layerOf(k.pressed, "fg"), longPressMs: k.longPressMs };
+};
+const specOf = (button) => ok({ version: 1, home: { keys: [button] } }).home.keys[0];
 
 test("a key with no look has no images at all", () => {
-    const k = keyOf({});
-    assert.equal(k.normalBg, null);
-    assert.equal(k.normalFg, null);
-    assert.equal(k.pressedBg, null);
-    assert.equal(k.pressedFg, null);
+    const k = specOf({});
+    assert.equal(k.normal, null);
+    assert.equal(k.pressed, null);
     assert.equal(k.longPressMs, 0);
 });
 
-test("an empty slot has no images", () => {
-    const t = ok({ version: 1, home: { keys: [null] } });
-    assert.deepEqual(t.home.keys[0], { normalBg: null, normalFg: null, pressedBg: null, pressedFg: null, longPressMs: 0 });
+test("null is an empty slot: no key", () => {
+    assert.deepEqual(ok({ version: 1, home: { keys: [null] } }).home.keys, []);
+});
+
+test("a 1U key's images are 144x144: the face and the icon/label drawn 128x128 with 8 px of black round them", () => {
+    const k = specOf({ color: "red", icon: "#play" });
+    for (const spec of [k.normal, k.pressed])
+    {
+        assert.equal(spec.width, 144);
+        assert.equal(spec.height, 144);
+        assert.deepEqual(spec.layers.map(l => [l.layer, l.x, l.y, l.width, l.height]), [["bg", 8, 8, 128, 128], ["fg", 8, 8, 128, 128]]);
+    }
+    assert.match(layerOf(k.normal, "bg").svgCode, /width="128" height="128"/);
+    assert.equal(layerOf(k.normal, "fg").virtualSize, undefined);     // node-buttonImage's default 72x72
+});
+
+test("a span or fractional key is drawn across its rect, with the same scale for text as a 1U key", () => {
+    const k = specOf({ w: 2, h: 0.5, color: "red", label: "Wide" });
+    assert.equal(k.normal.width, 288);
+    assert.equal(k.normal.height, 72);
+    assert.deepEqual(k.normal.layers.map(l => [l.x, l.y, l.width, l.height]), [[8, 8, 272, 56], [8, 8, 272, 56]]);
+    assert.match(layerOf(k.normal, "bg").svgCode, /width="272" height="56"/);
+    assert.deepEqual(layerOf(k.normal, "fg").virtualSize, { width: 153, height: 31.5 });   // 72 per 128 px both ways
+});
+
+test("an icon-only key with nothing to change when pressed has the same layers both ways", () => {
+    const k = specOf({ icon: "#play" });
+    assert.deepEqual(k.pressed, k.normal);
 });
 
 test("color alone makes a face; the pressed face is the same face with the darkening overlay", () => {
@@ -150,9 +182,9 @@ test("image: only .svg paths are supported for now; unknown layer names are erro
 test("identical looks give identical definitions (so one render and one stored image)", () => {
     const t = ok({ version: 1, defaults: { color: "#222222" }, home: { keys: [{ icon: "#a" }, { icon: "#b" }, { icon: "#a" }] } });
     const [a, b, c] = t.home.keys;
-    assert.deepEqual(a.normalBg, b.normalBg);
-    assert.deepEqual(a, c);
-    assert.notDeepEqual(a.normalFg, b.normalFg);
+    assert.deepEqual(layerOf(a.normal, "bg"), layerOf(b.normal, "bg"));
+    assert.deepEqual([a.normal, a.pressed], [c.normal, c.pressed]);
+    assert.notDeepEqual(layerOf(a.normal, "fg"), layerOf(b.normal, "fg"));
 });
 
 test("look property validation", () => {
@@ -191,10 +223,10 @@ test("defaults chain for activities: root < activity < page < key", () => {
             ] } },
     });
     const [p0, p1] = t.activities[0].pages;
-    assert.equal(p0.keys[0].normalFg.svgForeColor, "page");
-    assert.equal(p0.keys[1].normalFg.svgForeColor, "key");
-    assert.equal(p1.keys[0].normalFg.svgForeColor, "act");
-    assert.match(p1.keys[0].normalBg.svgCode, /#aaaaaa/);
+    assert.equal(layerOf(p0.keys[0].normal, "fg").svgForeColor, "page");
+    assert.equal(layerOf(p0.keys[1].normal, "fg").svgForeColor, "key");
+    assert.equal(layerOf(p1.keys[0].normal, "fg").svgForeColor, "act");
+    assert.match(layerOf(p1.keys[0].normal, "bg").svgCode, /#aaaaaa/);
     assert.equal(p1.keys[0].longPressMs, 700);
 });
 
@@ -216,8 +248,7 @@ test("labels and gestures do not inherit, and are not allowed in defaults", () =
 
 test("empty slots inherit nothing", () => {
     const t = ok({ version: 1, defaults: { color: "red", longPressMs: 900 }, home: { keys: [null] } });
-    assert.equal(t.home.keys[0].normalBg, null);
-    assert.equal(t.home.keys[0].longPressMs, 0);
+    assert.deepEqual(t.home.keys, []);
 });
 
 test("inherited face with no icon gives the face only", () => {

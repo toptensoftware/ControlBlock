@@ -4,23 +4,22 @@
 //   exists(path) -> bool       resolvePath(rel) -> path       readText(path) -> string
 //   luaCheck(source) -> null | error message
 // Never throws on bad input: problems are collected with their JSON paths.
-// Images are left as definitions (stage 2 renders them).
+// Images are left as specs (layer definitions at the key's pixel size; stage 2 renders them).
 
-import { BLOB_VERSION, FILE_VERSION, KEYS_PER_PAGE, KEY_COLS, GESTURES, LONG_PRESS_MIN, LONG_PRESS_MAX } from "./consts.js";
+import { BLOB_VERSION, FILE_VERSION, LONG_PRESS_MIN, LONG_PRESS_MAX } from "./consts.js";
 import { Diagnostics, childPath } from "./diag.js";
 import { t, required, checkProps } from "./check.js";
 import { resolveOpList } from "./ops.js";
-import { BUTTON_LOOK_SPEC, DEFAULTS_SPEC, inheritLook, lookImages } from "./look.js";
+import { DEFAULTS_SPEC } from "./look.js";
+import { resolvePage, assignIds, touchBindings } from "./keys.js";
+import { setKeyPath } from "./tree.js";
 
-const isObject = v => v !== null && typeof v === "object" && !Array.isArray(v);
 const isNote = name => name.startsWith("_") || name.startsWith("$");
 const realNames = map => Object.keys(map ?? {}).filter(name => !isNote(name));
 const nonEmptyString = t.string({ nonEmpty: true });
 const HOOKS = ["willDeactivate", "willActivate", "didActivate", "didDeactivate"];
 
-const BUTTON_SPEC = { ...BUTTON_LOOK_SPEC, ...Object.fromEntries([...GESTURES, "action"].map(g => [g, t.any])) };
 const BINDING_SPEC = { control: required(nonEmptyString), event: required(nonEmptyString), do: required(t.any) };
-const emptyKey = () => ({ normalBg: null, normalFg: null, pressedBg: null, pressedFg: null, longPressMs: 0 });
 
 const fileVersion = (v, p, d) =>
     t.integer()(v, p, d) && (v === FILE_VERSION || (d.error(p, `unsupported version ${v} (this tool reads version ${FILE_VERSION})`), false));
@@ -50,6 +49,8 @@ function build(layout, host, diag)
         activityIndex: new Map(realNames(root.activities).map((name, i) => [name, i])),
         deviceNames: realNames(root.devices),
         usedActions: new Set(),
+        pages: [],              // every page's resolved keys, in layout order (Home first)
+        touchOwners: [],        // { owner, keys }: Home and each activity, whose bindings start with its keys' touch bindings
     };
     // A defaults block (validated here, once) or {}
     const defaultsOf = (owner, path) =>
@@ -66,8 +67,29 @@ function build(layout, host, diag)
         activities: resolveActivities(root.activities ?? {}, rootDefaults, rc, defaultsOf),
     };
 
+    finishKeys(rc);
     warnUnused(tree, root, rc);
     return tree;
+}
+
+// Once every page is resolved: key ids (unique across the layout), then the touch bindings by id
+function finishKeys(rc)
+{
+    assignIds(rc.pages, rc.diag);
+    for (const { owner, keys } of rc.touchOwners)
+    {
+        owner.bindings = [...touchBindings(keys), ...owner.bindings];
+        for (const { key, path } of keys)
+            setKeyPath(key, path);
+    }
+}
+
+// One page's keys, numbered across the layout (Home is page 0) -> its resolved keys
+function resolvePageKeys(list, path, chain, rc)
+{
+    const keys = resolvePage(list, path, chain, rc.pages.length, rc);
+    rc.pages.push(keys);
+    return keys;
 }
 
 // Every action is checked on its own (in a throwaway "used" set, so only real uses count)
@@ -86,7 +108,10 @@ function checkActions(rc)
 function resolveHome(home, rootDefaults, rc, defaultsOf)
 {
     const h = section(home ?? {}, { defaults: t.any, keys: t.any }, "home", rc.diag) ?? {};
-    return resolveKeys(h.keys, "home.keys", [rootDefaults, defaultsOf(h, "home")], 0, rc);
+    const keys = resolvePageKeys(h.keys, "home.keys", [rootDefaults, defaultsOf(h, "home")], rc);
+    const out = { keys: keys.map(k => k.key), bindings: [] };
+    rc.touchOwners.push({ owner: out, keys });
+    return out;
 }
 
 function resolveDevices(devices, rc)
@@ -123,25 +148,27 @@ function resolveActivities(activities, rootDefaults, rc, defaultsOf)
         if (a.pages?.length === 0)
             rc.diag.error(childPath(path, "pages"), "an activity needs at least one page");
 
-        const bindings = [];
+        const touchKeys = [];
         const pages = (a.pages ?? []).map((page, p) => {
             const pagePath = childPath(childPath(path, "pages"), p);
             const pg = section(page, { defaults: t.any, keys: t.any }, pagePath, rc.diag) ?? {};
-            // The strip: Home is page 0, so this activity's page p starts at column KEY_COLS * (p + 1)
-            const r = resolveKeys(pg.keys, childPath(pagePath, "keys"), [rootDefaults, defaults, defaultsOf(pg, pagePath)], KEY_COLS * (p + 1), rc);
-            bindings.push(...r.bindings);
-            return { keys: r.keys };
+            const keys = resolvePageKeys(pg.keys, childPath(pagePath, "keys"), [rootDefaults, defaults, defaultsOf(pg, pagePath)], rc);
+            touchKeys.push(...keys);
+            return { keys: keys.map(k => k.key) };
         });
-        bindings.push(...resolveBindings(a.bindings ?? [], childPath(path, "bindings"), rc));
+        // the touch bindings go in front once the keys have ids (finishKeys)
+        const bindings = resolveBindings(a.bindings ?? [], childPath(path, "bindings"), rc);
 
         const hooks = a.hooks ?? {};
-        return {
+        const out = {
             name,
             displayName: a.displayName ?? null,
             devices: (a.devices ?? []).map((d, i) => deviceIndexOf(d, childPath(childPath(path, "devices"), i), rc)),
             pages, bindings,
             ...Object.fromEntries(HOOKS.map(h => [h, resolveOpList(hooks[h], childPath(childPath(path, "hooks"), h), rc, "hook")])),
         };
+        rc.touchOwners.push({ owner: out, keys: touchKeys });
+        return out;
     });
 }
 
@@ -167,65 +194,6 @@ function resolveBindings(list, path, rc)
     });
     return out;
 }
-
-// ------------------------------------------------------------ keys
-
-// -> { keys: key[15], bindings }. `chain`: defaults blocks from the root down; `colBase`: the
-// column of this page's first key on the page strip.
-function resolveKeys(list, path, chain, colBase, rc)
-{
-    const { diag } = rc;
-    const keys = [], bindings = [], seen = new Map();
-    const entries = list === undefined ? [] : Array.isArray(list) ? list : (diag.error(path, "expected an array"), []);
-    if (entries.length > KEYS_PER_PAGE)
-        diag.error(path, `at most ${KEYS_PER_PAGE} keys per page, got ${entries.length}`);
-
-    entries.slice(0, KEYS_PER_PAGE).forEach((button, i) => {
-        const kp = childPath(path, i);
-        const b = button === null ? null : section(button, BUTTON_SPEC, kp, diag);
-        if (!b)
-            return void keys.push(emptyKey());
-
-        // Gestures -> touch bindings
-        const control = `touch[${colBase + (i % KEY_COLS)},${Math.floor(i / KEY_COLS)}]`;
-        if (b.action !== undefined && b.tap !== undefined)
-            diag.error(kp, "action and tap are the same gesture; set only one");
-        const gestures = { ...b, tap: b.tap ?? b.action };
-        const tapPath = b.tap !== undefined ? "tap" : "action";
-        const keyBindings = [];
-        for (const g of GESTURES)
-        {
-            const ops = resolveOpList(gestures[g], childPath(kp, g === "tap" ? tapPath : g), rc, g);
-            if (ops.length)
-                keyBindings.push({ control, event: g, ops });
-        }
-        if (b.long !== undefined && b.tap === undefined && b.action === undefined)
-            diag.warn(kp, "has a long gesture but no tap");
-        bindings.push(...keyBindings);
-
-        // Look -> images
-        const { press, release, tap, long, action, ...own } = b;
-        const look = inheritLook(chain, own);
-        const key = { ...lookImages(look, rc, kp), longPressMs: look.longPressMs ?? 0 };
-        keys.push(key);
-
-        // Identical buttons on one page
-        if (!isBlank(key, keyBindings))
-        {
-            const signature = JSON.stringify([key, keyBindings.map(x => [x.event, x.ops])]);
-            if (seen.has(signature))
-                diag.warn(kp, `is the same as ${childPath(path, seen.get(signature))}`);
-            else
-                seen.set(signature, i);
-        }
-    });
-
-    while (keys.length < KEYS_PER_PAGE)
-        keys.push(emptyKey());
-    return { keys, bindings };
-}
-
-const isBlank = (key, bindings) => bindings.length === 0 && !key.normalBg && !key.normalFg && !key.pressedBg && !key.pressedFg;
 
 // ------------------------------------------------------------ warnings
 

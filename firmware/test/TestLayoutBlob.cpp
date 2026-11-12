@@ -58,33 +58,136 @@ Fact("LayoutBlob Sample Is Valid")
     Assert(s.device_count == 2);
     Assert(s.activity_count == 2);
 
-    // Home key 0: face, icon, pressed face, and the icon again as the pressed icon
-    Assert(s.home[0][KEY_SLOT_BG].offset != 0 && s.home[0][KEY_SLOT_BG].size > 0);
-    Assert(s.home[0][KEY_SLOT_FG].offset != 0);
-    Assert(s.home[0][KEY_SLOT_PRESSED_BG].offset != 0);
-    Assert(s.home[0][KEY_SLOT_PRESSED_FG].offset == s.home[0][KEY_SLOT_FG].offset);
-    // Shared images are stored once: the same offset from every key
-    Assert(s.home[1][KEY_SLOT_BG].offset == s.home[0][KEY_SLOT_BG].offset);
-    Assert(s.home[1][KEY_SLOT_PRESSED_BG].offset == s.home[0][KEY_SLOT_PRESSED_BG].offset);
-    Assert(s.home[1][KEY_SLOT_FG].offset != s.home[0][KEY_SLOT_FG].offset);
-    // Absent images, and a face-only key
-    for (int slot = 0; slot < KEY_SLOTS; slot++)
-        Assert(s.home[3][slot].offset == 0 && s.home[3][slot].size == 0);
-    Assert(s.home[4][KEY_SLOT_BG].offset != 0 && s.home[4][KEY_SLOT_FG].offset == 0);
-    Assert(s.home[14][KEY_SLOT_BG].offset == 0);
-
-    // Every reported image is 4-aligned, inside the data, and a real image
-    for (int k = 0; k < COMP_KEYS; k++) {
-        for (int slot = 0; slot < KEY_SLOTS; slot++) {
-            LayoutImage im = s.home[k][slot];
-            if (!im.offset)
-                continue;
-            Assert(im.offset % 4 == 0 && im.offset + im.size <= Table(b));
-            const void *px = b.GetBuffer() + im.offset;
-            Assert(check_image(px, im.size, nullptr));
-            Assert(get_image_width(px) == COMP_KEY_SIZE && get_image_height(px) == COMP_KEY_SIZE);
+    // Home's keys in file order: ids and rects (quarter units). Empty slots have no key;
+    // plain grid keys have the bake's ids (page * 15 + slot + 1), a key off the whole-unit
+    // corners an assigned one (above the layout's pages * 15)
+    struct Want { uint16_t id; KeyRect r; };
+    const Want want[] = {
+        { 1, { 0, 0, 4, 4 } }, { 2, { 4, 0, 4, 4 } }, { 3, { 8, 0, 4, 4 } }, { 5, { 16, 0, 4, 4 } },
+        { 7, { 4, 4, 4, 4 } }, { 8, { 8, 4, 4, 4 } }, { 10, { 16, 4, 4, 4 } },
+        { 11, { 0, 8, 8, 4 } },                                 // 2U
+        { 13, { 8, 8, 2, 4 } }, { 61, { 10, 8, 2, 4 } },         // 0.5U each
+        { 14, { 12, 8, 4, 4 } }, { 15, { 16, 8, 4, 4 } },        // a group's two members
+    };
+    Assert(s.home_count == sizeof(want) / sizeof(want[0]));
+    for (uint32_t i = 0; i < s.home_count; i++) {
+        const LayoutKey &k = s.home[i];
+        Assert(k.id == want[i].id);
+        Assert(k.rect.x == want[i].r.x && k.rect.y == want[i].r.y && k.rect.w == want[i].r.w && k.rect.h == want[i].r.h);
+        // Both images, each opaque and the rect's size, 4-aligned inside the data
+        KeyPixelRect px = KeyRectPixels(k.rect);
+        for (const LayoutImage &im : { k.normal, k.pressed }) {
+            Assert(im.offset != 0 && im.offset % 4 == 0 && im.offset + im.size <= Table(b));
+            const void *p = b.GetBuffer() + im.offset;
+            bool opaque = false;
+            Assert(check_image(p, im.size, &opaque) && opaque);
+            Assert((int)get_image_width(p) == px.w && (int)get_image_height(p) == px.h);
         }
+        Assert(k.normal.offset != k.pressed.offset);
     }
+    // Shared images are stored once: keys 5 and 10 (plain colour, no icon) press the same way
+    Assert(s.home[3].pressed.offset == s.home[6].pressed.offset);
+    Assert(s.home[3].normal.offset != s.home[6].normal.offset);
+}
+
+Fact("LayoutBlob LayoutKeyOf Reads A Relocated Key Like The Summary")
+{
+    List<uint8_t> b = LoadSample();
+    LayoutSummary s = {};
+    Assert(Validate(b, &s) == LayoutError::Ok);
+    const layoutdata::layoutRoot *root = Relocate(b);
+    Assert(root->homePage.keys_count == s.home_count);
+    for (uint32_t i = 0; i < s.home_count; i++) {
+        LayoutKey k = LayoutKeyOf(root->homePage.keys[i], b.GetBuffer());
+        Assert(memcmp(&k, &s.home[i], sizeof(k)) == 0);
+    }
+}
+
+Fact("LayoutBlob Key With No Images Is Valid")
+{
+    // A key with no look (a touchable area drawn as background): Home key 0's images
+    // taken out, with their relocation entries
+    List<uint8_t> b = LoadSample();
+    uint32_t k0 = HomeKey(b, 0);
+    List<uint32_t> r = Relocs(b);
+    for (int s = 0; s < LAYOUT_KEY_IMAGES; s++) {
+        Put32(b, CB_KEY_COUNT(k0, s), 0);
+        Put32(b, CB_KEY_PTR(k0, s), 0);
+        for (int i = 0; i < r.GetCount(); i++)
+            if (r[i] == CB_KEY_PTR(k0, s))
+                r.RemoveAt(i--);
+    }
+    LayoutSummary sum = {};
+    Assert(Validate(WithRelocs(b, r), &sum) == LayoutError::Ok);
+    Assert(sum.home[0].id == 1 && sum.home[0].normal.offset == 0 && sum.home[0].pressed.offset == 0);
+    Assert(sum.home[0].normal.size == 0 && sum.home[0].pressed.size == 0);
+}
+
+Fact("LayoutBlob Refuses The Old Version")
+{
+    // Version 1 had fixed pages of 15 slot keys with four 128 images each
+    Assert(LAYOUT_BLOB_VERSION == 2);
+    Assert(Validate(With(CB_ROOT, 1)) == LayoutError::BadVersion);
+}
+
+Fact("LayoutBlob Rejects Bad Key Rects")
+{
+    List<uint8_t> b = LoadSample();
+    uint32_t k0 = HomeKey(b, 0);                // id 1 at (0, 0), 4 x 4
+    auto rect = [&](uint8_t x, uint8_t y, uint8_t w, uint8_t h) {
+        List<uint8_t> c = LoadSample();
+        uint8_t *p = c.GetBuffer() + CB_KEY_RECT(k0);
+        p[0] = x; p[1] = y; p[2] = w; p[3] = h;
+        return c;
+    };
+    Assert(Validate(rect(0, 0, 4, 4)) == LayoutError::Ok);
+    Assert(Validate(rect(0, 0, 0, 4)) == LayoutError::BadKey);           // empty
+    Assert(Validate(rect(0, 0, 4, 0)) == LayoutError::BadKey);
+    Assert(Validate(rect(17, 0, 4, 4)) == LayoutError::BadKey);          // past the right edge
+    Assert(Validate(rect(0, 9, 4, 4)) == LayoutError::BadKey);           // past the bottom
+    Assert(Validate(rect(250, 0, 10, 4)) == LayoutError::BadKey);        // wraps a u8
+    Assert(Validate(rect(1, 0, 4, 4)) == LayoutError::BadKey);           // overlaps key 2 (4, 0)
+    // A rect that's in the grid and clear of the others but not the images' size
+    Assert(Validate(rect(0, 4, 4, 4)) == LayoutError::Ok);                // slot 5 is empty: same size, fine
+    Assert(Validate(rect(0, 4, 4, 2)) == LayoutError::BadImage);
+    Assert(Validate(rect(0, 4, 2, 4)) == LayoutError::BadImage);
+}
+
+Fact("LayoutBlob Rejects Bad Key Ids")
+{
+    List<uint8_t> b = LoadSample();
+    auto id = [&](uint32_t key, uint16_t v) {
+        List<uint8_t> c = LoadSample();
+        memcpy(c.GetBuffer() + CB_KEY_ID(key), &v, 2);
+        return c;
+    };
+    Assert(Validate(id(HomeKey(b, 0), 0)) == LayoutError::BadKey);                // 0 = none
+    Assert(Validate(id(HomeKey(b, 0), 2)) == LayoutError::BadKey);                // Home's key 2 has it
+    Assert(Validate(id(HomeKey(b, 0), 1000)) == LayoutError::Ok);                 // any other id is fine
+    Assert(Validate(id(HomeKey(b, 0), 65535)) == LayoutError::Ok);
+
+    // Unique across the whole layout: an activity's key may not reuse a Home id, nor
+    // another activity's
+    uint32_t acts = U32(b, CB_ROOT_ACTIVITIES_PTR);
+    uint32_t watch_page = U32(b, acts + CB_OFF(activity, pages));
+    uint32_t go = U32(b, watch_page + CB_OFF(page, keys));                       // Watch page 0 key 0 (id 16)
+    uint32_t listen = acts + (uint32_t)sizeof(layoutdata::activity);
+    uint32_t listen_key = U32(b, U32(b, listen + CB_OFF(activity, pages)) + CB_OFF(page, keys));  // id 46
+    Assert(U32(b, go) % 65536 == 16 && U32(b, listen_key) % 65536 == 46);
+    Assert(Validate(id(go, 1)) == LayoutError::BadKey);
+    Assert(Validate(id(listen_key, 16)) == LayoutError::BadKey);
+    Assert(Validate(id(listen_key, 31)) == LayoutError::BadKey);                 // Watch's second page
+    Assert(Validate(id(listen_key, 0)) == LayoutError::BadKey);
+    Assert(Validate(id(listen_key, 60)) == LayoutError::Ok);
+}
+
+Fact("LayoutBlob Caps The Keys On A Page")
+{
+    List<uint8_t> b = LoadSample();
+    Assert(Validate(With(CB_HOME_KEYS, COMP_MAX_KEYS + 1)) == LayoutError::BadLimit);
+    uint32_t acts = U32(b, CB_ROOT_ACTIVITIES_PTR);
+    uint32_t watch_page = U32(b, acts + CB_OFF(activity, pages));
+    Assert(Validate(With(watch_page + CB_OFF(page, keys_count), COMP_MAX_KEYS + 1)) == LayoutError::BadLimit);
 }
 
 Fact("LayoutBlob Summary Is Untouched On Error")
@@ -126,7 +229,7 @@ Fact("LayoutBlob Relocate By Zero Changes Nothing")
 Fact("LayoutBlob Rejects Truncated Files")
 {
     List<uint8_t> b = LoadSample();
-    for (uint32_t n : { 0u, 1u, 16u, 31u, 32u, 100u, 604u }) {
+    for (uint32_t n : { 0u, 1u, 16u, 31u, 32u, 71u, 72u, 100u, 604u }) {
         Guarded g(b.GetBuffer(), n);
         LayoutSummary s;
         LayoutError e = LayoutValidate(g.Data(), g.Size(), &s);
@@ -159,7 +262,7 @@ Fact("LayoutBlob Rejects A Bad Header")
     Assert(Validate(With(0, 0x34365042)) == LayoutError::BadSignature);        // "BP64"
     Assert(Validate(With(4, 2)) == LayoutError::BadVersion);
     Assert(Validate(With(4, 0)) == LayoutError::BadVersion);
-    Assert(Validate(With(CB_ROOT, 2)) == LayoutError::BadVersion);             // the root's version
+    Assert(Validate(With(CB_ROOT, 3)) == LayoutError::BadVersion);             // the root's version
 
     List<uint8_t> b = LoadSample();
     uint32_t table = Table(b), count = RelocCount(b);
@@ -202,7 +305,7 @@ Fact("LayoutBlob Rejects Bad Relocation Entries")
     {
         LayoutSummary s;
         Assert(Validate(b, &s) == LayoutError::Ok);
-        uint32_t inside = (s.home[0][KEY_SLOT_BG].offset + 64) & ~3u;
+        uint32_t inside = (s.home[0].normal.offset + 64) & ~3u;
         List<uint32_t> r = Relocs(b);
         int at = 0;
         while (at < r.GetCount() && r[at] < inside)
@@ -216,9 +319,10 @@ Fact("LayoutBlob Rejects Bad Relocation Entries")
         r.RemoveAt(i);
         Assert(Validate(WithRelocs(b, r)) == LayoutError::BadRelocation);
     }
-    // A null pointer in the table would become a bogus non-null one
+    // A null pointer in the table would become a bogus non-null one (Listen has no displayName)
     {
-        uint32_t null_slot = CB_KEY_PTR(CB_HOME_KEY(3), 0);
+        uint32_t listen = U32(b, CB_ROOT_ACTIVITIES_PTR) + (uint32_t)sizeof(layoutdata::activity);
+        uint32_t null_slot = listen + CB_OFF(activity, displayName);
         Assert(U32(b, null_slot) == 0);
         List<uint32_t> r = Relocs(b);
         int at = 0;
@@ -233,14 +337,17 @@ Fact("LayoutBlob Rejects Bad Pointers And Counts")
 {
     List<uint8_t> b = LoadSample();
     uint32_t table = Table(b);
-    uint32_t k0 = CB_HOME_KEY(0);
+    uint32_t k0 = HomeKey(b, 0);
 
     Assert(Validate(With(CB_KEY_PTR(k0, 0), table + 4)) == LayoutError::BadPointer);
     Assert(Validate(With(CB_KEY_PTR(k0, 0), 8)) == LayoutError::BadPointer);          // into the header
     Assert(Validate(With(CB_KEY_COUNT(k0, 0), 0xFFFFFFF0)) == LayoutError::BadPointer);
     Assert(Validate(With(CB_KEY_COUNT(k0, 0), table)) == LayoutError::BadPointer);
     // A pointer that's set while its count is zero is still a pointer into the data
-    Assert(Validate(With(CB_KEY_COUNT(CB_HOME_KEY(1), 1), 0)) != LayoutError::Ok);
+    Assert(Validate(With(CB_KEY_COUNT(HomeKey(b, 1), LAYOUT_KEY_PRESSED), 0)) != LayoutError::Ok);
+    // Home's key array
+    Assert(Validate(With(CB_HOME_KEYS_PTR, table - 4)) == LayoutError::BadPointer);
+    Assert(Validate(With(CB_HOME_KEYS_PTR, 0)) != LayoutError::Ok);
     // Home bindings, devices and activities
     Assert(Validate(With(CB_HOME_BINDINGS, 5000)) == LayoutError::BadLimit);
     Assert(Validate(With(CB_HOME_BINDINGS_PTR, table)) == LayoutError::BadPointer);
@@ -360,8 +467,8 @@ Fact("LayoutBlob Rejects Bad Images")
     List<uint8_t> b = LoadSample();
     LayoutSummary s;
     Assert(Validate(b, &s) == LayoutError::Ok);
-    uint32_t k0 = CB_HOME_KEY(0);
-    LayoutImage face = s.home[0][KEY_SLOT_BG];
+    uint32_t k0 = HomeKey(b, 0);
+    LayoutImage face = s.home[0].normal;
 
     // Not 4-aligned (the slot stays a valid pointer into the data)
     Assert(Validate(With(CB_KEY_PTR(k0, 0), face.offset + 2)) == LayoutError::BadAlignment);
@@ -394,6 +501,23 @@ Fact("LayoutBlob Rejects Bad Images")
             c.GetBuffer()[face.offset + i] = (uint8_t)(i * 37 + 1);
         Assert(Validate(c) == LayoutError::BadImage);
     }
+
+    // A valid image that isn't fully opaque: every palette colour half transparent
+    {
+        List<uint8_t> c = LoadSample();
+        uint8_t *img = c.GetBuffer() + face.offset;
+        PALETTE *pal = (PALETTE *)(img + ((const IMAGE_RLE *)img)->paletteOffset);
+        for (uint32_t i = 0; i < pal->count; i++)
+            pal->colors[i] = (pal->colors[i] & 0x00FFFFFFu) | 0x80000000u;
+        Assert(check_image(img, face.size, nullptr));
+        Assert(Validate(c) == LayoutError::BadImage);
+    }
+
+    // The pressed image of another size than the key (another key's 0.5U image)
+    {
+        uint32_t half = s.home[8].normal.offset;                // id 13: 0.5U wide
+        Assert(Validate(With(CB_KEY_PTR(k0, LAYOUT_KEY_PRESSED), half)) == LayoutError::BadImage);
+    }
 }
 
 Fact("LayoutBlob Rejects A Misaligned Blob")
@@ -407,7 +531,7 @@ Fact("LayoutBlob Rejects A Misaligned Blob")
 
 Fact("LayoutBlob Names Every Error")
 {
-    for (int e = 0; e <= (int)LayoutError::BadImage; e++)
+    for (int e = 0; e <= (int)LayoutError::BadKey; e++)
         Assert(LayoutErrorName((LayoutError)e)[0] != 0);
 }
 

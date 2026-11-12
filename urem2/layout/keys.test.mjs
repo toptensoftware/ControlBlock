@@ -89,6 +89,6 @@ test("a layout with the key helpers is clean", async () => {
         sevenChKey(ctx), muteKey(ctx),
     ] } });
     assert.deepEqual(tree.home.bindings.map(b => `${b.control} ${b.event}`),
-                     ["touch[0,0] tap", "touch[1,0] tap", "touch[1,0] long", "touch[2,0] tap", "touch[3,0] tap"]);
-    assert.equal(tree.home.keys.filter(k => k.normalFg).length, 4);
+                     ["touch[1] tap", "touch[2] tap", "touch[2] long", "touch[3] tap", "touch[4] tap"]);
+    assert.equal(tree.home.keys.filter(k => k.normal).length, 4);
 });

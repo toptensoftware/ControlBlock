@@ -1,8 +1,11 @@
 // The touch router (docs/interactions.md): swipe window, then PRESS /
-// RELEASE / CANCEL, with gaps, key edges and busy pages swipe-only.
+// RELEASE / CANCEL, with margins, key edges (seams), empty areas and busy
+// pages swipe-only. Keys are the page's rects (any size, in 0.25U steps),
+// reported by id.
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "UnitTesting.h"
 #include "Core.h"
 #include "harness.h"            // Rng, Check
@@ -14,15 +17,66 @@ namespace
 {
     const int WIN = TOUCH_SWIPE_WINDOW_MS;
     const int64_t MS = 1000;
+    const int M = TOUCH_EDGE_AMBIGUOUS_PX;
+    const int MAX_ID = 1024;            // the rig's ids stay below this
 
     struct Ev
     {
-        int      page, key, action;
+        int      page;
+        uint16_t key;
+        int      action;
         uint32_t ms;
     };
 
+    // A key's edges and centre in screen coordinates (the page at rest)
+    int L(KeyRect r)  { return KeyRectPixels(r).x; }
+    int T(KeyRect r)  { return SCREEN_PAGE_TOP + KeyRectPixels(r).y; }
+    int R(KeyRect r)  { return L(r) + KeyRectPixels(r).w; }
+    int B(KeyRect r)  { return T(r) + KeyRectPixels(r).h; }
+    int CX(KeyRect r) { return (L(r) + R(r)) / 2; }
+    int CY(KeyRect r) { return (T(r) + B(r)) / 2; }
+
+    // The same for plain grid slot k, and its id on page 0 (or `page`)
+    int L(int k)  { return L(KeySlotRect(k)); }
+    int T(int k)  { return T(KeySlotRect(k)); }
+    int R(int k)  { return R(KeySlotRect(k)); }
+    int CX(int k) { return CX(KeySlotRect(k)); }
+    int CY(int k) { return CY(KeySlotRect(k)); }
+    uint16_t ID(int k, int page = 0) { return KeySlotId(page, k); }
+
+    // Pages other than the plain grid (ids clear of the grid's)
+    const KeyRect SPAN_2U = { 0, 0, 8, 4 };     // slots 0 and 1 as one key
+    const KeyRect SPAN_1U = { 8, 0, 4, 4 };
+    const KeyRect QUARTER_A = { 0, 4, 1, 4 };   // 0.25U x 1U, side by side
+    const KeyRect QUARTER_B = { 1, 4, 1, 4 };
+    const KeyRect GROUP_PLUS = { 0, 8, 4, 4 };  // a group: two abutting keys
+    const KeyRect GROUP_MINUS = { 4, 8, 4, 4 };
+    const KeyRect GROUP_UP = { 16, 0, 4, 2 };   // and two half-height ones, one above the other
+    const KeyRect GROUP_DOWN = { 16, 2, 4, 2 };
+    const KeyRect MIXED_RECTS[] = { SPAN_2U, SPAN_1U, QUARTER_A, QUARTER_B, GROUP_PLUS, GROUP_MINUS, GROUP_UP, GROUP_DOWN };
+    const uint16_t MIXED_IDS[]  = { 500, 501, 510, 511, 520, 521, 522, 523 };
+    const int MIXED_COUNT = 8;
+
+    TouchKey Key(uint16_t id, KeyRect r) { return TouchKey{ id, KeyRectPixels(r) }; }
+
+    // The plain grid's keys for page p (15 x 1U)
+    int GridKeys(int p, TouchKey *out)
+    {
+        for (int i = 0; i < KEY_GRID_SLOTS; i++)
+            out[i] = Key(KeySlotId(p, i), KeySlotRect(i));
+        return KEY_GRID_SLOTS;
+    }
+
+    int MixedKeys(TouchKey *out)
+    {
+        for (int i = 0; i < MIXED_COUNT; i++)
+            out[i] = Key(MIXED_IDS[i], MIXED_RECTS[i]);
+        return MIXED_COUNT;
+    }
+
     // A router behind its wake gate (enabled unless a test turns it off) with a
-    // fake host: records key events and wakes, any key can be made inactive
+    // fake host: every page a plain grid unless a test sets it, records key
+    // events and wakes, any key can be made inactive
     struct Rig
     {
         TouchGate   router;
@@ -30,18 +84,31 @@ namespace
         int         count = 0;
         int         wakes = 0;
         uint32_t    wake_ms = 0;
-        bool        inactive[SCREEN_MAX_PAGES][COMP_KEYS] = {};
+        TouchKey    keys[SCREEN_MAX_PAGES][COMP_MAX_KEYS];
+        int         key_count[SCREEN_MAX_PAGES];
+        bool        inactive[MAX_ID] = {};
         int64_t     now = 1000 * MS;
         int         page = 0;
         bool        look = false;           // a key shows its pressed look
-        int         look_page = -1, look_key = -1;
+        int         look_page = -1;
+        uint16_t    look_key = KEY_ID_NONE;
         int         look_changes = 0;
         bool        look_bad = false;       // a look set on when on, or cleared when off, or for another key
 
         Rig()
         {
+            for (int p = 0; p < SCREEN_MAX_PAGES; p++)
+                key_count[p] = GridKeys(p, keys[p]);
+
             TouchRouterHost h = {};
-            h.key_look = [](int page, int key, bool pressed, void *ctx) {
+            h.page_keys = [](int page, TouchKey *out, void *ctx) {
+                Rig *r = (Rig *)ctx;
+                if (page < 0 || page >= SCREEN_MAX_PAGES)
+                    return 0;
+                memcpy(out, r->keys[page], sizeof(TouchKey) * r->key_count[page]);
+                return r->key_count[page];
+            };
+            h.key_look = [](int page, uint16_t key, bool pressed, void *ctx) {
                 Rig *r = (Rig *)ctx;
                 if (pressed == r->look)
                     r->look_bad = true;
@@ -52,8 +119,11 @@ namespace
                 r->look_key = key;
                 r->look_changes++;
             };
-            h.key_active = [](int page, int key, void *ctx) { return !((Rig *)ctx)->inactive[page][key]; };
-            h.key_event  = [](int page, int key, int action, uint32_t ms, void *ctx) {
+            h.key_active = [](int page, uint16_t key, void *ctx) {
+                Rig *r = (Rig *)ctx;
+                return r->Has(page, key) && !r->inactive[key];
+            };
+            h.key_event  = [](int page, uint16_t key, int action, uint32_t ms, void *ctx) {
                 Rig *r = (Rig *)ctx;
                 if (r->count < 256)
                     r->ev[r->count++] = Ev{ page, key, action, ms };
@@ -61,6 +131,18 @@ namespace
             h.ctx = this;
             router.Init(h, [](uint32_t ms, void *ctx) { ((Rig *)ctx)->wakes++; ((Rig *)ctx)->wake_ms = ms; }, this);
         }
+
+        // The key is on the page
+        bool Has(int p, uint16_t id) const
+        {
+            for (int i = 0; i < key_count[p]; i++)
+                if (keys[p][i].id == id)
+                    return true;
+            return false;
+        }
+
+        void SetMixed(int p) { key_count[p] = MixedKeys(keys[p]); }
+        void SetEmpty(int p) { key_count[p] = 0; }
 
         void SetEnabled(bool on) { router.SetEnabled(on, now); }
 
@@ -78,60 +160,160 @@ namespace
         bool Move(int x, int y) { return router.Move(x, y, now); }
         void Up(int x, int y) { router.Up(x, y, now); }
 
-        bool Is(int i, int key, int action) const
+        bool Is(int i, uint16_t key, int action) const
         {
             return i < count && ev[i].key == key && ev[i].action == action;
         }
+
+        // A full tap held past the window: the key it pressed (0 if none)
+        uint16_t Press(int x, int y)
+        {
+            int before = count;
+            Down(x, y);
+            Advance(WIN + 20);
+            Up(x, y);
+            return count == before + 2 && ev[before].action == TOUCH_KEY_PRESS ? ev[before].key : KEY_ID_NONE;
+        }
     };
 
-    // Centre of a key, in screen coordinates
-    int CX(int key) { return COMP_KEY_X(key) + COMP_KEY_SIZE / 2; }
-    int CY(int key) { return SCREEN_PAGE_TOP + COMP_KEY_Y(key) + COMP_KEY_SIZE / 2; }
+    int HitGrid(int x, int y, int margin)
+    {
+        TouchKey keys[COMP_MAX_KEYS];
+        int n = GridKeys(0, keys);
+        return touch_key_at(keys, n, x, y, margin);
+    }
+
+    int HitMixed(int x, int y, int margin)
+    {
+        TouchKey keys[COMP_MAX_KEYS];
+        int n = MixedKeys(keys);
+        return touch_key_at(keys, n, x, y, margin);
+    }
 }
 
 // --- Hit testing ---
 
 Fact("TouchRouter Hit Test Finds The Key Under A Point")
 {
-    for (int k = 0; k < COMP_KEYS; k++)
-        Assert(touch_key_at(CX(k), CY(k), TOUCH_EDGE_AMBIGUOUS_PX) == k);
+    for (int k = 0; k < KEY_GRID_SLOTS; k++)
+        Assert(HitGrid(CX(k), CY(k), M) == k);
+    for (int i = 0; i < MIXED_COUNT; i++)
+        Assert(HitMixed(CX(MIXED_RECTS[i]), CY(MIXED_RECTS[i]), M) == i);
 }
 
 Fact("TouchRouter Hit Test Edge Zone")
 {
-    int m = TOUCH_EDGE_AMBIGUOUS_PX;
-    int left = COMP_KEY_X(0), top = SCREEN_PAGE_TOP + COMP_KEY_Y(0);
-    int right = left + COMP_KEY_SIZE, bottom = top + COMP_KEY_SIZE;
-    int cy = CY(0), cx = CX(0);
+    KeyRect k = KeySlotRect(0);
+    int cy = CY(k), cx = CX(k);
 
     // Just inside the safe area on every side
-    Assert(touch_key_at(left + m, cy, m) == 0);
-    Assert(touch_key_at(right - m - 1, cy, m) == 0);
-    Assert(touch_key_at(cx, top + m, m) == 0);
-    Assert(touch_key_at(cx, bottom - m - 1, m) == 0);
+    Assert(HitGrid(L(k) + M, cy, M) == 0);
+    Assert(HitGrid(R(k) - M - 1, cy, M) == 0);
+    Assert(HitGrid(cx, T(k) + M, M) == 0);
+    Assert(HitGrid(cx, B(k) - M - 1, M) == 0);
 
-    // Just inside the edge zone, on the edge, and outside the cell
-    Assert(touch_key_at(left + m - 1, cy, m) == -1);
-    Assert(touch_key_at(right - m, cy, m) == -1);
-    Assert(touch_key_at(cx, top + m - 1, m) == -1);
-    Assert(touch_key_at(cx, bottom - m, m) == -1);
-    Assert(touch_key_at(left - 1, cy, m) == -1);
+    // Just inside the edge zone, on the edge, and outside the key
+    Assert(HitGrid(L(k) + M - 1, cy, M) == -1);
+    Assert(HitGrid(R(k) - M, cy, M) == -1);
+    Assert(HitGrid(cx, T(k) + M - 1, M) == -1);
+    Assert(HitGrid(cx, B(k) - M, M) == -1);
+    Assert(HitGrid(L(k) - 1, cy, M) == -1);
 }
 
-Fact("TouchRouter Hit Test Gaps And Status Bar")
+Fact("TouchRouter Hit Test Margins And Status Bar")
 {
-    // Between keys 0 and 1
-    int gap_x = COMP_KEY_X(0) + COMP_KEY_SIZE + COMP_KEY_GAP / 2;
-    Assert(touch_key_at(gap_x, CY(0), 0) == -1);
-    Assert(touch_key_at(CX(0), SCREEN_STATUS_H / 2, 0) == -1);
-    Assert(touch_key_at(CX(0), SCREEN_H - 1, 0) == -1);
+    // The margins round the grid, the status bar and the screen's last row
+    Assert(KEY_GRID_X0 > 0 && KEY_GRID_Y0 > 0);
+    Assert(HitGrid(KEY_GRID_X0 / 2, CY(0), 0) == -1);
+    Assert(HitGrid(SCREEN_W - KEY_GRID_X0 / 2, CY(4), 0) == -1);
+    Assert(HitGrid(CX(0), SCREEN_PAGE_TOP + KEY_GRID_Y0 / 2, 0) == -1);
+    Assert(HitGrid(CX(0), SCREEN_STATUS_H / 2, 0) == -1);
+    Assert(HitGrid(CX(10), SCREEN_H - 1, 0) == -1);
+
+    // The grid's own edges, with no margin
+    Assert(HitGrid(L(0), T(0), 0) == 0);
+    Assert(HitGrid(L(0) - 1, T(0), 0) == -1);
+    Assert(HitGrid(L(0), T(0) - 1, 0) == -1);
 }
 
-Fact("TouchRouter Hit Test Negative Margin Grows The Cell")
+Fact("TouchRouter Hit Test Seam Between Abutting Keys")
 {
-    int left = COMP_KEY_X(0);
-    Assert(touch_key_at(left - 3, CY(0), 0) == -1);
-    Assert(touch_key_at(left - 3, CY(0), -4) == 0);
+    // Keys 0 and 1 share an edge: no gap, a swipe-only strip of twice the zone
+    int seam = R(0);
+    Assert(seam == L(1));
+    Assert(HitGrid(seam - 1, CY(0), 0) == 0);
+    Assert(HitGrid(seam, CY(0), 0) == 1);
+    for (int x = seam - M; x < seam + M; x++)
+        Assert(HitGrid(x, CY(0), M) == -1);
+    Assert(HitGrid(seam - M - 1, CY(0), M) == 0);
+    Assert(HitGrid(seam + M, CY(0), M) == 1);
+
+    // The same across rows (keys 0 and 5)
+    int row = B(KeySlotRect(0));
+    Assert(HitGrid(CX(0), row - M, M) == -1 && HitGrid(CX(0), row + M - 1, M) == -1);
+    Assert(HitGrid(CX(0), row - M - 1, M) == 0 && HitGrid(CX(0), row + M, M) == 5);
+}
+
+Fact("TouchRouter Hit Test Negative Margin Grows The Key")
+{
+    Assert(HitGrid(L(0) - 3, CY(0), 0) == -1);
+    Assert(HitGrid(L(0) - 3, CY(0), -4) == 0);
+}
+
+Fact("TouchRouter Hit Test Span Has No Inner Seam")
+{
+    // Where slots 0 and 1 meet is the middle of the 2U key
+    int old_seam = R(0);
+    Assert(HitMixed(old_seam, CY(SPAN_2U), M) == 0);
+    Assert(HitMixed(old_seam - M, CY(SPAN_2U), M) == 0);
+    Assert(HitMixed(L(SPAN_2U) + M, CY(SPAN_2U), M) == 0);
+    Assert(HitMixed(R(SPAN_2U) - M - 1, CY(SPAN_2U), M) == 0);
+    Assert(HitMixed(R(SPAN_2U) - M, CY(SPAN_2U), M) == -1);       // the seam with the 1U key next to it
+    Assert(HitMixed(L(SPAN_1U) + M, CY(SPAN_1U), M) == 1);
+}
+
+Fact("TouchRouter Hit Test Quarter Unit Keys")
+{
+    // 36 px wide: 12 px of each side is the edge zone, 12 px in the middle press
+    Assert(KeyRectPixels(QUARTER_A).w == KEY_QUARTER);
+    int y = CY(QUARTER_A);
+    Assert(HitMixed(L(QUARTER_A) + M - 1, y, M) == -1);
+    for (int x = L(QUARTER_A) + M; x < R(QUARTER_A) - M; x++)
+        Assert(HitMixed(x, y, M) == 2);
+    Assert(HitMixed(R(QUARTER_A) - M, y, M) == -1);
+    Assert(HitMixed(L(QUARTER_B) + M, y, M) == 3);
+    Assert(HitMixed(R(QUARTER_B) - M - 1, y, M) == 3);
+
+    // With no margin, every pixel is one key or the other
+    for (int x = L(QUARTER_A); x < R(QUARTER_B); x++)
+        Assert(HitMixed(x, y, 0) == (x < R(QUARTER_A) ? 2 : 3));
+}
+
+Fact("TouchRouter Hit Test Group Seams")
+{
+    // Side by side
+    int seam = R(GROUP_PLUS);
+    Assert(HitMixed(seam - M - 1, CY(GROUP_PLUS), M) == 4);
+    Assert(HitMixed(seam - M, CY(GROUP_PLUS), M) == -1);
+    Assert(HitMixed(seam + M - 1, CY(GROUP_PLUS), M) == -1);
+    Assert(HitMixed(seam + M, CY(GROUP_PLUS), M) == 5);
+
+    // One above the other (72 px tall each)
+    seam = B(GROUP_UP);
+    Assert(HitMixed(CX(GROUP_UP), seam - M - 1, M) == 6);
+    Assert(HitMixed(CX(GROUP_UP), seam - M, M) == -1);
+    Assert(HitMixed(CX(GROUP_UP), seam + M - 1, M) == -1);
+    Assert(HitMixed(CX(GROUP_UP), seam + M, M) == 7);
+}
+
+Fact("TouchRouter Hit Test Empty Areas")
+{
+    // Slots the mixed page leaves empty, and an empty page
+    Assert(HitMixed(CX(3), CY(3), 0) == -1);
+    Assert(HitMixed(CX(7), CY(7), 0) == -1);
+    Assert(HitMixed(CX(12), CY(12), 0) == -1);
+    Assert(HitMixed(R(QUARTER_B) + 20, CY(QUARTER_B), 0) == -1);       // right of the quarter keys
+    Assert(touch_key_at(nullptr, 0, CX(0), CY(0), 0) == -1);
 }
 
 // --- Taps and holds ---
@@ -144,8 +326,8 @@ Fact("TouchRouter Quick Tap Sends Press Then Release At Lift")
     Assert(r.count == 0);
     r.Up(CX(7), CY(7));
     Assert(r.count == 2);
-    Assert(r.Is(0, 7, TOUCH_KEY_PRESS));
-    Assert(r.Is(1, 7, TOUCH_KEY_RELEASE));
+    Assert(r.Is(0, ID(7), TOUCH_KEY_PRESS));
+    Assert(r.Is(1, ID(7), TOUCH_KEY_RELEASE));
     Assert(r.ev[0].page == 0);
 }
 
@@ -157,13 +339,13 @@ Fact("TouchRouter Press Fires When The Window Ends")
     Assert(r.count == 0);
     r.Advance(40);
     Assert(r.count == 1);
-    Assert(r.Is(0, 3, TOUCH_KEY_PRESS));
+    Assert(r.Is(0, ID(3), TOUCH_KEY_PRESS));
 
     r.Advance(2000);
     Assert(r.count == 1);       // a long press adds nothing
     r.Up(CX(3), CY(3));
     Assert(r.count == 2);
-    Assert(r.Is(1, 3, TOUCH_KEY_RELEASE));
+    Assert(r.Is(1, ID(3), TOUCH_KEY_RELEASE));
 }
 
 Fact("TouchRouter Event Times Are Device Milliseconds")
@@ -184,9 +366,9 @@ Fact("TouchRouter Wobble Inside The Slop Still Presses")
     Assert(!r.Move(CX(1) + TOUCH_DRAG_SLOP_PX, CY(1) + 5));
     Assert(!r.Move(CX(1) - TOUCH_DRAG_SLOP_PX, CY(1)));
     r.Advance(WIN + 20);
-    Assert(r.Is(0, 1, TOUCH_KEY_PRESS));
+    Assert(r.Is(0, ID(1), TOUCH_KEY_PRESS));
     r.Up(CX(1), CY(1));
-    Assert(r.Is(1, 1, TOUCH_KEY_RELEASE));
+    Assert(r.Is(1, ID(1), TOUCH_KEY_RELEASE));
 }
 
 Fact("TouchRouter Pages Are Reported With The Key")
@@ -196,6 +378,105 @@ Fact("TouchRouter Pages Are Reported With The Key")
     r.Down(CX(2), CY(2));
     r.Up(CX(2), CY(2));
     Assert(r.count == 2 && r.ev[0].page == 5 && r.ev[1].page == 5);
+    Assert(r.ev[0].key == ID(2, 5));            // page 5's own key at that spot
+}
+
+// --- Keys of any size: the page's own rects ---
+
+Fact("TouchRouter Hit Test Uses The Page Under The Finger")
+{
+    Rig r;
+    r.SetMixed(1);
+    Assert(r.Press(CX(1), CY(1)) == ID(1));     // page 0: the grid
+    r.page = 1;
+    Assert(r.Press(CX(1), CY(1)) == 500);       // page 1: slot 1 is the 2U key's right half
+    Assert(r.Press(CX(3), CY(3)) == KEY_ID_NONE);       // ...and slot 3 is empty
+    Assert(r.count == 4);
+}
+
+Fact("TouchRouter Span Presses As One Key")
+{
+    Rig r;
+    r.SetMixed(0);
+    int y = CY(SPAN_2U);
+    Assert(r.Press(L(SPAN_2U) + M, y) == 500);
+    Assert(r.Press(R(0), y) == 500);                    // the old seam between slots 0 and 1
+    Assert(r.Press(R(SPAN_2U) - M - 1, y) == 500);
+
+    // Held, the finger can slide the whole width of the span
+    r.Down(L(SPAN_2U) + M, y);
+    r.Advance(WIN + 20);
+    Assert(!r.Move(L(SPAN_2U) + M + 5, y));
+    r.Advance(100);
+    Assert(!r.Move(R(SPAN_2U) - 1, y));
+    Assert(r.look && r.look_key == 500);
+    r.Up(R(SPAN_2U) - 1, y);
+    Assert(r.count == 8 && r.Is(6, 500, TOUCH_KEY_PRESS) && r.Is(7, 500, TOUCH_KEY_RELEASE));
+
+    // ...and leaving it cancels
+    r.Down(CX(SPAN_2U), y);
+    r.Advance(WIN + 20);
+    r.Move(R(SPAN_2U), y);                              // into the 1U key next to it
+    Assert(r.count == 10 && r.Is(9, 500, TOUCH_KEY_CANCEL));
+    Assert(!r.look && !r.look_bad);
+}
+
+Fact("TouchRouter Quarter Unit Key Presses In Its Middle")
+{
+    Rig r;
+    r.SetMixed(0);
+    int y = CY(QUARTER_A);
+    Assert(r.Press(L(QUARTER_A) + M, y) == 510);
+    Assert(r.Press(R(QUARTER_A) - M - 1, y) == 510);
+    Assert(r.Press(R(QUARTER_A) - M, y) == KEY_ID_NONE);
+    Assert(r.Press(L(QUARTER_B) + M, y) == 511);
+}
+
+Fact("TouchRouter Group Seam Only Swipes")
+{
+    Rig r;
+    r.SetMixed(0);
+    int seam = R(GROUP_PLUS), y = CY(GROUP_PLUS);
+    r.Down(seam - 1, y);
+    Assert(!r.look);
+    r.Advance(WIN * 3);
+    Assert(r.Move(seam - 1 + TOUCH_DRAG_SLOP_PX + 1, y));
+    r.Up(seam + 40, y);
+    Assert(r.count == 0 && r.look_changes == 0);
+
+    Assert(r.Press(seam - M - 1, y) == 520);
+    Assert(r.Press(seam + M, y) == 521);
+    Assert(r.Press(CX(GROUP_UP), B(GROUP_UP) - M - 1) == 522);
+    Assert(r.Press(CX(GROUP_UP), B(GROUP_UP) + M) == 523);
+    Assert(r.Press(CX(GROUP_UP), B(GROUP_UP)) == KEY_ID_NONE);
+}
+
+Fact("TouchRouter Empty Area Only Swipes")
+{
+    Rig r;
+    r.SetMixed(0);
+    r.Down(CX(7), CY(7));
+    Assert(!r.look);
+    r.Advance(WIN * 3);
+    Assert(r.Move(CX(7) + TOUCH_DRAG_SLOP_PX + 1, CY(7)));
+    r.Up(CX(7) + 50, CY(7));
+
+    r.SetEmpty(1);
+    r.page = 1;
+    r.Down(CX(0), CY(0));
+    r.Up(CX(0), CY(0));
+    Assert(r.count == 0 && r.look_changes == 0);
+}
+
+Fact("TouchRouter Held Key Removed From Its Page Cancels")
+{
+    Rig r;
+    r.Down(CX(1), CY(1));
+    r.Advance(WIN + 20);
+    r.SetMixed(0);                      // the layout changes under the finger: key 1 is gone
+    r.Advance(32);
+    Assert(r.count == 2 && r.Is(1, ID(1), TOUCH_KEY_CANCEL));
+    Assert(!r.look && !r.look_bad);
 }
 
 // --- Pressed look: shown from touch-down, reverted if it turns into a swipe ---
@@ -205,7 +486,7 @@ Fact("TouchRouter Look Shows At Touch Down")
     Rig r;
     r.page = 2;
     r.Down(CX(7), CY(7));
-    Assert(r.look && r.look_page == 2 && r.look_key == 7);
+    Assert(r.look && r.look_page == 2 && r.look_key == ID(7, 2));
     Assert(r.count == 0);               // no events yet
     r.Advance(WIN + 20);
     Assert(r.look);                     // stays through the PRESS
@@ -239,10 +520,9 @@ Fact("TouchRouter Look Reverts When A Swipe Starts")
 Fact("TouchRouter Look Reverts When The Finger Leaves The Key Early")
 {
     Rig r;
-    int top = SCREEN_PAGE_TOP + COMP_KEY_Y(6);
-    r.Down(CX(6), top + TOUCH_EDGE_AMBIGUOUS_PX);
+    r.Down(CX(6), T(6) + M);
     Assert(r.look);
-    r.Move(CX(6), top - 3);
+    r.Move(CX(6), T(6) - 3);            // into key 1, above
     Assert(!r.look && !r.look_bad);
 }
 
@@ -252,7 +532,7 @@ Fact("TouchRouter Look Reverts On Cancel")
     r.Down(CX(6), CY(6));
     r.Advance(WIN + 20);
     Assert(r.look);
-    r.Move(COMP_KEY_X(6) + COMP_KEY_SIZE + 5, CY(6));
+    r.Move(R(6) + 5, CY(6));
     Assert(!r.look && !r.look_bad);
     r.Move(CX(6), CY(6));               // back over the key: stays off
     Assert(!r.look);
@@ -263,7 +543,7 @@ Fact("TouchRouter Look Reverts When The Held Key Goes")
     Rig r;
     r.Down(CX(5), CY(5));
     r.Advance(WIN + 20);
-    r.inactive[0][5] = true;
+    r.inactive[ID(5)] = true;
     r.Advance(32);
     Assert(!r.look && !r.look_bad);
 }
@@ -272,7 +552,7 @@ Fact("TouchRouter Look Reverts When The Key Goes Before The Press")
 {
     Rig r;
     r.Down(CX(5), CY(5));
-    r.inactive[0][5] = true;
+    r.inactive[ID(5)] = true;
     r.Advance(WIN + 20);
     Assert(!r.look && !r.look_bad);
 }
@@ -280,14 +560,16 @@ Fact("TouchRouter Look Reverts When The Key Goes Before The Press")
 Fact("TouchRouter No Look For Touches That Can Only Swipe")
 {
     Rig r;
-    int gap_x = COMP_KEY_X(0) + COMP_KEY_SIZE + COMP_KEY_GAP / 2;
-    r.Down(gap_x, CY(0));
-    r.Up(gap_x, CY(0));
+    int margin_x = KEY_GRID_X0 / 2;
+    r.Down(margin_x, CY(0));            // the margin left of the grid
+    r.Up(margin_x, CY(0));
+    r.Down(R(0), CY(0));                // the seam between keys 0 and 1
+    r.Up(R(0), CY(0));
     r.Down(CX(0), SCREEN_STATUS_H / 2);
     r.Up(CX(0), SCREEN_STATUS_H / 2);
-    r.Down(COMP_KEY_X(2) + TOUCH_EDGE_AMBIGUOUS_PX - 1, CY(2));
+    r.Down(L(2) + M - 1, CY(2));
     r.Up(0, 0);
-    r.inactive[0][8] = true;
+    r.inactive[ID(8)] = true;
     r.Down(CX(8), CY(8));
     r.Up(CX(8), CY(8));
     r.Down(CX(9), CY(9), true);
@@ -300,10 +582,10 @@ Fact("TouchRouter Lost Up Clears The Old Look Before The Next")
     Rig r;
     r.Down(CX(5), CY(5));
     r.Down(CX(9), CY(9));               // no UP in between, still pending
-    Assert(r.look && r.look_key == 9 && !r.look_bad);
+    Assert(r.look && r.look_key == ID(9) && !r.look_bad);
     r.Advance(WIN + 20);
     r.Down(CX(1), CY(1));               // and again, this time held
-    Assert(r.look && r.look_key == 1 && !r.look_bad);
+    Assert(r.look && r.look_key == ID(1) && !r.look_bad);
 }
 
 // --- Swipes ---
@@ -333,15 +615,15 @@ Fact("TouchRouter Held Key Locks Out Swiping")
     Rig r;
     r.Down(CX(6), CY(6));
     r.Advance(WIN + 20);
-    Assert(r.Is(0, 6, TOUCH_KEY_PRESS));
+    Assert(r.Is(0, ID(6), TOUCH_KEY_PRESS));
 
-    // Slide far along the key's row inside the cell: never a swipe
+    // Slide far along the key's row inside the key: never a swipe
     Assert(!r.Move(CX(6) + 40, CY(6)));
     Assert(!r.Move(CX(6) - 40, CY(6)));
     r.Advance(1000);
     Assert(!r.Move(CX(6) + 60, CY(6)));
     r.Up(CX(6) + 60, CY(6));
-    Assert(r.count == 2 && r.Is(1, 6, TOUCH_KEY_RELEASE));
+    Assert(r.count == 2 && r.Is(1, ID(6), TOUCH_KEY_RELEASE));
 }
 
 Fact("TouchRouter Sliding Out After The Press Cancels")
@@ -350,8 +632,8 @@ Fact("TouchRouter Sliding Out After The Press Cancels")
     r.Down(CX(6), CY(6));
     r.Advance(WIN + 20);
 
-    Assert(!r.Move(COMP_KEY_X(6) + COMP_KEY_SIZE + 5, CY(6)));
-    Assert(r.count == 2 && r.Is(1, 6, TOUCH_KEY_CANCEL));
+    Assert(!r.Move(R(6) + 5, CY(6)));
+    Assert(r.count == 2 && r.Is(1, ID(6), TOUCH_KEY_CANCEL));
 
     // Dead until lift: back over the key does nothing, far away is no swipe
     Assert(!r.Move(CX(6), CY(6)));
@@ -365,8 +647,8 @@ Fact("TouchRouter Slide Out Vertically Cancels Too")
     Rig r;
     r.Down(CX(6), CY(6));
     r.Advance(WIN + 20);
-    r.Move(CX(6), SCREEN_PAGE_TOP + COMP_KEY_Y(6) - 1);
-    Assert(r.count == 2 && r.Is(1, 6, TOUCH_KEY_CANCEL));
+    r.Move(CX(6), T(6) - 1);
+    Assert(r.count == 2 && r.Is(1, ID(6), TOUCH_KEY_CANCEL));
 }
 
 Fact("TouchRouter Slide Out And Back Does Not Press Again")
@@ -381,57 +663,57 @@ Fact("TouchRouter Slide Out And Back Does Not Press Again")
     Assert(r.count == 2);       // one press, one cancel
 }
 
-Fact("TouchRouter Exit Slop Is Added To The Cell")
+Fact("TouchRouter Exit Slop Is Added To The Key")
 {
     Rig r;
     r.Down(CX(6), CY(6));
     r.Advance(WIN + 20);
-    r.Move(COMP_KEY_X(6) + COMP_KEY_SIZE + TOUCH_KEY_EXIT_SLOP_PX - 1, CY(6));
+    r.Move(R(6) + TOUCH_KEY_EXIT_SLOP_PX - 1, CY(6));
     Assert(r.count == 1);
-    r.Move(COMP_KEY_X(6) + COMP_KEY_SIZE + TOUCH_KEY_EXIT_SLOP_PX, CY(6));
-    Assert(r.count == 2 && r.Is(1, 6, TOUCH_KEY_CANCEL));
+    r.Move(R(6) + TOUCH_KEY_EXIT_SLOP_PX, CY(6));
+    Assert(r.count == 2 && r.Is(1, ID(6), TOUCH_KEY_CANCEL));
 }
 
 Fact("TouchRouter Leaving The Key Early Is Swipe Only")
 {
     Rig r;
-    int top = SCREEN_PAGE_TOP + COMP_KEY_Y(6);
-    r.Down(CX(6), top + TOUCH_EDGE_AMBIGUOUS_PX);
-    r.Move(CX(6), top - 3);             // out of the cell, inside the window
+    r.Down(CX(6), T(6) + M);
+    r.Move(CX(6), T(6) - 3);            // out of the key, inside the window
     r.Advance(WIN * 2);
-    r.Up(CX(6), top - 3);
+    r.Up(CX(6), T(6) - 3);
     Assert(r.count == 0);
 }
 
 Fact("TouchRouter Leaving The Key Early Can Still Swipe")
 {
     Rig r;
-    int top = SCREEN_PAGE_TOP + COMP_KEY_Y(6);
-    r.Down(CX(6), top + TOUCH_EDGE_AMBIGUOUS_PX);
-    r.Move(CX(6), top - 3);
+    r.Down(CX(6), T(6) + M);
+    r.Move(CX(6), T(6) - 3);
     r.Advance(WIN * 2);
-    Assert(r.Move(CX(6) + TOUCH_DRAG_SLOP_PX + 1, top - 3));
+    Assert(r.Move(CX(6) + TOUCH_DRAG_SLOP_PX + 1, T(6) - 3));
 }
 
 // --- Touches that can only swipe ---
 
-Fact("TouchRouter Gap Touch Only Swipes")
+Fact("TouchRouter Margin Touch Only Swipes")
 {
     Rig r;
-    int gap_x = COMP_KEY_X(0) + COMP_KEY_SIZE + COMP_KEY_GAP / 2;
-    r.Down(gap_x, CY(0));
+    int x = KEY_GRID_X0 / 2;
+    r.Down(x, CY(0));
     r.Advance(WIN * 3);
-    Assert(r.Move(gap_x + TOUCH_DRAG_SLOP_PX + 1, CY(0)));      // still free to swipe after the window
-    r.Up(gap_x + 50, CY(0));
+    Assert(r.Move(x + TOUCH_DRAG_SLOP_PX + 1, CY(0)));      // still free to swipe after the window
+    r.Up(x + 50, CY(0));
     Assert(r.count == 0);
 }
 
-Fact("TouchRouter Gap Tap Does Nothing")
+Fact("TouchRouter Seam Tap Does Nothing")
 {
     Rig r;
-    int gap_x = COMP_KEY_X(0) + COMP_KEY_SIZE + COMP_KEY_GAP / 2;
-    r.Down(gap_x, CY(0));
-    r.Up(gap_x, CY(0));
+    r.Down(R(0), CY(0));
+    r.Up(R(0), CY(0));
+    r.Down(R(0) - 1, CY(0));
+    r.Advance(WIN * 3);
+    r.Up(R(0) - 1, CY(0));
     Assert(r.count == 0);
 }
 
@@ -447,7 +729,7 @@ Fact("TouchRouter Status Bar Touch Only Swipes")
 Fact("TouchRouter Edge Zone Touch Only Swipes")
 {
     Rig r;
-    int x = COMP_KEY_X(2) + TOUCH_EDGE_AMBIGUOUS_PX - 1;
+    int x = L(2) + M - 1;
     r.Down(x, CY(2));
     r.Advance(WIN * 3);
     Assert(r.Move(x + TOUCH_DRAG_SLOP_PX + 1, CY(2)));
@@ -457,13 +739,13 @@ Fact("TouchRouter Edge Zone Touch Only Swipes")
     // One pixel further in presses
     r.Down(x + 1, CY(2));
     r.Advance(WIN + 20);
-    Assert(r.Is(0, 2, TOUCH_KEY_PRESS));
+    Assert(r.Is(0, ID(2), TOUCH_KEY_PRESS));
 }
 
 Fact("TouchRouter Inactive Key Only Swipes")
 {
     Rig r;
-    r.inactive[0][8] = true;
+    r.inactive[ID(8)] = true;
     r.Down(CX(8), CY(8));
     r.Advance(WIN * 3);
     r.Up(CX(8), CY(8));
@@ -505,9 +787,9 @@ Fact("TouchRouter Key Disabled While Held Cancels")
     Rig r;
     r.Down(CX(5), CY(5));
     r.Advance(WIN + 20);
-    r.inactive[0][5] = true;
+    r.inactive[ID(5)] = true;
     r.Advance(32);
-    Assert(r.count == 2 && r.Is(1, 5, TOUCH_KEY_CANCEL));
+    Assert(r.count == 2 && r.Is(1, ID(5), TOUCH_KEY_CANCEL));
     r.Up(CX(5), CY(5));
     Assert(r.count == 2);
 }
@@ -519,14 +801,14 @@ Fact("TouchRouter Page Changed While Held Cancels")
     r.Advance(WIN + 20);
     r.page = 1;
     r.Advance(32);
-    Assert(r.count == 2 && r.Is(1, 5, TOUCH_KEY_CANCEL) && r.ev[1].page == 0);
+    Assert(r.count == 2 && r.Is(1, ID(5), TOUCH_KEY_CANCEL) && r.ev[1].page == 0);
 }
 
 Fact("TouchRouter Key Disabled Before The Press Falls Back To Swiping")
 {
     Rig r;
     r.Down(CX(5), CY(5));
-    r.inactive[0][5] = true;
+    r.inactive[ID(5)] = true;
     r.Advance(WIN * 3);
     Assert(r.count == 0);
     Assert(r.Move(CX(5) + TOUCH_DRAG_SLOP_PX + 1, CY(5)));
@@ -536,7 +818,7 @@ Fact("TouchRouter Key Disabled Before A Quick Tap Lifts Sends Nothing")
 {
     Rig r;
     r.Down(CX(5), CY(5));
-    r.inactive[0][5] = true;
+    r.inactive[ID(5)] = true;
     r.Up(CX(5), CY(5));
     Assert(r.count == 0);
 }
@@ -547,9 +829,9 @@ Fact("TouchRouter Lost Up Cancels A Held Key On The Next Down")
     r.Down(CX(5), CY(5));
     r.Advance(WIN + 20);
     r.Down(CX(9), CY(9));               // no UP in between
-    Assert(r.count == 2 && r.Is(1, 5, TOUCH_KEY_CANCEL));
+    Assert(r.count == 2 && r.Is(1, ID(5), TOUCH_KEY_CANCEL));
     r.Advance(WIN + 20);
-    Assert(r.count == 3 && r.Is(2, 9, TOUCH_KEY_PRESS));
+    Assert(r.count == 3 && r.Is(2, ID(9), TOUCH_KEY_PRESS));
 }
 
 Fact("TouchRouter Stray Events Without A Down Do Nothing")
@@ -571,7 +853,7 @@ Fact("TouchRouter Next Touch Is Independent")
     r.Down(CX(1), CY(1));
     r.Advance(WIN + 20);
     r.Up(CX(1), CY(1));
-    Assert(r.count == 2 && r.Is(0, 1, TOUCH_KEY_PRESS) && r.Is(1, 1, TOUCH_KEY_RELEASE));
+    Assert(r.count == 2 && r.Is(0, ID(1), TOUCH_KEY_PRESS) && r.Is(1, ID(1), TOUCH_KEY_RELEASE));
 }
 
 // --- Wake gate: the backlight is off (docs/backlight.md) ---
@@ -631,7 +913,7 @@ Fact("TouchGate Touch Down Before Turning On Stays Swallowed")
     r.Down(CX(7), CY(7));
     r.Advance(WIN + 20);
     r.Up(CX(7), CY(7));
-    Assert(r.wakes == 1 && r.count == 2 && r.Is(0, 7, TOUCH_KEY_PRESS) && r.Is(1, 7, TOUCH_KEY_RELEASE));
+    Assert(r.wakes == 1 && r.count == 2 && r.Is(0, ID(7), TOUCH_KEY_PRESS) && r.Is(1, ID(7), TOUCH_KEY_RELEASE));
 }
 
 Fact("TouchGate Off While Held Cancels The Key")
@@ -641,12 +923,12 @@ Fact("TouchGate Off While Held Cancels The Key")
     r.Advance(WIN + 20);
     Assert(r.count == 1 && r.look);
     r.SetEnabled(false);
-    Assert(r.count == 2 && r.Is(1, 7, TOUCH_KEY_CANCEL));
+    Assert(r.count == 2 && r.Is(1, ID(7), TOUCH_KEY_CANCEL));
     Assert(!r.look && !r.look_bad);
     Assert(r.wakes == 0);               // the finger was already down: no wake
 
     // The rest of the touch is swallowed
-    r.Move(COMP_KEY_X(7) + COMP_KEY_SIZE + 50, CY(7));
+    r.Move(R(7) + 50, CY(7));
     r.Up(CX(7), CY(7));
     Assert(r.count == 2 && r.wakes == 0);
 
@@ -700,7 +982,7 @@ Fact("TouchGate Setting The Current State Changes Nothing")
     r.SetEnabled(true);
     Assert(r.count == 1 && r.look);
     r.Up(CX(3), CY(3));
-    Assert(r.count == 2 && r.Is(1, 3, TOUCH_KEY_RELEASE));
+    Assert(r.count == 2 && r.Is(1, ID(3), TOUCH_KEY_RELEASE));
 
     // Off while a touch is swallowed: still swallowed, still no wake
     r.SetEnabled(false);
@@ -727,11 +1009,14 @@ Fact("TouchGate Turning On Then Off Again Mid Touch")
 
 namespace
 {
-    // Random touches against random changes, checking after every step:
+    // Random touches against random changes (keys going inactive, pages
+    // changing, a page's layout switching between the grid, the mixed keys
+    // and nothing), checking after every step:
     //  - every PRESS is followed by exactly one RELEASE or CANCEL for the same key
     //  - no key event outside a press, and none for a touch that swiped
     //  - a swipe never starts after a PRESS, nor a PRESS after a swipe
-    //  - an inactive key never gets a PRESS
+    //  - a PRESS is for an active key on the page the touch went down on
+    //  - the look is never wrong, never outlives the touch, and is on while a press is open
     void FuzzTouches(uint32_t seed)
     {
         Rng rng(seed);
@@ -739,6 +1024,8 @@ namespace
         bool down = false;
         bool swiped = false;
         bool pressed = false;       // a PRESS sent for this touch, not yet closed
+        uint16_t pressed_key = KEY_ID_NONE;
+        int  down_page = 0;
         int  checked = 0;
         int  page_count = 3;
 
@@ -746,15 +1033,16 @@ namespace
             int dice = rng.Range(0, 99);
             if (dice < 12 && !down) {
                 int x, y;
-                if (rng.Chance(70)) {
-                    int k = rng.Range(0, COMP_KEYS - 1);
-                    x = COMP_KEY_X(k) + rng.Range(-4, COMP_KEY_SIZE + 4);
-                    y = SCREEN_PAGE_TOP + COMP_KEY_Y(k) + rng.Range(-4, COMP_KEY_SIZE + 4);
+                if (rng.Chance(70) && r.key_count[r.page] > 0) {
+                    const KeyPixelRect &k = r.keys[r.page][rng.Range(0, r.key_count[r.page] - 1)].rect;
+                    x = k.x + rng.Range(-4, k.w + 4);
+                    y = SCREEN_PAGE_TOP + k.y + rng.Range(-4, k.h + 4);
                 } else {
                     x = rng.Range(0, SCREEN_W - 1);
                     y = rng.Range(0, SCREEN_H - 1);
                 }
                 down = true;
+                down_page = r.page;
                 swiped = rng.Chance(8);
                 r.Down(x, y, swiped);
             } else if (dice < 55 && down) {
@@ -769,32 +1057,44 @@ namespace
                 down = false;
                 swiped = false;
             } else if (dice < 80) {
-                r.inactive[r.page][rng.Range(0, COMP_KEYS - 1)] = rng.Chance(50);
+                if (r.key_count[r.page] > 0)
+                    r.inactive[r.keys[r.page][rng.Range(0, r.key_count[r.page] - 1)].id] = rng.Chance(50);
             } else if (dice < 84) {
                 r.page = rng.Range(0, page_count - 1);
+            } else if (dice < 86) {
+                int p = rng.Range(0, page_count - 1);
+                int kind = rng.Range(0, 9);
+                if (kind < 5)
+                    r.key_count[p] = GridKeys(p, r.keys[p]);
+                else if (kind < 9)
+                    r.SetMixed(p);
+                else
+                    r.SetEmpty(p);
             } else {
                 r.Advance(rng.Range(1, 80));
             }
 
             for (; checked < r.count; checked++) {
                 const Ev &e = r.ev[checked];
+                Check(e.page == down_page);
                 if (e.action == TOUCH_KEY_PRESS) {
                     Check(!pressed);
                     Check(!swiped);
+                    Check(r.Has(e.page, e.key) && !r.inactive[e.key]);
                     pressed = true;
+                    pressed_key = e.key;
                 } else {
                     Check(pressed);
+                    Check(e.key == pressed_key);
                     pressed = false;
                 }
             }
 
-            // The look is never wrong, never outlives the touch, is off
-            // once the touch is a swipe, and is on while a press is open
             Check(!r.look_bad);
             if (!down || swiped)
                 Check(!r.look);
             if (pressed)
-                Check(r.look);
+                Check(r.look && r.look_key == pressed_key);
         }
 
         // End the touch: whatever is open closes

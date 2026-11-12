@@ -25,18 +25,30 @@ static PageCompositor    s_comp;
 static TaskHandle_t      s_task;
 static SemaphoreHandle_t s_reset_done, s_reset_mutex;
 
-// Fill gaps (fill_gap.h): only given to us while a key is being copied
-static fill_gap_client_t s_gap_client = { NULL, WAKE_GAP, false };
+// Fill gaps (fill_gap.h): only given to us while a key is being drawn
+static fill_gap_client_t s_gap_client = { NULL, WAKE_GAP, false, 0 };
+
+static int64_t clock_now(void *)
+{
+    return esp_timer_get_time();
+}
 
 static void comp_task(void *arg)
 {
-    uint32_t bits = 0;
+    // The last gap given to us. The core draws in it only until its deadline
+    // (from the fill's start), so passing it again later is harmless.
+    comp_gap_t gap = {};
+    bool       have_gap = false;
+    uint32_t   bits = 0;
     while (1) {
-        // A gap is only worth using if the fill finished just now: the copy
-        // must be done before the next fill needs the bus
-        bool gap = (bits & WAKE_GAP) && fill_gap_fresh(COMP_GAP_FRESH_US);
+        int64_t now = esp_timer_get_time();
+        if (bits & WAKE_GAP) {
+            gap.fill_start_us = now - (int32_t)((uint32_t)now - s_gap_client.fill_start_us);
+            gap.period_us     = FILL_GAP_PERIOD_US;
+            have_gap          = true;
+        }
 
-        PageCompositor::StepResult r = s_comp.Step(esp_timer_get_time(), gap);
+        PageCompositor::StepResult r = s_comp.Step(now, have_gap ? &gap : NULL);
         s_gap_client.wants = s_comp.WantsGaps();
         if (r == PageCompositor::StepResult::ResetDone)
             xSemaphoreGive(s_reset_done);
@@ -60,14 +72,8 @@ esp_err_t comp_init(comp_get_page_t get_page, comp_is_retired_t is_retired, void
         }
     }
 
-    // Keys are rendered here, off the PSRAM bus
-    const size_t cell_size = COMP_KEY_SIZE * COMP_KEY_SIZE * sizeof(uint16_t);
-    uint16_t *cell = (uint16_t *)heap_caps_aligned_alloc(4, cell_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!cell) {
-        ESP_LOGE(TAG, "Out of internal RAM allocating the render cell");
-        return ESP_ERR_NO_MEM;
-    }
-    s_comp.Init(buffers, cell, get_page, is_retired, ctx);
+    // Keys are drawn straight into the page buffers, in fill gaps
+    s_comp.Init(buffers, get_page, is_retired, clock_now, ctx);
 
     s_reset_done  = xSemaphoreCreateBinary();
     s_reset_mutex = xSemaphoreCreateMutex();
@@ -80,8 +86,7 @@ esp_err_t comp_init(comp_get_page_t get_page, comp_is_retired_t is_retired, void
     s_gap_client.task = s_task;
     fill_gap_register(&s_gap_client);
 
-    ESP_LOGI(TAG, "%d page buffers, %u KB each; %u KB render cell in internal RAM",
-             COMP_BUFFERS, (unsigned)(size / 1024), (unsigned)(cell_size / 1024));
+    ESP_LOGI(TAG, "%d page buffers, %u KB each", COMP_BUFFERS, (unsigned)(size / 1024));
     return ESP_OK;
 }
 

@@ -1,16 +1,15 @@
 #include <stdio.h>
 #include <string.h>
 #include "key_gesture.h"
-#include "page_compositor.h"        // COMP_COLS
 
 static const char EV_PRESS[]   = "press";
 static const char EV_RELEASE[] = "release";
 static const char EV_TAP[]     = "tap";
 static const char EV_LONG[]    = "long";
 
-void TouchControlName(int page, int key, char *buf)
+void TouchControlName(uint16_t id, char *buf)
 {
-    snprintf(buf, GESTURE_NAME_MAX, "touch[%d,%d]", page * COMP_COLS + key % COMP_COLS, key / COMP_COLS);
+    snprintf(buf, GESTURE_NAME_MAX, "touch[%u]", (unsigned)id);
 }
 
 void GestureBank::Init(const GestureHost &host, uint32_t long_press_ms)

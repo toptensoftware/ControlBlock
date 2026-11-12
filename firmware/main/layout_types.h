@@ -14,8 +14,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include "key_layout.h"             // KEY_SLOTS
-#include "page_compositor.h"        // COMP_KEYS
+#include "key_geometry.h"           // KeyRect
 
 namespace layoutdata
 {
@@ -24,38 +23,40 @@ namespace layoutdata
 
 static_assert(sizeof(void *) == 4, "the layout blob holds 32-bit pointers: build for a 32-bit target (host tests: platform x86)");
 
-// A page of keys is the 5x3 grid
-static_assert(sizeof(layoutdata::page) == sizeof(layoutdata::key) * COMP_KEYS, "COMP_KEYS must match the schema's page");
-
 #define HID_MODE_MAX    HID_MODE_UP
 
 // switchActivityOp's index for "no activity" (layout file: `"activity": null`).
 // Keep in step with ACTIVITY_NONE in host/src/bake/consts.js.
 #define LAYOUT_ACTIVITY_NONE    0xFFFFFFFFu
 
-// The key's four (count, pointer) image pairs, in KEY_SLOT_* order
-static_assert(KEY_SLOT_BG == 0 && KEY_SLOT_FG == 1 && KEY_SLOT_PRESSED_BG == 2 && KEY_SLOT_PRESSED_FG == 3 && KEY_SLOTS == 4,
-              "KEY_SLOT_* order must match the schema's key");
+// A key's images: one opaque image per state, each a (count, pointer) pair
+#define LAYOUT_KEY_NORMAL   0
+#define LAYOUT_KEY_PRESSED  1
+#define LAYOUT_KEY_IMAGES   2
 
-// Offsets, within a key, of image `slot`'s count and of its pointer
-inline uint32_t LayoutKeyImageOffset(int slot)
+// Offsets, within a key, of image `state`'s count and of its pointer
+inline uint32_t LayoutKeyImageOffset(int state)
 {
-    static const uint32_t offsets[KEY_SLOTS] = {
-        offsetof(layoutdata::key, normalBg_count),
-        offsetof(layoutdata::key, normalFg_count),
-        offsetof(layoutdata::key, pressedBg_count),
-        offsetof(layoutdata::key, pressedFg_count),
+    static const uint32_t offsets[LAYOUT_KEY_IMAGES] = {
+        offsetof(layoutdata::key, normal_count),
+        offsetof(layoutdata::key, pressed_count),
     };
-    return offsets[slot];
+    return offsets[state];
 }
 
-inline uint32_t LayoutKeyImagePtrOffset(int slot)
+inline uint32_t LayoutKeyImagePtrOffset(int state)
 {
-    static const uint32_t offsets[KEY_SLOTS] = {
-        offsetof(layoutdata::key, normalBg),
-        offsetof(layoutdata::key, normalFg),
-        offsetof(layoutdata::key, pressedBg),
-        offsetof(layoutdata::key, pressedFg),
+    static const uint32_t offsets[LAYOUT_KEY_IMAGES] = {
+        offsetof(layoutdata::key, normal),
+        offsetof(layoutdata::key, pressed),
     };
-    return offsets[slot];
+    return offsets[state];
+}
+
+// A packed key's rect: rect[] is x, y, w, h in quarter units (the bake's order)
+static_assert(sizeof(((layoutdata::key *)nullptr)->rect) == sizeof(KeyRect), "the blob key's rect is a KeyRect");
+
+inline KeyRect LayoutKeyRect(const uint8_t rect[4])
+{
+    return KeyRect{ rect[0], rect[1], rect[2], rect[3] };
 }

@@ -264,17 +264,17 @@ Fact("Gesture Time Wraps")
     Assert(r.LogIs("k press|k long"));
 }
 
-Fact("Gesture Touch Control Names Run Across The Page Strip")
+Fact("Gesture Touch Control Names Are The Key Ids")
 {
+    // Ids are unique across the layout, so the name doesn't depend on the page
     char buf[GESTURE_NAME_MAX];
-    TouchControlName(0, 0, buf);
-    Assert(!strcmp(buf, "touch[0,0]"));
-    TouchControlName(0, 14, buf);
-    Assert(!strcmp(buf, "touch[4,2]"));
-    TouchControlName(1, 0, buf);                    // the first key on the activity's first page
-    Assert(!strcmp(buf, "touch[5,0]"));
-    TouchControlName(2, 7, buf);                    // page 2, column 2, row 1
-    Assert(!strcmp(buf, "touch[12,1]"));
-    TouchControlName(6, 14, buf);
-    Assert(!strcmp(buf, "touch[34,2]"));
+    TouchControlName(1, buf);
+    Assert(!strcmp(buf, "touch[1]"));
+    TouchControlName(16, buf);                      // the bake's id for the first page after Home's slot 0
+    Assert(!strcmp(buf, "touch[16]"));
+    TouchControlName(200, buf);
+    Assert(!strcmp(buf, "touch[200]"));
+    TouchControlName(65535, buf);                   // the longest fits
+    Assert(!strcmp(buf, "touch[65535]"));
+    static_assert(sizeof("touch[65535]") <= GESTURE_NAME_MAX, "every touch name fits a gesture slot");
 }

@@ -1,13 +1,23 @@
 // Constants shared by the bake stages and the packed schema. Anything the firmware also
-// knows is noted; test/render-real.test.js checks KEY_SIZE against the firmware header.
+// knows is noted; test/bake/render-real.test.js checks them against the firmware headers.
 
-export const BLOB_VERSION = 1;        // the packed blob's version (layout files have their own, see FILE_VERSION)
+export const BLOB_VERSION = 2;        // the packed blob's version (layout files have their own, see FILE_VERSION). Firmware: LAYOUT_BLOB_VERSION
 export const FILE_VERSION = 1;        // the user-level layout file format (docs/layout-format.md)
 
-export const KEY_COLS = 5;
-export const KEY_ROWS = 3;
-export const KEYS_PER_PAGE = KEY_COLS * KEY_ROWS;
-export const KEY_SIZE = 128;          // firmware: COMP_KEY_SIZE in page_compositor.h
+// The key grid (firmware: key_geometry.h). Keys are rects in units of one cell (1U), placed and
+// sized in quarter units; the blob stores quarter counts.
+export const KEY_COLS = 5;            // KEY_GRID_COLS
+export const KEY_ROWS = 3;            // KEY_GRID_ROWS
+export const GRID_SLOTS = KEY_COLS * KEY_ROWS;   // KEY_GRID_SLOTS: the plain grid's 1U slots per page
+export const KEY_CELL = 144;          // KEY_CELL: 1U in pixels
+export const KEY_QUARTER = KEY_CELL / 4;         // KEY_QUARTER: 0.25U in pixels
+export const MAX_KEYS_PER_PAGE = 32;  // COMP_MAX_KEYS
+export const MAX_KEY_ID = 65535;      // key ids are u16, 1..65535 (0 = none)
+
+// The default look draws a FACE_SIZE face (and its icon and label) in a 1U cell, with black
+// round it: (KEY_CELL - FACE_SIZE) / 2 each side (images.js FACE_MARGIN). Bigger keys keep the margin.
+export const FACE_SIZE = 128;
+export const FACE_MARGIN = (KEY_CELL - FACE_SIZE) / 2;
 
 // Op codes in the packed blob (docs/standalone.md "Actions")
 export const OP = {

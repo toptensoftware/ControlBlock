@@ -68,7 +68,6 @@ private:
     Slot        m_slot[GESTURE_SLOTS] = {};
 };
 
-// "touch[col,row]" for a key on the page strip: page 0 is Home, and the column
-// runs across all pages (page p, column c is column 5p + c). `buf` holds
-// GESTURE_NAME_MAX bytes.
-void TouchControlName(int page, int key, char *buf);
+// "touch[id]" for the touch key with `id` (unique across the layout, so the
+// name is the same on whichever page it sits). `buf` holds GESTURE_NAME_MAX bytes.
+void TouchControlName(uint16_t id, char *buf);

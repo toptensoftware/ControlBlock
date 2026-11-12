@@ -28,9 +28,11 @@ public:
 
     ImageStoreHost Host();
 
-    // --- Images (128x128 rle565 from test_keys.bin) ---
+    // --- Images (rle565 from test_keys.bin: 128x128 faces and icons, opaque 1U/2U keys) ---
     const void *Face(int i = 0, bool opaque = false) const { return TestImages::Get().Face(i, opaque); }
     const void *Icon(int i = 0) const { return TestImages::Get().Icon(i); }
+    const void *Key1U(int i = 0) const { return TestImages::Get().Key1U(i); }
+    const void *Key2U(int i = 0) const { return TestImages::Get().Key2U(i); }
     uint32_t    Size(const void *img) const { return (uint32_t)TestImages::Get().Size(img); }
 
     // Upload `img` under `id` in one chunk (ImageStore::Put)

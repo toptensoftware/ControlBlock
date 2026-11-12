@@ -2,7 +2,8 @@
 // them to rle565 (with alpha) and packs them into a blobpack for the
 // firmware's test pages, plus the firmware's built-in UI assets:
 //
-//   firmware/assets/test_keys.bin    128x128 key faces and icons
+//   firmware/assets/test_keys.bin    128x128 key faces and icons, then opaque 144x144
+//                                    (1U) and 288x144 (2U) keys
 //   firmware/assets/ui.bin           status bar font and pager pills
 //
 // Run with `npm install && npm run build` in this folder.
@@ -74,17 +75,24 @@ for (const [name, color] of ICONS)
 // ---------------------------------------------------------------------------
 // Compositor test keys: firmware/assets/test_keys.bin
 //
-// Every image is a full 128x128 key cell (COMP_KEY_SIZE). Layout (keep in
-// step with firmware/main/test_keys.h):
-//   blobs 0..3            key faces (the `bg` image), one colour per test page
-//                         plus a "pressed" face, padding as transparent edges
+// Layout (keep in step with firmware/main/test_keys.h):
+//   blobs 0..3            128x128 key faces (the `bg` image), one colour per
+//                         test page plus a "pressed" face, padding as
+//                         transparent edges
 //   blobs 4..7            the same faces made opaque: drawn on COMP_BACKGROUND
 //                         (black), so they cover the whole cell and the
 //                         compositor can skip clearing it
-//   blobs 8..             the icons above, centred in the cell (the `fg` image)
+//   blobs 8..             the icons above, centred in a 128x128 cell (the `fg`
+//                         image)
+//   then                  OPAQUE_KEYS_1U opaque 1U keys (144x144), then
+//                         OPAQUE_KEYS_2U opaque 2U keys (288x144): one fully
+//                         baked image per key (face, icon, label over black,
+//                         8 px of black padding), as the redesigned compositor
+//                         draws them (wip/wip-key-render-redesign.md)
 //   last blob             names, NUL separated
+// The 128 faces and icons go once the compositor draws opaque keys.
 
-const KEY_SIZE = 128;   // matches COMP_KEY_SIZE in firmware/main/compositor.h
+const KEY_SIZE = 128;   // matches TEST_KEYS_FACE_SIZE in firmware/main/test_keys.h
 const FACE_SIZE = 120;  // 4 px transparent padding all round
 const FACE_RADIUS = 14;
 const BACKGROUND = "#000000";   // COMP_BACKGROUND in firmware/main/page_compositor.h
@@ -101,14 +109,14 @@ const keysOutFile = path.resolve(here, "../../firmware/assets/test_keys.bin");
 const keyBlobs = [];
 const keyNames = [];
 
-async function addKey(name, rgba)
+async function addKey(name, rgba, w = KEY_SIZE, h = KEY_SIZE)
 {
-    const info = { width: KEY_SIZE, height: KEY_SIZE, channels: 4 };
+    const info = { width: w, height: h, channels: 4 };
     const packed = await packRle({ data: rgba, info }, {});
     keyBlobs.push(pad4(packed.data));
     keyNames.push(name);
     await sharp(rgba, { raw: info }).png().toFile(path.join(pngDir, "key-" + name + ".png"));
-    console.log(`${name.padEnd(14)} ${String(packed.packedSize).padStart(6)} bytes, ` +
+    console.log(`${name.padEnd(14)} ${String(packed.packedSize).padStart(6)} bytes, ${w}x${h}, ` +
                 `rows ${packed.firstRow}..${packed.firstRow + packed.rowCount - 1}`);
 }
 
@@ -145,10 +153,56 @@ for (const name of names)
     await addKey(name, rgba);
 }
 
+// Opaque keys: one fully opaque, fully baked image per key (KEY_CELL in
+// firmware/main/key_geometry.h; the face stays 128 px like today's)
+const OPAQUE_CELL = 144;
+const OPAQUE_PAD = 8;           // (144 - 128) / 2
+const OPAQUE_ICON = 64;
+const OPAQUE_KEYS_1U = 15;      // TEST_KEYS_KEYS_1U in firmware/main/test_keys.h
+const OPAQUE_KEYS_2U = 5;       // TEST_KEYS_KEYS_2U
+
+async function addOpaqueKey(name, w, h, face, icon, label)
+{
+    const [, top, bottom, border] = face;
+    const fw = w - 2 * OPAQUE_PAD, fh = h - 2 * OPAQUE_PAD;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+        <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="${top}"/><stop offset="1" stop-color="${bottom}"/>
+        </linearGradient></defs>
+        <rect width="${w}" height="${h}" fill="${BACKGROUND}"/>
+        <rect x="${OPAQUE_PAD + 1}" y="${OPAQUE_PAD + 1}" width="${fw - 2}" height="${fh - 2}"
+              rx="${FACE_RADIUS}" fill="url(#g)" stroke="${border}" stroke-width="2"/>
+        <text x="${w / 2}" y="${h - OPAQUE_PAD - 14}" font-family="Arial, sans-serif" font-size="17"
+              font-weight="bold" fill="#ffffff" text-anchor="middle">${label}</text>
+    </svg>`;
+    const iconPng = await sharp(path.join(pngDir, icon + ".png")).resize(OPAQUE_ICON, OPAQUE_ICON).png().toBuffer();
+    const rgba = await sharp(await sharp(Buffer.from(svg))
+            .composite([{ input: iconPng, left: (w - OPAQUE_ICON) >> 1, top: OPAQUE_PAD + 16 }])
+            .flatten({ background: BACKGROUND })
+            .png().toBuffer())
+        .ensureAlpha().raw().toBuffer();
+    for (let i = 3; i < rgba.length; i += 4)
+        if (rgba[i] !== 255)
+            throw new Error(`${name}: not opaque`);
+    await addKey(name, rgba, w, h);
+}
+
+for (let i = 0; i < OPAQUE_KEYS_1U; i++)
+{
+    const icon = names[i % names.length];
+    await addOpaqueKey("1u-" + icon, OPAQUE_CELL, OPAQUE_CELL, FACES[i % 3], icon, icon);
+}
+for (let i = 0; i < OPAQUE_KEYS_2U; i++)
+{
+    const icon = names[(i * 3 + 1) % names.length];
+    await addOpaqueKey("2u-" + icon, OPAQUE_CELL * 2, OPAQUE_CELL, FACES[i % 3], icon, icon + " (wide key)");
+}
+
 keyBlobs.push(pad4(Buffer.from(keyNames.join("\0") + "\0")));
 const keysPack = blobPack(keyBlobs);
 fs.writeFileSync(keysOutFile, keysPack);
-console.log(`\n${keysOutFile}: ${FACES.length * 2} faces + ${names.length} icons, ${keysPack.length} bytes`);
+console.log(`\n${keysOutFile}: ${FACES.length * 2} faces + ${names.length} icons + ` +
+            `${OPAQUE_KEYS_1U} 1U + ${OPAQUE_KEYS_2U} 2U opaque keys, ${keysPack.length} bytes`);
 
 
 // ---------------------------------------------------------------------------

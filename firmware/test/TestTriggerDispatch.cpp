@@ -1,8 +1,8 @@
 // The trigger dispatcher and the global op queue (docs/standalone.md "Triggers
 // and bindings", "Actions"). The layout is the sample baked by host/src/bake,
 // relocated in place and read through the generated structs. Home's bindings:
-// touch[0,0] tap, touch[1,0] tap + long, touch[2,0] tap (switchActivity).
-// Activity 0 ("Watch"): touch[5,0] tap (script), macro1 tap (hidKey).
+// touch[1] tap, touch[2] tap + long, touch[3] tap (switchActivity).
+// Activity 0 ("Watch"): touch[16] tap (script), macro1 tap (hidKey).
 // Activity 1 ("Listen"): none.
 
 #include "UnitTesting.h"
@@ -56,11 +56,11 @@ namespace
 Fact("Trigger Matches Home Binding Exactly")
 {
     Rig r;
-    Assert(r.disp.HasBinding("touch[0,0]", "tap"));
-    Assert(!r.disp.HasBinding("touch[0,0]", "long"));
-    Assert(!r.disp.HasBinding("touch[0,0]", "tap "));
-    Assert(!r.disp.HasBinding("touch[0,0]", "Tap"));
-    Assert(!r.disp.HasBinding("touch[9,9]", "tap"));
+    Assert(r.disp.HasBinding("touch[1]", "tap"));
+    Assert(!r.disp.HasBinding("touch[1]", "long"));
+    Assert(!r.disp.HasBinding("touch[1]", "tap "));
+    Assert(!r.disp.HasBinding("touch[1]", "Tap"));
+    Assert(!r.disp.HasBinding("touch[999]", "tap"));
     Assert(!r.disp.HasBinding("", ""));
     Assert(!r.disp.HasBinding(nullptr, "tap"));
 }
@@ -68,7 +68,7 @@ Fact("Trigger Matches Home Binding Exactly")
 Fact("Trigger Enqueues The Op List And Runs It")
 {
     Rig r;
-    Assert(r.disp.Trigger("touch[0,0]", "tap", "") == 1);
+    Assert(r.disp.Trigger("touch[1]", "tap", "") == 1);
     Assert(r.queue.Count() == 1);
     Assert(r.ran == 0);                 // nothing runs until polled
     r.Drain();
@@ -79,8 +79,8 @@ Fact("Trigger Enqueues The Op List And Runs It")
 Fact("Unmatched Trigger Is Ignored")
 {
     Rig r;
-    Assert(r.disp.Trigger("touch[9,9]", "tap", "") == 0);
-    Assert(r.disp.Trigger("touch[0,0]", "long", "") == 0);
+    Assert(r.disp.Trigger("touch[999]", "tap", "") == 0);
+    Assert(r.disp.Trigger("touch[1]", "long", "") == 0);
     Assert(r.disp.Trigger(nullptr, nullptr, nullptr) == 0);
     Assert(r.queue.Count() == 0 && r.queue.Dropped() == 0);
 }
@@ -88,9 +88,9 @@ Fact("Unmatched Trigger Is Ignored")
 Fact("Same Control Different Events Are Separate Bindings")
 {
     Rig r;
-    Assert(r.disp.HasBinding("touch[1,0]", "tap"));
-    Assert(r.disp.HasBinding("touch[1,0]", "long"));
-    Assert(r.disp.Trigger("touch[1,0]", "long", "") == 1);
+    Assert(r.disp.HasBinding("touch[2]", "tap"));
+    Assert(r.disp.HasBinding("touch[2]", "long"));
+    Assert(r.disp.Trigger("touch[2]", "long", "") == 1);
     r.Drain();
     Assert(r.ran == 1 && r.run[0] == DELAY);        // the long gesture's op, not the tap's
 }
@@ -100,13 +100,13 @@ Fact("Activity Bindings Apply Only While Selected")
     Rig r;
     // No activity at boot: the activity's bindings don't exist
     Assert(!r.disp.HasBinding("macro1", "tap"));
-    Assert(!r.disp.HasBinding("touch[5,0]", "tap"));
+    Assert(!r.disp.HasBinding("touch[16]", "tap"));
     Assert(r.disp.Trigger("macro1", "tap", "") == 0);
 
     Assert(r.disp.SetActivity(0));
     Assert(r.disp.HasBinding("macro1", "tap"));
-    Assert(r.disp.HasBinding("touch[5,0]", "tap"));
-    Assert(r.disp.HasBinding("touch[0,0]", "tap"));         // Home's still match
+    Assert(r.disp.HasBinding("touch[16]", "tap"));
+    Assert(r.disp.HasBinding("touch[1]", "tap"));         // Home's still match
     Assert(r.disp.Trigger("macro1", "tap", "") == 1);
     r.Drain();
     Assert(r.ran == 1 && r.run[0] == HID);
@@ -114,12 +114,12 @@ Fact("Activity Bindings Apply Only While Selected")
     // Another activity: Watch's bindings go, Home's stay
     Assert(r.disp.SetActivity(1));
     Assert(!r.disp.HasBinding("macro1", "tap"));
-    Assert(r.disp.HasBinding("touch[0,0]", "tap"));
+    Assert(r.disp.HasBinding("touch[1]", "tap"));
 
     // Back to none
     Assert(r.disp.SetActivity(-1));
-    Assert(r.disp.HasBinding("touch[0,0]", "tap"));
-    Assert(!r.disp.HasBinding("touch[5,0]", "tap"));
+    Assert(r.disp.HasBinding("touch[1]", "tap"));
+    Assert(!r.disp.HasBinding("touch[16]", "tap"));
 }
 
 Fact("SetActivity Rejects Bad Indices")
@@ -134,8 +134,8 @@ Fact("SetActivity Rejects Bad Indices")
 Fact("Op Queue Runs In Order One Per Poll")
 {
     Rig r;
-    r.disp.Trigger("touch[0,0]", "tap", "");
-    r.disp.Trigger("touch[2,0]", "tap", "");
+    r.disp.Trigger("touch[1]", "tap", "");
+    r.disp.Trigger("touch[3]", "tap", "");
     Assert(r.queue.Count() == 2);
     Assert(r.queue.Poll());
     Assert(r.ran == 1 && r.run[0] == HID);
@@ -148,8 +148,8 @@ Fact("Op Queue Runs In Order One Per Poll")
 Fact("Delay Holds The Queue Until It Has Passed")
 {
     Rig r;
-    r.disp.Trigger("touch[1,0]", "long", "");       // delay 100 ms
-    r.disp.Trigger("touch[0,0]", "tap", "");        // behind it
+    r.disp.Trigger("touch[2]", "long", "");       // delay 100 ms
+    r.disp.Trigger("touch[1]", "tap", "");        // behind it
     r.queue.Poll();                                 // starts the delay
     Assert(r.ran == 1 && r.run[0] == DELAY);
 
@@ -168,8 +168,8 @@ Fact("Delay Survives The Clock Wrapping")
 {
     Rig r;
     r.now = 0xFFFFFFF0u;
-    r.disp.Trigger("touch[1,0]", "long", "");
-    r.disp.Trigger("touch[0,0]", "tap", "");
+    r.disp.Trigger("touch[2]", "long", "");
+    r.disp.Trigger("touch[1]", "tap", "");
     r.queue.Poll();
     r.now += 99;                                    // wraps past zero, still 1 ms short
     r.queue.Poll();
@@ -182,8 +182,8 @@ Fact("Delay Survives The Clock Wrapping")
 Fact("Trigger Param Reaches The Ops And Is Freed Afterwards")
 {
     Rig r;
-    // touch[1,0] long = a delay: it is Pending, so the param is still held
-    Assert(r.disp.Trigger("touch[1,0]", "long", "state=on") == 1);
+    // touch[2] long = a delay: it is Pending, so the param is still held
+    Assert(r.disp.Trigger("touch[2]", "long", "state=on") == 1);
     Assert(r.queue.ParamsInUse() == 1);
     r.queue.Poll();                                 // starts the delay
     Assert(r.queue.ParamsInUse() == 1);
@@ -192,8 +192,8 @@ Fact("Trigger Param Reaches The Ops And Is Freed Afterwards")
     Assert(r.queue.ParamsInUse() == 0);
 
     // No param (null or empty) never takes a slot
-    r.disp.Trigger("touch[0,0]", "tap", nullptr);
-    r.disp.Trigger("touch[0,0]", "tap", "");
+    r.disp.Trigger("touch[1]", "tap", nullptr);
+    r.disp.Trigger("touch[1]", "tap", "");
     Assert(r.queue.ParamsInUse() == 0);
     Assert(r.queue.Count() == 2);
 }
@@ -202,14 +202,14 @@ Fact("Trigger With A Param Is Dropped When The Pool Is Full")
 {
     Rig r;
     for (int i = 0; i < PARAM_SLOTS; i++)
-        r.disp.Trigger("touch[0,0]", "tap", "p");
+        r.disp.Trigger("touch[1]", "tap", "p");
     Assert(r.queue.Count() == PARAM_SLOTS);
-    Assert(r.disp.Trigger("touch[0,0]", "tap", "q") == 1);     // it matched, but could not be queued
+    Assert(r.disp.Trigger("touch[1]", "tap", "q") == 1);     // it matched, but could not be queued
     Assert(r.queue.Count() == PARAM_SLOTS);
     Assert(r.queue.ParamDropped() == 1);
     r.Drain();
     Assert(r.queue.ParamsInUse() == 0);
-    r.disp.Trigger("touch[0,0]", "tap", "q");
+    r.disp.Trigger("touch[1]", "tap", "q");
     Assert(r.queue.Count() == 1);
 }
 
@@ -217,19 +217,19 @@ Fact("Full Queue Drops Whole Lists And Counts Them")
 {
     Rig r;
     for (int i = 0; i < OP_QUEUE_SIZE; i++)
-        Assert(r.disp.Trigger("touch[0,0]", "tap", "") == 1);
+        Assert(r.disp.Trigger("touch[1]", "tap", "") == 1);
     Assert(r.queue.Count() == OP_QUEUE_SIZE);
     Assert(r.queue.Dropped() == 0);
 
     // One more: nothing is added, one is dropped
-    r.disp.Trigger("touch[0,0]", "tap", "");
+    r.disp.Trigger("touch[1]", "tap", "");
     Assert(r.queue.Count() == OP_QUEUE_SIZE);
     Assert(r.queue.Dropped() == 1);
 
     // After the queue drains it takes triggers again, and the ring wrapped cleanly
     r.Drain();
     Assert(r.ran == OP_QUEUE_SIZE);
-    Assert(r.disp.Trigger("touch[0,0]", "tap", "") == 1);
+    Assert(r.disp.Trigger("touch[1]", "tap", "") == 1);
     r.Drain();
     Assert(r.ran == OP_QUEUE_SIZE + 1);
 }
@@ -239,8 +239,8 @@ Fact("Ring Wraps Over Many Cycles")
     Rig r;
     int total = 0;
     for (int i = 0; i < 5 * OP_QUEUE_SIZE; i++) {
-        Assert(r.disp.Trigger("touch[0,0]", "tap", "") == 1);
-        Assert(r.disp.Trigger("touch[2,0]", "tap", "") == 1);
+        Assert(r.disp.Trigger("touch[1]", "tap", "") == 1);
+        Assert(r.disp.Trigger("touch[3]", "tap", "") == 1);
         r.ran = 0;
         r.Drain();
         Assert(r.ran == 2 && r.run[0] == HID && r.run[1] == SWITCH);    // in order, every cycle

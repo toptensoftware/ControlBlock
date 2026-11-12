@@ -20,7 +20,15 @@
       { "color": "#225522", "icon": "#play", "label": "Copy", "tap": { "op": "hidKey", "keys": "ctrl+c" } },
       { "color": "#222255", "icon": "#play", "label": "Hold","press": { "op": "hidKey", "keys": "shift+a", "mode": "hold" }, "release": { "op": "hidKey", "keys": "shift+a", "mode": "hold" } },
       null,
-      { "color": "#552222", "action": { "op": "switchActivity", "activity": null } }
+      { "color": "#552222", "action": { "op": "switchActivity", "activity": null } },
+      { "w": 2, "color": "#224444", "label": "Wide", "longPressMs": 900, "tap": { "op": "hidKey", "keys": "w" } },
+      null,
+      { "x": 2, "y": 2, "w": 0.5, "label": "Q", "tap": { "op": "hidKey", "keys": "q" } },
+      { "x": 2.5, "y": 2, "w": 0.5, "label": "R", "tap": { "op": "hidKey", "keys": "r" } },
+      { "x": 3, "y": 2, "w": 2, "label": "Vol", "keys": [
+        { "icon": "#add", "tap": { "op": "hidKey", "keys": "up" } },
+        { "x": 1, "icon": "#delete", "tap": { "op": "hidKey", "keys": "down" } }
+      ] }
     ]
   },
   "activities": {
@@ -37,7 +45,7 @@
     "Listen": {
       "devices": ["avr"],
       "hooks": { "willActivate": { "op": "delay", "ms": 20 } },
-      "pages": [ { "keys": [ { "icon": "#play" } ] } ]
+      "pages": [ { "keys": [ { "icon": "#play" }, { "color": "#aa2222" } ] } ]
     }
   }
 }

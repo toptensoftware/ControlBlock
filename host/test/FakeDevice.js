@@ -2,24 +2,63 @@
 // testing the library without hardware. `handler(msg)` returns the response
 // { status, data } for a request, or null to stay silent.
 
+import { unpackRle } from "rle565/unpack.js";
 import { ControlBlock } from "../src/ControlBlock.js";
-import { MessageParser, encodeMessage, Writer, Reader, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION, USB_PACKET_SIZE, crc32, ClockSource, TIME_VALID_FROM_MS } from "../src/protocol.js";
+import {
+    MessageParser, encodeMessage, Writer, Reader, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION, USB_PACKET_SIZE, crc32,
+    ClockSource, TIME_VALID_FROM_MS, KEYDEF_SIZE, KEY_EVENT_SIZE, KeyFlags, PUT_IMAGE_PREFIX, STATUS_TEXT_MAX_BYTES,
+} from "../src/protocol.js";
 
-export function infoPayload({ maxPayload = 8192, pageCount = 1, backlight = true, wifiCredentials = false, hosted = false, timeSet = false, layout } = {})
+// The firmware's constants (key_geometry.h, screen_layout.h, key_layout.h); a test checks them
+// against the headers. The library itself never assumes these: it reads GET_INFO.
+export const DEVICE = Object.freeze({
+    screenWidth: 800, screenHeight: 480, statusHeight: 40,
+    cols: 5, rows: 3, cell: 144, quarter: 36, maxKeys: 32, maxPages: 8, icon: 80,
+    get gridWidth() { return this.cols * this.cell; },
+    get gridHeight() { return this.rows * this.cell; },
+    get gridX() { return (this.screenWidth - this.gridWidth) / 2; },
+    get gridY() { return this.statusHeight + (this.screenHeight - this.statusHeight - this.gridHeight) / 2; },
+});
+const GRID_QW = DEVICE.cols * 4, GRID_QH = DEVICE.rows * 4;     // the grid in quarter units
+const IMAGE_CAPACITY = 5000000;
+
+export function infoPayload({ maxPayload = 8192, pageCount = 1, currentPage = 0, imageUsed = 0, imageCount = 0, backlight = true, wifiCredentials = false, hosted = false, timeSet = false, layout } = {})
 {
     const w = new Writer(128);
     const flags = (backlight ? InfoFlags.BACKLIGHT : 0) | (wifiCredentials ? InfoFlags.WIFI_CREDENTIALS : 0) | (hosted ? InfoFlags.HOSTED : 0) | (timeSet ? InfoFlags.TIME_SET : 0);
-    w.u16(PROTOCOL_VERSION).u16(flags).u32(maxPayload).u32(5000000).u32(1234).u32(3).u32(4000000);
-    w.u16(800).u16(480).u8(5).u8(3).u8(8).u8(pageCount);
-    w.u16(128).u16(128).u16(80).u16(80).u8(0);
+    w.u16(PROTOCOL_VERSION).u16(flags).u32(maxPayload).u32(IMAGE_CAPACITY).u32(imageUsed).u32(imageCount).u32(IMAGE_CAPACITY - imageUsed);
+    w.u16(DEVICE.screenWidth).u16(DEVICE.screenHeight).u8(DEVICE.cols).u8(DEVICE.rows).u8(DEVICE.maxPages).u8(pageCount);
+    w.u16(DEVICE.cell).u16(DEVICE.cell).u16(DEVICE.icon).u16(DEVICE.icon).u8(currentPage);
     for (const s of ["1.0", "SERIAL1"]) {
         const b = new TextEncoder().encode(s);
         w.u8(b.length).raw(b);
     }
-    if (layout)
-        w.u32(layout.capacity).u32(layout.size).u32(layout.crc);
+    w.u32(layout?.capacity ?? 0).u32(layout?.size ?? 0).u32(layout?.crc ?? 0);
+    w.u16(DEVICE.gridX).u16(DEVICE.gridY).u16(DEVICE.gridWidth).u16(DEVICE.gridHeight).u16(DEVICE.quarter);
+    w.u16(DEVICE.gridWidth).u16(DEVICE.gridHeight).u8(DEVICE.maxKeys);
     return w.done();
 }
+
+// The image's size if the device would take it (a valid rle565 image, 1x1 up to the grid, every
+// pixel opaque: the firmware's check_image with opaque required), else null
+function checkImage(bytes)
+{
+    let img;
+    try {
+        img = unpackRle(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    } catch {
+        return null;
+    }
+    if (img.width < 1 || img.height < 1 || img.width > DEVICE.gridWidth || img.height > DEVICE.gridHeight)
+        return null;
+    for (let i = 3; i < img.data.length; i += 4)
+        if (img.data[i] !== 255)
+            return null;
+    return { width: img.width, height: img.height };
+}
+
+const rectValid = k => k.w > 0 && k.h > 0 && k.x + k.w <= GRID_QW && k.y + k.h <= GRID_QH;
+const rectsOverlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
 const USB_RX_TRANSFER = 512;    // the firmware's receive transfer (CONFIG_TINYUSB_VENDOR_EPSIZE)
 
@@ -42,6 +81,13 @@ export class FakeDevice
     // clock: emulate the clock messages (docs/protocol.md, Clock): { offset, source, tz, server }.
     //   offset: device time minus Date.now() in ms, null while the time isn't known (the default).
     // name: emulate NAME_SET/NAME_GET (docs/protocol.md, Device name): { name } stored, null (the default) for none.
+    // The screen requests (RESET, SET_STATUS_TEXT, PUT_IMAGE, FREE_IMAGES, QUERY_IMAGES, SET_PAGE_COUNT,
+    //   SET_KEYS, SET_PAGE) run against a model of the firmware's image store and key layout (protocol
+    //   v2: opaque images only, keys by id with quarter-unit rects, the same checks and statuses).
+    //   Read it with keys(page), `images`, `pageCount`, `currentPage`, `statusText`; keyEvent() sends a
+    //   KEY event for a key, as a touch would.
+    // handler(msg): if given, asked first about every screen request (and any other type the fake
+    //   doesn't know): a { status, data } answers, null stays silent, undefined leaves it to the model.
     constructor({ maxPayload = 8192, handler, backlight = true, layout, wifi, clock, name, hosted = false, controlStatus = Status.OK } = {})
     {
         this.clock = clock ? { offset: null, source: 0, tz: "UTC0", server: "pool.ntp.org", ...clock } : null;
@@ -65,7 +111,9 @@ export class FakeDevice
         this.resets = 0;
         this.requests = [];             // every request message received
         this.maxPayload = maxPayload;
-        this.handler = handler ?? (() => ({ status: Status.OK, data: new Uint8Array(0) }));
+        this.handler = handler ?? (() => undefined);
+        this._eventSeq = 0;
+        this._resetScreen();
         this._parser = new MessageParser();
         this._held = new Uint8Array(0);     // received but not delivered (see _receive)
         this._out = [];                 // chunks for transferIn
@@ -121,7 +169,12 @@ export class FakeDevice
                 : !this.hosted && HOSTED_REQUESTS.includes(msg.type)
                     ? { status: Status.NOT_HOSTED, data: new Uint8Array(0) }
                 : msg.type === Msg.GET_INFO
-                ? { status: Status.OK, data: infoPayload({ maxPayload: this.maxPayload, backlight: this.backlight, hosted: this.hosted, wifiCredentials: !!this.wifi?.ssid, timeSet: this.clock?.offset != null, layout: this.layout && { capacity: this.layout.capacity, size: this.layout.stored?.size ?? 0, crc: this.layout.stored?.crc ?? 0 } }) }
+                ? { status: Status.OK, data: infoPayload({
+                    maxPayload: this.maxPayload, backlight: this.backlight, hosted: this.hosted, wifiCredentials: !!this.wifi?.ssid,
+                    timeSet: this.clock?.offset != null, pageCount: this.pageCount, currentPage: this.currentPage,
+                    imageCount: this.images.size, imageUsed: [...this.images.values()].reduce((n, e) => n + e.size, 0),
+                    layout: this.layout && { capacity: this.layout.capacity, size: this.layout.stored?.size ?? 0, crc: this.layout.stored?.crc ?? 0 },
+                }) }
                 : this.wifi && msg.type >= Msg.WIFI_SET && msg.type <= Msg.WIFI_STATUS
                     ? this._wifi(msg)
                 : this.clock && msg.type >= Msg.TIME_SET && msg.type <= Msg.CLOCK_SET
@@ -130,7 +183,7 @@ export class FakeDevice
                     ? this._name(msg)
                 : msg.type === Msg.PING
                     ? { status: Status.OK, data: msg.payload }
-                    : this.handler(msg);
+                    : this._screenRequest(msg);
             if (r)
                 this.respond(msg, r.status, r.data);
         }
@@ -145,11 +198,243 @@ export class FakeDevice
         const take = msg.type === Msg.TAKE_CONTROL;
         if (take || this.hosted) {
             this.model = take ? "empty" : "home";
+            this._resetScreen();
             if (!take)
                 this.backlight = true;
             this.hosted = take;
         }
         return { status: Status.OK, data: new Uint8Array(0) };
+    }
+
+    // --- The screen: image store and key layout, as the firmware has them (protocol.cpp,
+    // image_store.cpp, key_layout.cpp; the rules are checked by the firmware's own tests) ---
+
+    // Every key and image goes, one empty page, the status texts cleared (RESET, TAKE_CONTROL, RELEASE_CONTROL)
+    _resetScreen()
+    {
+        this.images = new Map();        // live images: id -> entry { id, width, height, size }
+        this._upload = null;
+        this._pages = [[]];             // per page: keys { id, page, x, y, w, h (quarter units), flags, normal, pressed (entries) }
+        this.currentPage = 0;
+        this.statusText = ["", ""];
+    }
+
+    get pageCount() { return this._pages.length; }
+
+    // A page's keys as the host defined them: { id, page, x, y, w, h (quarter units), disabled, normal, pressed (image IDs, 0 = none) }
+    keys(page)
+    {
+        return (this._pages[page] ?? []).map(k => ({
+            id: k.id, page: k.page, x: k.x, y: k.y, w: k.w, h: k.h, disabled: (k.flags & KeyFlags.DISABLED) !== 0,
+            normal: k.normal?.id ?? 0, pressed: k.pressed?.id ?? 0,
+        }));
+    }
+
+    // Send a KEY event for key `id`, as a touch on it would. Throws for what the device can't send
+    // (standalone, no such key, a disabled key).
+    keyEvent(id, action, { timeMs = 0, lost = false } = {})
+    {
+        const found = this._findKey(id);
+        if (!this.hosted || !found || found.key.flags & KeyFlags.DISABLED)
+            throw new Error(`The device sends no KEY event for key ${id} (${!this.hosted ? "standalone" : !found ? "no such key" : "disabled"})`);
+        const w = new Writer(KEY_EVENT_SIZE).u16(id).u8(found.page).u8(action).u8(lost ? 1 : 0).u8(0).u8(0).u8(0).u32(timeMs);
+        this.event(Msg.KEY, this._eventSeq++ & 0xFFFF, w.done());
+    }
+
+    _findKey(id)
+    {
+        for (let page = 0; page < this._pages.length; page++) {
+            const key = this._pages[page].find(k => k.id === id);
+            if (key)
+                return { page, key };
+        }
+        return null;
+    }
+
+    _screenRequest(msg)
+    {
+        const r = this.handler(msg);
+        if (r !== undefined)
+            return r;
+        const reply = (status, data = new Uint8Array(0)) => ({ status, data });
+        const p = msg.payload, rd = new Reader(p);
+        switch (msg.type) {
+        case Msg.RESET:
+            this._resetScreen();
+            return reply(Status.OK);
+        case Msg.SET_STATUS_TEXT: {
+            if (p.length < 2 || p.length < 2 + p[1])
+                return reply(Status.BAD_LENGTH);
+            if (p[0] > 1 || p[1] > STATUS_TEXT_MAX_BYTES)
+                return reply(Status.BAD_ARG);
+            this.statusText[p[0]] = new TextDecoder().decode(p.subarray(2, 2 + p[1]));
+            return reply(Status.OK);
+        }
+        case Msg.PUT_IMAGE:
+            return reply(p.length < PUT_IMAGE_PREFIX ? Status.BAD_LENGTH : this._putImage(rd.u32(), rd.u32(), rd.u32(), p.subarray(PUT_IMAGE_PREFIX)));
+        case Msg.FREE_IMAGES:
+        case Msg.QUERY_IMAGES: {
+            const count = rd.u16();
+            if (p.length < 2 || !rd.has(count * 4))
+                return reply(Status.BAD_LENGTH);
+            const ids = Array.from({ length: count }, () => rd.u32());
+            if (msg.type === Msg.FREE_IMAGES) {
+                ids.forEach(id => this.images.delete(id));      // keys keep the entries they hold
+                return reply(Status.OK);
+            }
+            const out = new Uint8Array(2 + Math.ceil(count / 8));
+            new DataView(out.buffer).setUint16(0, count, true);
+            ids.forEach((id, i) => { if (this.images.has(id)) out[2 + (i >> 3)] |= 1 << (i & 7); });
+            return reply(Status.OK, out);
+        }
+        case Msg.SET_PAGE_COUNT: {
+            if (p.length < 1)
+                return reply(Status.BAD_LENGTH);
+            if (p[0] < 1 || p[0] > DEVICE.maxPages)
+                return reply(Status.BAD_ARG);
+            this._pages = Array.from({ length: p[0] }, (_, i) => this._pages[i] ?? []);
+            this.currentPage = Math.min(this.currentPage, p[0] - 1);
+            return reply(Status.OK);
+        }
+        case Msg.SET_PAGE:
+            if (p.length < 1)
+                return reply(Status.BAD_LENGTH);
+            if (p[0] >= this.pageCount)
+                return reply(Status.BAD_ARG);
+            this.currentPage = p[0];
+            return reply(Status.OK);
+        case Msg.SET_KEYS:
+            return reply(this._setKeys(rd));
+        }
+        return reply(Status.OK);        // anything else the fake doesn't know
+    }
+
+    // One PUT_IMAGE chunk (ImageStore::PutBegin/PutEnd)
+    _putImage(id, total, offset, chunk)
+    {
+        if (id === 0 || total === 0 || offset + chunk.length > total)
+            return Status.BAD_ARG;
+        if (offset === 0) {
+            const used = [...this.images.values()].reduce((n, e) => n + e.size, 0);
+            if (used + total > IMAGE_CAPACITY) {
+                this._upload = null;
+                return Status.NO_SPACE;
+            }
+            this._upload = { id, total, received: 0, bytes: new Uint8Array(total) };
+        } else if (!this._upload || this._upload.id !== id || this._upload.total !== total || this._upload.received !== offset) {
+            this._upload = null;
+            return Status.BAD_SEQUENCE;
+        }
+        const u = this._upload;
+        u.bytes.set(chunk, offset);
+        u.received += chunk.length;
+        if (u.received < u.total)
+            return Status.OK;
+        this._upload = null;
+        const size = checkImage(u.bytes);
+        if (!size)
+            return Status.BAD_IMAGE;
+        const entry = this.images.get(id);
+        if (entry)
+            Object.assign(entry, size, { size: total });        // replaced in place: its keys show it
+        else
+            this.images.set(id, { id, ...size, size: total });
+        return Status.OK;
+    }
+
+    // SET_KEYS (Protocol::OnSetKeys): edits by id, checked and applied together over the touched pages
+    _setKeys(r)
+    {
+        if (!r.has(2))
+            return Status.BAD_LENGTH;
+        const count = r.u16();
+        if (!r.has(count * KEYDEF_SIZE))
+            return Status.BAD_LENGTH;
+        const defs = [];
+        for (let i = 0; i < count; i++) {
+            const id = r.u16(), page = r.u8(), x = r.u8(), y = r.u8(), w = r.u8(), h = r.u8();
+            r.u8();
+            const flags = r.u16();
+            r.u16();
+            const normal = r.u32(), pressed = r.u32();
+            if (flags & ~(KeyFlags.REMOVE | KeyFlags.DISABLED))
+                return Status.BAD_ARG;
+            defs.push({ id, page, x, y, w, h, flags: flags & KeyFlags.DISABLED, remove: (flags & KeyFlags.REMOVE) !== 0, normal, pressed });
+        }
+        const named = new Set(defs.map(d => d.id));
+        if (named.has(0) || named.size !== defs.length)
+            return Status.BAD_ARG;
+
+        // The pages touched: each def's, and each removed key's; a key stays on its page
+        let lo = Infinity, hi = -1;
+        for (const d of defs) {
+            const found = this._findKey(d.id);
+            if (d.remove && !found)
+                continue;
+            if (!d.remove && found && found.page !== d.page)
+                return Status.BAD_ARG;
+            const page = d.remove ? found.page : d.page;
+            lo = Math.min(lo, page);
+            hi = Math.max(hi, page);
+        }
+        if (hi < 0)
+            return Status.OK;
+        if (hi >= this.pageCount)
+            return Status.BAD_ARG;
+
+        // The touched pages' keys, minus the ones named, plus the new definitions
+        const keys = [];
+        for (let p = lo; p <= hi; p++)
+            for (const k of this._pages[p])
+                if (!named.has(k.id))
+                    keys.push({ ...k, normal: k.normal?.id ?? 0, pressed: k.pressed?.id ?? 0 });
+        keys.push(...defs.filter(d => !d.remove));
+        return this._applyKeys(lo, hi, keys);
+    }
+
+    // KeyLayout::SetKeys: pages lo..hi become exactly `keys`, all or nothing
+    _applyKeys(lo, hi, keys)
+    {
+        for (let p = lo; p <= hi; p++) {
+            const rects = keys.filter(k => k.page === p);
+            if (rects.length > DEVICE.maxKeys)
+                return Status.BAD_ARG;
+            for (let i = 0; i < rects.length; i++)
+                if (!rectValid(rects[i]) || rects.slice(0, i).some(o => rectsOverlap(o, rects[i])))
+                    return Status.BAD_ARG;
+        }
+        for (let p = 0; p < this.pageCount; p++)
+            if ((p < lo || p > hi) && this._pages[p].some(k => keys.some(n => n.id === k.id)))
+                return Status.BAD_ARG;
+
+        // Images: live, or one the same key (on a page being replaced) already holds; the rect's size
+        const resolve = (imageId, keyId) => {
+            if (this.images.has(imageId))
+                return this.images.get(imageId);
+            const old = this._findKey(keyId);
+            if (!old || old.page < lo || old.page > hi)
+                return null;
+            return [old.key.normal, old.key.pressed].find(e => e?.id === imageId) ?? null;
+        };
+        const resolved = [];
+        for (const k of keys) {
+            const entries = [];
+            for (const imageId of [k.normal, k.pressed]) {
+                const e = imageId ? resolve(imageId, k.id) : null;
+                if (imageId && !e)
+                    return Status.NOT_FOUND;
+                if (e && (e.width !== k.w * DEVICE.quarter || e.height !== k.h * DEVICE.quarter))
+                    return Status.BAD_IMAGE;
+                entries.push(e);
+            }
+            resolved.push(entries);
+        }
+        for (let p = lo; p <= hi; p++)
+            this._pages[p] = [];
+        keys.forEach((k, i) => this._pages[k.page].push({
+            id: k.id, page: k.page, x: k.x, y: k.y, w: k.w, h: k.h, flags: k.flags, normal: resolved[i][0], pressed: resolved[i][1],
+        }));
+        return Status.OK;
     }
 
     // The Wi-Fi messages, as the firmware does them (the rules are checked by the firmware's own tests)

@@ -27,6 +27,6 @@ for (const [name, target] of Object.entries(targets))
 
     test(`${name}: playstation resolves clean`, async () => {
         const tree = await cleanLayout(layoutWith(ctx, { activities: { playstation: playstation(ctx) } }));
-        assert.equal(tree.activities[3].pages[0].keys.filter(k => k.normalFg).length, 2);
+        assert.equal(tree.activities[3].pages[0].keys.filter(k => k.normal).length, 2);
     });
 }

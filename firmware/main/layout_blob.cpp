@@ -40,9 +40,9 @@ namespace
         LayoutError Array(uint32_t count_off, uint32_t ptr_off, uint32_t elem, uint32_t max, uint32_t *ptr, uint32_t *count);
         LayoutError Str(uint32_t slot, bool nullable);
         LayoutError HttpUrl(uint32_t slot);
-        LayoutError Image(uint32_t count_off, uint32_t ptr_off, LayoutImage *out);
-        LayoutError Key(uint32_t key, LayoutImage out[KEY_SLOTS]);
-        LayoutError Page(uint32_t page);
+        LayoutError Image(uint32_t count_off, uint32_t ptr_off, KeyPixelRect px, LayoutImage *out);
+        LayoutError Key(uint32_t key, LayoutKey *out);
+        LayoutError Keys(uint32_t count_off, uint32_t ptr_off, LayoutKey *out, uint32_t *count);
         LayoutError Op(uint32_t op);
         LayoutError OpList(uint32_t count_off, uint32_t ptr_off);
         LayoutError Bindings(uint32_t count_off, uint32_t ptr_off);
@@ -56,7 +56,8 @@ namespace
         uint32_t       m_device_count = 0, m_activity_count = 0;
         List<uint8_t>  m_seen;              // a bit per relocation entry: reached by the walk
         uint32_t       m_seen_count = 0;
-        Map<uint32_t, uint32_t> m_checked;  // image offset -> size, already through check_image
+        Map<uint32_t, uint32_t> m_checked;  // image offset -> size, already through check_image (and opaque)
+        Set<uint32_t>  m_ids;               // key ids seen so far (unique across the layout)
     };
 
     LayoutError Validator::Header()
@@ -174,9 +175,9 @@ namespace
         return LayoutError::Ok;
     }
 
-    // An rle565 image given as (count, ptr): absent, or a whole valid image
-    // of the key size, 4-byte aligned in memory
-    LayoutError Validator::Image(uint32_t count_off, uint32_t ptr_off, LayoutImage *out)
+    // An rle565 image given as (count, ptr): absent, or a whole valid opaque
+    // image the size of its key (`px`), 4-byte aligned in memory
+    LayoutError Validator::Image(uint32_t count_off, uint32_t ptr_off, KeyPixelRect px_rect, LayoutImage *out)
     {
         uint32_t p, n;
         TRY(Array(count_off, ptr_off, 1, 0xFFFFFFFFu, &p, &n));
@@ -189,32 +190,63 @@ namespace
         if (((uintptr_t)m_b + p) % 4 != 0)
             return LayoutError::BadAlignment;
 
+        // Once through check_image per (offset, size): a shared image is checked
+        // once, and only opaque ones are remembered
+        const void *px = m_b + p;
         uint32_t size = 0;
         if (!m_checked.TryGetValue(p, size) || size != n) {
-            const void *px = m_b + p;
-            if (!check_image_header(px, n) || get_image_width(px) != COMP_KEY_SIZE ||
-                get_image_height(px) != COMP_KEY_SIZE || !check_image(px, n, nullptr))
+            bool opaque = false;
+            if (!check_image_header(px, n) || !check_image(px, n, &opaque) || !opaque)
                 return LayoutError::BadImage;
             m_checked.Add(p, n);
         }
+        if (get_image_width(px) != (uint32_t)px_rect.w || get_image_height(px) != (uint32_t)px_rect.h)
+            return LayoutError::BadImage;
         out->offset = p;
         out->size   = n;
         return LayoutError::Ok;
     }
 
-    LayoutError Validator::Key(uint32_t key, LayoutImage out[KEY_SLOTS])
+    // A key: an id not 0 and not seen before in the layout, a rect inside the
+    // grid, and its images
+    LayoutError Validator::Key(uint32_t key, LayoutKey *out)
     {
-        for (int s = 0; s < KEY_SLOTS; s++)
-            TRY(Image(key + LayoutKeyImageOffset(s), key + LayoutKeyImagePtrOffset(s), &out[s]));
+        uint16_t id;
+        memcpy(&id, m_b + key + OFF(key, id), sizeof(id));
+        KeyRect rect = LayoutKeyRect(m_b + key + OFF(key, rect));
+        if (id == KEY_ID_NONE || m_ids.Contains(id) || !KeyRectValid(rect))
+            return LayoutError::BadKey;
+        m_ids.Add(id);
+
+        LayoutKey k = {};
+        k.id   = id;
+        k.rect = rect;
+        KeyPixelRect px = KeyRectPixels(rect);
+        TRY(Image(key + LayoutKeyImageOffset(LAYOUT_KEY_NORMAL), key + LayoutKeyImagePtrOffset(LAYOUT_KEY_NORMAL), px, &k.normal));
+        TRY(Image(key + LayoutKeyImageOffset(LAYOUT_KEY_PRESSED), key + LayoutKeyImagePtrOffset(LAYOUT_KEY_PRESSED), px, &k.pressed));
+        if (out)
+            *out = k;
         return LayoutError::Ok;
     }
 
-    LayoutError Validator::Page(uint32_t page)
+    // A page's (count, ptr) of keys: at most COMP_MAX_KEYS, none overlapping.
+    // `out` (COMP_MAX_KEYS entries, may be null) and `count` get them.
+    LayoutError Validator::Keys(uint32_t count_off, uint32_t ptr_off, LayoutKey *out, uint32_t *count)
     {
-        for (int k = 0; k < COMP_KEYS; k++) {
-            LayoutImage ignored[KEY_SLOTS];
-            TRY(Key(page + OFF(page, keys) + k * SIZE(key), ignored));
+        uint32_t list, n;
+        TRY(Array(count_off, ptr_off, SIZE(key), COMP_MAX_KEYS, &list, &n));
+        KeyRect rects[COMP_MAX_KEYS];
+        for (uint32_t i = 0; i < n; i++) {
+            LayoutKey k;
+            TRY(Key(list + i * SIZE(key), &k));
+            rects[i] = k.rect;
+            if (out)
+                out[i] = k;
         }
+        if (KeyRectsCheck(rects, (int)n) != KEY_GEOM_OK)
+            return LayoutError::BadKey;
+        if (count)
+            *count = n;
         return LayoutError::Ok;
     }
 
@@ -323,8 +355,10 @@ namespace
         TRY(Array(PAIR(a, activity, pages), SIZE(page), LAYOUT_MAX_ACTIVITY_PAGES, &list, &n));
         if (n == 0)
             return LayoutError::BadLimit;                   // an activity needs a page
-        for (uint32_t i = 0; i < n; i++)
-            TRY(Page(list + i * SIZE(page)));
+        for (uint32_t i = 0; i < n; i++) {
+            uint32_t pg = list + i * SIZE(page);
+            TRY(Keys(PAIR(pg, page, keys), nullptr, nullptr));
+        }
 
         TRY(Bindings(PAIR(a, activity, bindings)));
         TRY(OpList(PAIR(a, activity, willDeactivate)));
@@ -354,8 +388,7 @@ namespace
         s.device_count  = m_device_count;
         s.activity_count = m_activity_count;
 
-        for (int k = 0; k < COMP_KEYS; k++)
-            TRY(Key(home + OFF(home, keys) + k * SIZE(key), s.home[k]));
+        TRY(Keys(PAIR(home, home, keys), s.home, &s.home_count));
         TRY(Bindings(PAIR(home, home, bindings)));
 
         uint32_t list, n;
@@ -391,8 +424,22 @@ const char *LayoutErrorName(LayoutError e)
     case LayoutError::BadOp:         return "bad op";
     case LayoutError::BadIndex:      return "index out of range";
     case LayoutError::BadImage:      return "bad image";
+    case LayoutError::BadKey:        return "bad key";
     }
     return "?";
+}
+
+LayoutKey LayoutKeyOf(const layoutdata::key &key, const uint8_t *blob)
+{
+    auto image = [&](uint32_t count, const uint8_t *ptr) {
+        return count && ptr ? LayoutImage{ (uint32_t)(ptr - blob), count } : LayoutImage{};
+    };
+    LayoutKey k = {};
+    k.id      = key.id;
+    k.rect    = LayoutKeyRect(key.rect);
+    k.normal  = image(key.normal_count, key.normal);
+    k.pressed = image(key.pressed_count, key.pressed);
+    return k;
 }
 
 LayoutError LayoutValidate(const void *blob, uint32_t size, LayoutSummary *summary)

@@ -45,14 +45,15 @@ node --test "urem2/**/*.test.mjs"
 
 (A directory argument doesn't work on Node 24.) Covers the tables and encoders, the test server, every op builder,
 the Lua scripts (run in wasmoon against the same fake Yamaha the test server uses), every key on Home and in each
-activity against urem's map, both targets resolving clean and talking only to their own addresses, and one full bake.
+activity against urem's map, both targets resolving clean and talking only to their own addresses, and a full bake of both entries with the device's key checks (`examples/bake-check.mjs`: ids,
+1U rects, opaque images of the key's size).
 
 ## Baking and uploading
 
 ```sh
 node cli/cli.js upload urem2/urem2-test.mjs          # against the test server
 node cli/cli.js upload urem2/urem2.mjs               # the house
-node cli/cli.js bake urem2/urem2-test.mjs -o scratch/urem2-test.bin    # bake only (~134 KB, 56 images)
+node cli/cli.js bake urem2/urem2-test.mjs -o scratch/urem2-test.bin    # bake only (~440 KB, 124 images)
 ```
 
 The target is chosen by the entry file (the CLI can't pass options to a layout). Both entries are one line:
@@ -85,7 +86,8 @@ ControlBlock can't read UDP replies. **Not yet tested on the NAS.**
 ## Key map
 
 Same grid as urem's 15-key Stream Deck (index = row * 5 + column). urem's column 0 navigation keys (Home toggle, pager
-arrows, clock) are empty: swipe instead.
+arrows, clock) are empty: swipe instead. Every key is a plain 1U key in its slot, with the bake's default id (page
+number across the layout x 15 + slot + 1, so its bindings are `touch[id]`); no spans or groups yet.
 
 - **Home:** PlayStation, Steam, power (everything off), Apple TV, Netflix / Prime Video / YouTube (switch to Apple TV,
   then open the app), 7ch Stereo, TV, DVR list / guide / function (switch to TV, then the IR key). **Long press** an

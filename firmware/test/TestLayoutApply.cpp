@@ -1,5 +1,6 @@
-// Layout apply: a validated blob's Home becomes the key layout, its images
-// registered with the store in place (docs/standalone.md "Image IDs").
+// Layout apply: a validated blob's Home and activity pages become the key
+// layout (the blob's key ids and rects), their images registered with the
+// store in place (docs/standalone.md "Image IDs").
 
 #include "UnitTesting.h"
 #include "Core.h"
@@ -14,6 +15,10 @@ namespace
 {
     struct Change { int page; uint32_t flags; };
 
+    // The sample's ids: Watch's pages hold one key each (16, 31), Listen's page two (46, 47)
+    const uint16_t WATCH_KEYS[2] = { 16, 31 };
+    const uint16_t LISTEN_KEYS[2] = { 46, 47 };
+
     struct Fixture
     {
         StoreEnv      env;
@@ -26,7 +31,7 @@ namespace
 
         Fixture()
         {
-            store.Init(env.Host(), 1u << 20, COMP_KEY_SIZE, COMP_KEY_SIZE);
+            store.Init(env.Host(), 1u << 20, KEY_GRID_W, KEY_GRID_H, true);     // as the device: opaque only
             store.SetListener(&layout);
             layout.Init(&store, Changed, this);
             blob = LoadSample();
@@ -40,32 +45,34 @@ namespace
             return LayoutApplyActivity(root, blob.GetBuffer(), from, to, &store, &layout);
         }
 
-        uint32_t IdOf(const layoutdata::key &k, int slot)
+        static void AddIds(const LayoutKey &k, Set<uint32_t> &ids)
         {
-            const uint8_t *p = (const uint8_t *)&k;
-            uint32_t ptr;
-            memcpy(&ptr, p + LayoutKeyImagePtrOffset(slot), 4);
-            return ptr ? ptr - (uint32_t)(uintptr_t)blob.GetBuffer() : 0;
+            if (k.normal.offset)
+                ids.Add(k.normal.offset);
+            if (k.pressed.offset)
+                ids.Add(k.pressed.offset);
         }
 
         Set<uint32_t> HomeIds()
         {
             Set<uint32_t> ids;
-            for (int k = 0; k < COMP_KEYS; k++)
-                for (int s = 0; s < KEY_SLOTS; s++)
-                    if (summary.home[k][s].offset)
-                        ids.Add(summary.home[k][s].offset);
+            for (uint32_t i = 0; i < summary.home_count; i++)
+                AddIds(summary.home[i], ids);
             return ids;
+        }
+
+        // A key of the activity's page, as a LayoutKey
+        LayoutKey ActivityKey(int a, int page, int i)
+        {
+            return LayoutKeyOf(root->activities[a].pages[page].keys[i], blob.GetBuffer());
         }
 
         Set<uint32_t> ActivityIds(int a)
         {
             Set<uint32_t> ids;
             for (uint32_t p = 0; p < root->activities[a].pages_count; p++)
-                for (int k = 0; k < COMP_KEYS; k++)
-                    for (int s = 0; s < KEY_SLOTS; s++)
-                        if (uint32_t id = IdOf(root->activities[a].pages[p].keys[k], s))
-                            ids.Add(id);
+                for (uint32_t i = 0; i < root->activities[a].pages[p].keys_count; i++)
+                    AddIds(ActivityKey(a, (int)p, (int)i), ids);
             return ids;
         }
 
@@ -88,11 +95,21 @@ namespace
             return (int)st.count;
         }
 
-        comp_key_t PageKey(int page, int key)
+        // What the key with `id` shows now (null: no such key, or no image)
+        const void *Shown(uint16_t id)
         {
-            comp_key_t keys[COMP_KEYS];
-            Assert(layout.GetPage(page, keys));
-            return keys[key];
+            const KeyState *k = layout.Find(id);
+            const ImageEntry *e = k ? KeyLayout::ShownEntry(*k) : nullptr;
+            return e ? e->pixels : nullptr;
+        }
+
+        bool Active(uint16_t id) { return layout.IsActive(id); }
+
+        // The key with `id` is on `page`
+        bool On(uint16_t id, int page)
+        {
+            int p = -1;
+            return layout.Find(id, &p) && p == page;
         }
 
         static void Changed(int page, uint32_t flags, void *ctx)
@@ -103,44 +120,41 @@ namespace
         bool Apply() { return LayoutApplyHome(summary, blob.GetBuffer(), &store, &layout); }
         const void *At(uint32_t offset) { return blob.GetBuffer() + offset; }
 
-        comp_key_t Key(int key)
-        {
-            comp_key_t keys[COMP_KEYS];
-            Assert(layout.GetPage(0, keys));
-            return keys[key];
-        }
-
-        int DistinctImages()
-        {
-            Set<uint32_t> ids;
-            for (int k = 0; k < COMP_KEYS; k++)
-                for (int s = 0; s < KEY_SLOTS; s++)
-                    if (summary.home[k][s].offset)
-                        ids.Add(summary.home[k][s].offset);
-            return ids.GetCount();
-        }
+        int DistinctImages() { return HomeIds().GetCount(); }
     };
+
+    bool SameRect(KeyRect a, KeyRect b) { return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h; }
 }
 
-Fact("LayoutApply Shows Home's Keys")
+Fact("LayoutApply Shows Home's Keys With Their Ids And Rects")
 {
     Fixture f;
     Assert(f.Apply());
-
-    const LayoutImage (*im)[KEY_SLOTS] = f.summary.home;
-    comp_key_t k0 = f.Key(0);
-    Assert(k0.bg == f.At(im[0][KEY_SLOT_BG].offset));
-    Assert(k0.fg == f.At(im[0][KEY_SLOT_FG].offset));
-    Assert(f.layout.IsActive(0, 0) && f.layout.IsActive(0, 4));
-    comp_key_t k4 = f.Key(4);
-    Assert(k4.bg == f.At(im[4][KEY_SLOT_BG].offset) && k4.fg == nullptr);
-
-    // Keys with no images are empty
-    for (int k : { 3, 5, 14 }) {
-        Assert(!f.layout.IsActive(0, k));
-        Assert(!f.Key(k).bg && !f.Key(k).fg);
-    }
     Assert(f.layout.PageCount() == 1);
+    Assert(f.layout.KeyCount(0) == (int)f.summary.home_count && f.summary.home_count == 12);
+
+    for (uint32_t i = 0; i < f.summary.home_count; i++) {
+        const LayoutKey &src = f.summary.home[i];
+        int page = -1;
+        const KeyState *k = f.layout.Find(src.id, &page);
+        Assert(k && page == 0 && SameRect(k->rect, src.rect));
+        Assert(f.Active(src.id));
+        Assert(f.Shown(src.id) == f.At(src.normal.offset));
+    }
+
+    // Every key is drawn: its image is its rect's size (spans and 0.5U keys too)
+    comp_page_t page;
+    Assert(f.layout.GetPage(0, &page));
+    Assert(page.count == (int)f.summary.home_count);
+    for (int i = 0; i < page.count; i++) {
+        KeyPixelRect px = KeyRectPixels(f.summary.home[i].rect);
+        Assert(page.keys[i].rect.x == px.x && page.keys[i].rect.w == px.w && page.keys[i].rect.h == px.h);
+        Assert(page.keys[i].img == f.At(f.summary.home[i].normal.offset));
+    }
+
+    // Empty slots have no key
+    for (uint16_t id : { 4, 6, 9, 12 })
+        Assert(!f.layout.Find(id));
 }
 
 Fact("LayoutApply Registers Each Image Once Under Its Offset")
@@ -152,28 +166,28 @@ Fact("LayoutApply Registers Each Image Once Under Its Offset")
     Assert(st.count == (uint32_t)f.DistinctImages());
     Assert(st.used == 0 && f.env.LiveBlocks() == 0);          // nothing copied
 
-    for (int k = 0; k < COMP_KEYS; k++) {
-        for (int s = 0; s < KEY_SLOTS; s++) {
-            uint32_t id = f.summary.home[k][s].offset;
-            if (!id)
-                continue;
-            ImageEntry *e = f.store.Find(id);
-            Assert(e && e->external && e->pixels == f.At(id));
+    for (uint32_t i = 0; i < f.summary.home_count; i++) {
+        for (const LayoutImage &im : { f.summary.home[i].normal, f.summary.home[i].pressed }) {
+            ImageEntry *e = f.store.Find(im.offset);
+            Assert(e && e->external && e->pixels == f.At(im.offset));
         }
     }
-    // The face shared by keys 0..2 is one entry held by all of them (normal and pressed)
-    uint32_t face = f.summary.home[0][KEY_SLOT_BG].offset;
-    Assert(f.store.Find(face)->key_refs == 3);
+    // The pressed image keys 5 and 10 share is one entry held by both
+    Assert(f.summary.home[3].pressed.offset == f.summary.home[6].pressed.offset);
+    Assert(f.store.Find(f.summary.home[3].pressed.offset)->key_refs == 2);
 }
 
-Fact("LayoutApply Pressed Keys Show The Pressed Pair")
+Fact("LayoutApply Pressed Keys Show Their Pressed Image")
 {
     Fixture f;
     Assert(f.Apply());
-    Assert(f.layout.SetPressed(0, 0, true));
-    Assert(f.Key(0).bg == f.At(f.summary.home[0][KEY_SLOT_PRESSED_BG].offset));
-    Assert(f.layout.SetPressed(0, 0, false));
-    Assert(f.Key(0).bg == f.At(f.summary.home[0][KEY_SLOT_BG].offset));
+    for (uint32_t i : { 0u, 7u, 9u }) {                     // 1U, the 2U span, a 0.5U key
+        const LayoutKey &k = f.summary.home[i];
+        Assert(f.layout.SetPressed(k.id, true));
+        Assert(f.Shown(k.id) == f.At(k.pressed.offset));
+        Assert(f.layout.SetPressed(k.id, false));
+        Assert(f.Shown(k.id) == f.At(k.normal.offset));
+    }
 }
 
 Fact("LayoutApply Reports Page 0 Changed With A Flush")
@@ -183,20 +197,45 @@ Fact("LayoutApply Reports Page 0 Changed With A Flush")
     Assert(f.changes.GetCount() == 1 && f.changes[0].page == 0 && f.changes[0].flags == COMP_FLUSH);
 }
 
+Fact("LayoutApply Key With No Images Is A Key Drawn As Background")
+{
+    Fixture f;
+    f.summary.home[0].normal = LayoutImage{};
+    f.summary.home[0].pressed = LayoutImage{};
+    Assert(f.Apply());
+    uint16_t id = f.summary.home[0].id;
+    Assert(f.Active(id) && !f.Shown(id));
+    comp_page_t page;
+    Assert(f.layout.GetPage(0, &page));
+    Assert(page.keys[0].img == nullptr);
+}
+
 Fact("LayoutApply Failure Leaves The Store And Layout Empty")
 {
     Fixture f;
     // An image that fails the store check, after earlier images went in
-    f.summary.home[7][KEY_SLOT_BG] = f.summary.home[0][KEY_SLOT_BG];
-    f.summary.home[7][KEY_SLOT_FG] = LayoutImage{ 700, 64 };
+    f.summary.home[7].pressed = LayoutImage{ 700, 64 };
     Assert(!f.Apply());
 
     ImageStoreStats st;
     f.store.GetStats(&st);
     Assert(st.count == 0);
     Assert(f.changes.GetCount() == 0);
-    for (int k = 0; k < COMP_KEYS; k++)
-        Assert(!f.layout.IsActive(0, k) && !f.Key(k).bg);
+    Assert(f.layout.KeyCount(0) == 0);
+    for (uint32_t i = 0; i < f.summary.home_count; i++)
+        Assert(!f.Active(f.summary.home[i].id) && !f.Shown(f.summary.home[i].id));
+}
+
+Fact("LayoutApply Failure On A Key The Layout Refuses Leaves Everything Empty")
+{
+    // Two keys overlapping (a summary that didn't come from LayoutValidate): the key
+    // layout refuses it after the images went in
+    Fixture f;
+    f.summary.home[1].rect = f.summary.home[0].rect;
+    Assert(!f.Apply());
+    ImageStoreStats st;
+    f.store.GetStats(&st);
+    Assert(st.count == 0 && f.layout.KeyCount(0) == 0);
 }
 
 Fact("LayoutApply Can Rebuild After A Reset")
@@ -207,7 +246,7 @@ Fact("LayoutApply Can Rebuild After A Reset")
     f.store.Reset();
     f.changes.Clear();
     Assert(f.Apply());
-    Assert(f.layout.IsActive(0, 0));
+    Assert(f.Active(1));
     ImageStoreStats st;
     f.store.GetStats(&st);
     Assert(st.count == (uint32_t)f.DistinctImages());
@@ -218,8 +257,7 @@ Fact("LayoutApply Copes With An Empty Home")
     Fixture f;
     f.summary = {};
     Assert(f.Apply());
-    for (int k = 0; k < COMP_KEYS; k++)
-        Assert(!f.layout.IsActive(0, k));
+    Assert(f.layout.KeyCount(0) == 0);
 }
 
 // --- Activity pages (strip pages 1..n) ---
@@ -232,15 +270,15 @@ Fact("LayoutApplyActivity Shows The Activity's Pages After Home")
     Assert(f.Activity(-1, 0));                                  // Watch: 2 pages
     Assert(f.layout.PageCount() == 3);
     for (int p = 0; p < 2; p++) {
-        const layoutdata::key &src = f.root->activities[0].pages[p].keys[0];
-        comp_key_t k = f.PageKey(1 + p, 0);
-        Assert(k.bg == f.At(f.IdOf(src, KEY_SLOT_BG)) && k.fg == f.At(f.IdOf(src, KEY_SLOT_FG)));
-        Assert(f.layout.IsActive(1 + p, 0));
-        for (int key = 1; key < COMP_KEYS; key++)
-            Assert(!f.layout.IsActive(1 + p, key));
+        LayoutKey src = f.ActivityKey(0, p, 0);
+        Assert(src.id == WATCH_KEYS[p]);
+        Assert(f.On(src.id, 1 + p) && f.Active(src.id));
+        Assert(SameRect(f.layout.Find(src.id)->rect, src.rect));
+        Assert(f.Shown(src.id) == f.At(src.normal.offset));
+        Assert(f.layout.KeyCount(1 + p) == 1);
     }
     // Home is untouched, and no change was reported for it
-    Assert(f.Key(0).bg == f.At(f.summary.home[0][KEY_SLOT_BG].offset));
+    Assert(f.Shown(1) == f.At(f.summary.home[0].normal.offset));
     for (int i = 0; i < f.changes.GetCount(); i++)
         Assert(f.changes[i].page != 0);
     Assert(f.Stored() == f.Expected(0));
@@ -267,14 +305,15 @@ Fact("LayoutApplyActivity Shrinks And Grows The Page Count Without Leaking Keys"
     Assert(f.Activity(-1, 0) && f.layout.PageCount() == 3);
     Assert(f.Activity(0, 1));                                   // Listen: 1 page
     Assert(f.layout.PageCount() == 2);
-    comp_key_t keys[COMP_KEYS];
-    Assert(!f.layout.GetPage(2, keys));
-    const layoutdata::key &src = f.root->activities[1].pages[0].keys[0];
-    Assert(f.PageKey(1, 0).bg == f.At(f.IdOf(src, KEY_SLOT_BG)));
+    Assert(f.layout.KeyCount(2) == -1);
+    Assert(!f.layout.Find(WATCH_KEYS[0]) && !f.layout.Find(WATCH_KEYS[1]));
+    for (uint16_t id : LISTEN_KEYS)
+        Assert(f.On(id, 1));
+    Assert(f.Shown(LISTEN_KEYS[0]) == f.At(f.ActivityKey(1, 0, 0).normal.offset));
     Assert(f.Stored() == f.Expected(1));
 
     Assert(f.Activity(1, 0) && f.layout.PageCount() == 3);
-    Assert(f.layout.IsActive(2, 0));
+    Assert(f.On(WATCH_KEYS[1], 2) && !f.layout.Find(LISTEN_KEYS[0]));
     Assert(f.Stored() == f.Expected(0));
 }
 
@@ -311,16 +350,17 @@ Fact("LayoutApplyActivity Frees Only Unshared Images, Keys In Use Keep Theirs")
 {
     Fixture f;
     Assert(f.Apply());
-    Assert(f.Activity(-1, 0));
+    Assert(f.Activity(-1, 1));
     Set<uint32_t> home = f.HomeIds();
-    Set<uint32_t> watch = f.ActivityIds(0);
-    Assert(f.Activity(0, -1));
+    Set<uint32_t> listen = f.ActivityIds(1);
+    Assert(f.Activity(1, -1));
     // Everything Home uses is still live and still on its keys
     for (auto it = home.Iterate(); it.Next(); )
         Assert(f.store.IsLive(it.Get()));
-    for (auto it = watch.Iterate(); it.Next(); )
+    for (auto it = listen.Iterate(); it.Next(); )
         Assert(f.store.IsLive(it.Get()) == home.Contains(it.Get()));
-    Assert(f.Key(0).bg == f.At(f.summary.home[0][KEY_SLOT_BG].offset));
+    for (uint32_t i = 0; i < f.summary.home_count; i++)
+        Assert(f.Shown(f.summary.home[i].id) == f.At(f.summary.home[i].normal.offset));
 }
 
 Fact("LayoutApplyActivity Refusal Leaves Store Layout And Page Count As They Were")
@@ -329,19 +369,18 @@ Fact("LayoutApplyActivity Refusal Leaves Store Layout And Page Count As They Wer
     Assert(f.Apply());
     Assert(f.Activity(-1, 1));                                  // Listen is showing
     int stored = f.Stored();
-    comp_key_t before = f.PageKey(1, 0);
+    const void *before = f.Shown(LISTEN_KEYS[0]);
     f.changes.Clear();
 
     // Watch's second page gets an image the store refuses, after earlier images went in
-    layoutdata::key &bad = const_cast<layoutdata::key &>(f.root->activities[0].pages[1].keys[0]);
-    uint8_t *p = (uint8_t *)&bad;
-    uint32_t junk = (uint32_t)(uintptr_t)f.blob.GetBuffer() + 700;      // not an image
-    memcpy(p + LayoutKeyImagePtrOffset(KEY_SLOT_BG), &junk, 4);
+    layoutdata::key &bad = f.root->activities[0].pages[1].keys[0];
+    bad.normal = f.blob.GetBuffer() + 700;                      // not an image
     Assert(!f.Activity(1, 0));
 
     Assert(f.layout.PageCount() == 2);
     Assert(f.Stored() == stored);
-    Assert(f.PageKey(1, 0).bg == before.bg);
+    Assert(before && f.Shown(LISTEN_KEYS[0]) == before);
+    Assert(!f.layout.Find(WATCH_KEYS[0]));
     Assert(f.changes.GetCount() == 0);
     Assert(f.Activity(1, 1));                                   // and Listen still applies cleanly
 }
@@ -363,17 +402,14 @@ Fact("LayoutApply Uploads After Home Stay Live")
 {
     Fixture f;
     Assert(f.Apply());
-    const TestImages &ti = TestImages::Get();
     List<uint32_t> ids;
-    for (int i = 0; i < TEST_KEYS_FACES; i++) {
+    for (int i = 0; i < TEST_KEYS_KEYS_1U; i++) {
         ids.Add(0xDE000100u + (uint32_t)i);
-        Assert(f.env.Upload(f.store, ids[ids.GetCount() - 1], ti.Face(i, false)) == ImageResult::Ok);
-        ids.Add(0xDE000110u + (uint32_t)i);
-        Assert(f.env.Upload(f.store, ids[ids.GetCount() - 1], ti.Face(i, true)) == ImageResult::Ok);
+        Assert(f.env.Upload(f.store, ids[ids.GetCount() - 1], f.env.Key1U(i)) == ImageResult::Ok);
     }
-    for (int i = 0; i < ti.IconCount(); i++) {
+    for (int i = 0; i < TEST_KEYS_KEYS_2U; i++) {
         ids.Add(0xDE000200u + (uint32_t)i);
-        Assert(f.env.Upload(f.store, ids[ids.GetCount() - 1], ti.Icon(i)) == ImageResult::Ok);
+        Assert(f.env.Upload(f.store, ids[ids.GetCount() - 1], f.env.Key2U(i)) == ImageResult::Ok);
     }
     for (int i = 0; i < ids.GetCount(); i++)
         Assert(f.store.IsLive(ids[i]));

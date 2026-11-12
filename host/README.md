@@ -10,7 +10,7 @@ The command line ([`cli/`](../cli/README.md)) and the scripts in [`examples/`](.
 ```sh
 npm install
 npm test                    # library and bake tests, no device needed
-node ../examples/demo.js    # on a device: pages, toggles, an in-place clock, a freed image
+node ../examples/demo.js    # on a device: pages, a 2U key, half-height keys, toggles, an in-place clock, a freed image
 node ../examples/bench.js   # latency, throughput and upload speed
 ```
 
@@ -28,7 +28,7 @@ node ../examples/bench.js   # latency, throughput and upload speed
 | Path | What |
 |---|---|
 | `src/ControlBlock.js`, `src/protocol.js`, `src/Emitter.js` | the device API |
-| `src/images.js` | `imageId`, `encodeImage`, `keyImage`, `keyImageFromSvg`, `renderButtonImage`, `buttonKeyImage` |
+| `src/images.js` | `imageId`, `encodeImage`, `keyImage`, `composeOverBlack`, `centreImage`, `svgLayer`, `buttonLayer`, `renderButtonImage`, `FACE_MARGIN` |
 | `src/bake/` | the bake: `resolve.js` (stage 1), `render.js` (stage 2), `pack.js`/`schema.js` (stage 3, BPAK through binpack), `bake.js` (all three), `files.js` (`loadLayoutFile`, `bakeFile`), `upload.js` (`uploadBlob`), `headers.js` (the firmware headers `tools/codegen` writes) |
 | `test/` | device API tests against `test/FakeDevice.js` (a fake WebUSB device); `test/bake/` the bake tests |
 
@@ -40,22 +40,36 @@ binpack is imported by relative path (`../../../binpack/`), not installed, so ed
 ## Use
 
 ```js
-import { ControlBlock, keyImage } from "./index.js";
+import { ControlBlock, keyImage, keyPixelSize, keySlot, svgLayer, buttonLayer, FACE_MARGIN } from "./index.js";
 
 const cb = await ControlBlock.open();           // first device, or { serial }
 await cb.takeControl();                         // the device boots standalone: take the screen first
-const size = cb.info.keyWidth;                  // 128: every image is size x size
 
-const face = await keyImage(faceRgba, size, size, size);    // { id: CRC-32, data: rle565 }
-const icon = await keyImage(iconRgba, 80, 80, size);        // centred, transparent padding
-await cb.syncImages([face, icon]);              // uploads only what the device lacks
+// One opaque image per key state, exactly the key's size: a 1U key is 144x144 (info.keyWidth),
+// a 2U key 288x144. The usual look: a 128 face, its icon and label, centred over black.
+const { width, height } = keyPixelSize({ w: 1, h: 1 }, cb.info);
+const fw = width - 2 * FACE_MARGIN, fh = height - 2 * FACE_MARGIN;
+const icon = await buttonLayer({ backColor: "transparent", svgFile: "#play", text: "Play", textColor: "white" }, fw, fh);
+const normal  = await keyImage([await svgLayer(faceSvg, fw, fh), icon], width, height);     // { id: CRC-32, data: rle565 }
+const pressed = await keyImage([await svgLayer(pressedFaceSvg, fw, fh), icon], width, height);
+await cb.syncImages([normal, pressed]);         // uploads only what the device lacks
 
 await cb.setPageCount(2);
-await cb.setKeys([{ page: 0, key: 0, bg: face.id, fg: icon.id, pressedBg: face.id, pressedFg: icon.id }]);
+await cb.setKeys([
+    { id: 1, page: 0, ...keySlot(0), normal, pressed },        // slot 0 of the 5x3 grid
+    { id: 2, page: 0, x: 1, y: 0, w: 2, normal: wide2U },      // a 2U key (images 288x144)
+]);
 
 cb.on("pageChanged", e => console.log("page", e.page));
-cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: KeyAction.PRESS / RELEASE / CANCEL
+cb.on("key", e => console.log("key", e.id, e.page, e.action));     // action: KeyAction.PRESS / RELEASE / CANCEL
 ```
+
+- **Keys** (protocol v2, [`docs/protocol.md`](../docs/protocol.md#0x21-set_keys)):
+  - `setKeys(keys)` adds or replaces keys by **id** (1..65535, unique across all pages; KEY events report it): `{ id, page, x, y, w = 1, h = 1, normal, pressed, disabled }`. `x`/`y`/`w`/`h` are in grid units (1U = one 144 px cell) in 0.25 steps, so a key can be 1.5U wide or half a unit tall; `keySlot(i)` is plain grid slot `i`. `{ id, remove: true }` (or `removeKeys(ids)`) removes a key. Keys not named stay. A key stays on its page: remove it before defining it on another.
+  - `normal`/`pressed` are image IDs or `keyImage` results. Each must be the key's size (`keyPixelSize(key, info)`), fully opaque; `pressed` 0 = no press feedback.
+  - The device checks the whole message and applies it all or nothing: overlaps, keys outside the grid, more than `info.maxKeys` (32) on a page or a clashing id are `BAD_ARG`, a missing image `NOT_FOUND`, an image of the wrong size `BAD_IMAGE`. A value that can't be encoded (id 0, x 0.3) throws before anything is sent.
+  - `info` has the grid: `keyWidth`/`keyHeight` (1U), `quarter` (0.25U in px), `gridX`/`gridY`/`gridWidth`/`gridHeight` (screen px), `maxImageWidth`/`maxImageHeight`, `maxKeys`, `iconWidth` (the icon area in a 1U key).
+- **Images** (`src/images.js`, Node only): a layer is `{ rgba, width, height, x, y }` (straight-alpha RGBA; centred when `x`/`y` are missing). `svgLayer(svg, w, h)` and `buttonLayer(def, w, h)` (node-buttonImage) make them; `keyImage(layers, width, height)` composes them over black into one opaque image and encodes it: `{ id, data, width, height }`. `composeOverBlack` is the same without the encode. The device refuses an image that isn't fully opaque (`BAD_IMAGE`).
 
 - **Modes** ([`docs/standalone.md`](../docs/standalone.md)):
   - The device boots **standalone**, showing its own Home. In that mode it refuses every request that edits the screen (`reset`, `putImage`, `freeImages`, `setPageCount`, `setKeys`, `setPage`, `setStatusText`) with a `NOT_HOSTED` error, so call `takeControl()` first.
@@ -67,6 +81,7 @@ cb.on("key", e => console.log("key", e.page, e.key, e.action));    // action: Ke
   - It splits the image into chunks the device can take.
   - Uploading to an ID the device already has replaces the image everywhere it's used.
   - Use fixed IDs for images you replace, and content IDs (`keyImage`) for the rest.
+  - A replacement of another size is accepted, but its keys show black until they are set again with images of their size.
 - **`setStatusText({ left, right })`:**
   - It sets the status bar's texts. Only the fields given change, and `""` clears one.
   - Each is at most 47 bytes of UTF-8 (the font is ASCII only for now). A longer or invalid text throws before anything is sent.

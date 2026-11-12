@@ -23,8 +23,12 @@ Fact("LayoutTypes Read The Sample Blob As Baked")
     Assert(root->devices_count == 2);
     Assert(root->activities_count == 2);
     Assert(root->homePage.bindings_count == U32(b, CB_HOME_BINDINGS));
-    Assert(root->homePage.keys[1].normalBg_count == U32(b, CB_KEY_COUNT(CB_HOME_KEY(1), KEY_SLOT_BG)));
-    Assert(root->homePage.keys[1].normalBg_count == U32(b, CB_KEY_COUNT(CB_HOME_KEY(1), 0)));
+    Assert(root->homePage.keys_count == U32(b, CB_HOME_KEYS));
+    // Home's keys are an array of structs behind a pointer (a file offset here)
+    const layoutdata::key *k1 = (const layoutdata::key *)(b.GetBuffer() + (uint32_t)(uintptr_t)root->homePage.keys) + 1;
+    Assert((const uint8_t *)k1 == b.GetBuffer() + HomeKey(b, 1));
+    Assert(k1->normal_count == U32(b, CB_KEY_COUNT(HomeKey(b, 1), LAYOUT_KEY_NORMAL)));
+    Assert(k1->id == 2);
 }
 
 Fact("LayoutTypes Read The Relocated Sample Through The Structs")
@@ -32,24 +36,30 @@ Fact("LayoutTypes Read The Relocated Sample Through The Structs")
     List<uint8_t> b = LoadSample();
     const layoutdata::layoutRoot *root = Relocate(b);
 
-    // Home's bindings: touch[0,0] tap runs a hidKey
+    // Home's bindings: touch[1] (the key with id 1) tap runs a hidKey
     const layoutdata::binding &first = root->homePage.bindings[0];
-    Assert(strcmp(first.control, "touch[0,0]") == 0);
+    Assert(strcmp(first.control, "touch[1]") == 0);
     Assert(strcmp(first.event, "tap") == 0);
     Assert(first.ops_count == 1);
     Assert(first.ops[0]->op == OP_HID_KEY);
     const layoutdata::hidKeyOp *hid = (const layoutdata::hidKeyOp *)first.ops[0];
     Assert(hid->mode <= HID_MODE_MAX);
 
-    // Keys point at their images inside the blob
+    // Keys: id, rect (x, y, w, h in quarter units) and images inside the blob
     const layoutdata::key &k0 = root->homePage.keys[0];
-    Assert(k0.normalBg_count > 0);
-    Assert(k0.normalBg >= b.GetBuffer() && k0.normalBg + k0.normalBg_count <= b.GetBuffer() + b.GetCount());
+    Assert(k0.id == 1);
+    Assert(k0.rect[0] == 0 && k0.rect[1] == 0 && k0.rect[2] == 4 && k0.rect[3] == 4);
+    KeyRect r = LayoutKeyRect(k0.rect);
+    Assert(r.x == 0 && r.y == 0 && r.w == 4 && r.h == 4);
+    Assert(k0.normal_count > 0 && k0.pressed_count > 0);
+    Assert(k0.normal >= b.GetBuffer() && k0.normal + k0.normal_count <= b.GetBuffer() + b.GetCount());
 
-    // An activity: its name and a binding
+    // An activity: its name, its pages' keys and a binding
     Assert(strcmp(root->activities[0].name, "Watch") == 0);
     Assert(strcmp(root->activities[0].displayName, "Watch TV") == 0);
-    // touch[5,0] tap (the script) and macro1 tap (a hidKey)
+    Assert(root->activities[0].pages_count == 2 && root->activities[0].pages[0].keys_count == 1);
+    Assert(root->activities[0].pages[0].keys[0].id == 16 && root->activities[0].pages[1].keys[0].id == 31);
+    // touch[16] tap (the script) and macro1 tap (a hidKey)
     Assert(root->activities[0].bindings_count == 2);
     bool macro = false;
     for (uint32_t i = 0; i < root->activities[0].bindings_count; i++)
@@ -58,13 +68,11 @@ Fact("LayoutTypes Read The Relocated Sample Through The Structs")
     Assert(root->devices_count == 2 && strcmp(root->devices[0].name, "tv") == 0);
 }
 
-Fact("LayoutTypes Key Image Slots Follow The Schema Order")
+Fact("LayoutTypes Key Images Follow The Schema")
 {
-    // The slots follow KEY_SLOT_* order; each count is followed by its pointer
-    Assert(LayoutKeyImageOffset(KEY_SLOT_BG) == offsetof(layoutdata::key, normalBg_count));
-    Assert(LayoutKeyImageOffset(KEY_SLOT_FG) == offsetof(layoutdata::key, normalFg_count));
-    Assert(LayoutKeyImageOffset(KEY_SLOT_PRESSED_BG) == offsetof(layoutdata::key, pressedBg_count));
-    Assert(LayoutKeyImageOffset(KEY_SLOT_PRESSED_FG) == offsetof(layoutdata::key, pressedFg_count));
-    for (int s = 0; s < KEY_SLOTS; s++)
+    // One image per state; each count is followed by its pointer
+    Assert(LayoutKeyImageOffset(LAYOUT_KEY_NORMAL) == offsetof(layoutdata::key, normal_count));
+    Assert(LayoutKeyImageOffset(LAYOUT_KEY_PRESSED) == offsetof(layoutdata::key, pressed_count));
+    for (int s = 0; s < LAYOUT_KEY_IMAGES; s++)
         Assert(LayoutKeyImagePtrOffset(s) == LayoutKeyImageOffset(s) + 4);
 }

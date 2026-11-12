@@ -90,7 +90,7 @@ for (const [name, target] of Object.entries(targets))
 
     test(`${name}: hdd resolves clean`, async () => {
         const tree = await cleanLayout(layoutWith(ctx, { activities: { hdd: hdd(ctx) } }));
-        assert.deepEqual(tree.activities[1].pages.map(p => p.keys.filter(k => k.normalFg).length), [9, 12, 12, 10]);
+        assert.deepEqual(tree.activities[1].pages.map(p => p.keys.filter(k => k.normal).length), [9, 12, 12, 10]);
     });
 }
 

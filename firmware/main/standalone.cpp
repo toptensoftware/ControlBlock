@@ -110,23 +110,37 @@ const char *Standalone::SwitchActivity(int to)
     return nullptr;
 }
 
-// Home's keys carry their own long-press time; an activity's pages aren't
-// selectable yet (0 = the layout's default)
-uint32_t Standalone::KeyLongPressMs(int page, int key) const
+// A key's own long-press time, by id: Home's keys, then the selected
+// activity's pages (the pages on screen). 0 = the layout's default, also for
+// an id that isn't there.
+uint32_t Standalone::KeyLongPressMs(uint16_t id) const
 {
-    if (page != 0 || key < 0 || key >= COMP_KEYS)
-        return 0;
-    return m_root->homePage.keys[key].longPressMs;
+    auto find = [id](const layoutdata::key *keys, uint32_t count, uint32_t *ms) {
+        for (uint32_t i = 0; i < count; i++)
+            if (keys[i].id == id) {
+                *ms = keys[i].longPressMs;
+                return true;
+            }
+        return false;
+    };
+    uint32_t ms = 0;
+    if (find(m_root->homePage.keys, m_root->homePage.keys_count, &ms) || m_activity < 0)
+        return ms;
+    const layoutdata::activity &a = m_root->activities[m_activity];
+    for (uint32_t p = 0; p < a.pages_count; p++)
+        if (find(a.pages[p].keys, a.pages[p].keys_count, &ms))
+            break;
+    return ms;
 }
 
-void Standalone::Key(int page, int key, int action, uint32_t time_ms)
+void Standalone::Key(uint16_t id, int action, uint32_t time_ms)
 {
     if (!Active())
         return;
     char control[GESTURE_NAME_MAX];
-    TouchControlName(page, key, control);
+    TouchControlName(id, control);
     switch (action) {
-    case TOUCH_KEY_PRESS:   m_gestures.Press(control, time_ms, KeyLongPressMs(page, key)); break;
+    case TOUCH_KEY_PRESS:   m_gestures.Press(control, time_ms, KeyLongPressMs(id)); break;
     case TOUCH_KEY_RELEASE: m_gestures.Release(control, time_ms); break;
     case TOUCH_KEY_CANCEL:  m_gestures.Cancel(control, time_ms); break;
     }

@@ -2,7 +2,7 @@
 
 import { pack, formatTypes } from "../../../binpack/index.js";
 import { ROOT_TYPE } from "./schema.js";
-import { allKeys, LAYERS } from "./tree.js";
+import { allKeys, IMAGES } from "./tree.js";
 import { childPath } from "./diag.js";
 
 export { ROOT_TYPE };
@@ -15,9 +15,9 @@ const HEADER_SIZE = 32;
 export function packTree(tree)
 {
     for (const [key, path] of allKeys(tree))
-        for (const layer of LAYERS)
-            if (key[layer] && !Buffer.isBuffer(key[layer]))
-                throw new Error(`${childPath(path, layer)} is still an image definition: run the render stage before packing`);
+        for (const image of IMAGES)
+            if (key[image] && !Buffer.isBuffer(key[image]))
+                throw new Error(`${childPath(path, image)} is still an image spec: run the render stage before packing`);
     return pack(ROOT_TYPE, tree);
 }
 

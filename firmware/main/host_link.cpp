@@ -130,14 +130,16 @@ static void on_wake(uint32_t time_ms)
 
 // The switch point for key events: hosted, they go to the host; standalone,
 // through the gestures and bindings to the op queue (standalone_task.h).
-static void on_key(int page, int key, int action, uint32_t time_ms)
+// Both go by the key's id: the KEY event carries it (and the page touched on),
+// and standalone it names the control "touch[id]".
+static void on_key(int page, uint16_t id, int action, uint32_t time_ms)
 {
-    if (!s_proto.Hosted()) {
-        standalone_key(page, key, action, time_ms);
+    if (s_proto.Hosted()) {
+        s_proto.PostKey(page, id, action, time_ms);
+        wake();
         return;
     }
-    s_proto.PostKey(page, key, action, time_ms);
-    wake();
+    standalone_key(id, action, time_ms);
 }
 
 // TinyUSB task: the host went away. The protocol task does the release.

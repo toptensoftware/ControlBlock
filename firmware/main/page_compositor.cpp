@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "rle565.h"
+#include "fill_px.h"
+#include "opaque_row.h"
 #include "page_compositor.h"
 
 // The offer: 0 = none, else the buffer and page packed into one word.
@@ -15,45 +17,41 @@
 #define OFFER_BUF(o)       ((int)((o) & 0xFF) - 1)
 #define OFFER_PAGE(o)      ((int)((o) >> 8) - 1)
 
-// One cell row of COMP_BACKGROUND in internal RAM, memcpy'd to clear
-struct BackgroundRow
-{
-    uint16_t px[COMP_KEY_SIZE];
-    BackgroundRow() { for (int i = 0; i < COMP_KEY_SIZE; i++) px[i] = COMP_BACKGROUND; }
-};
-alignas(4) static const BackgroundRow s_bg_row;
+// NextKey() results besides a record index
+#define NEXT_DONE    (-1)
+#define NEXT_ERASE   (-2)
 
 static inline uint32_t page_bit(int page)
 {
     return page >= 0 && page < COMP_MAX_PAGES ? 1u << page : 0;
 }
 
+static inline bool rect_eq(KeyPixelRect a, KeyPixelRect b)
+{
+    return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
+}
+
+// Record `r` shows `k` (same rect and image)
 static inline bool rec_is(const CompRecord &r, const comp_key_t &k)
 {
-    return r.known && r.bg == k.bg && r.fg == k.fg;
+    return r.known && rect_eq(r.rect, k.rect) && r.img == k.img;
 }
 
-static inline bool rec_eq(const CompRecord &a, const CompRecord &b)
+static inline bool rect_in_page(KeyPixelRect r)
 {
-    return a.known && b.known && a.bg == b.bg && a.fg == b.fg;
+    return r.w > 0 && r.h > 0 && r.x >= 0 && r.y >= 0 && r.x + r.w <= SCREEN_PAGE_W && r.y + r.h <= SCREEN_PAGE_H;
 }
 
-void PageCompositor::Init(uint16_t *const buffers[COMP_BUFFERS], uint16_t *cell, comp_get_page_t get_page,
-                          comp_is_retired_t is_retired, void *ctx)
+void PageCompositor::Init(uint16_t *const buffers[COMP_BUFFERS], comp_get_page_t get_page,
+                          comp_is_retired_t is_retired, comp_clock_t clock, void *ctx)
 {
     m_is_retired = is_retired;
-    m_cell = cell;
-
-    const size_t pixels = SCREEN_PAGE_W * SCREEN_PAGE_H;
-    const uint32_t c2 = COMP_BACKGROUND | ((uint32_t)COMP_BACKGROUND << 16);
+    m_clock      = clock;
 
     for (int b = 0; b < COMP_BUFFERS; b++) {
-        uint32_t *p = (uint32_t *)buffers[b];
-        for (size_t i = 0; i < pixels / 2; i++)
-            p[i] = c2;
+        fill_px(buffers[b], SCREEN_PAGE_W * SCREEN_PAGE_H, COMP_BACKGROUND);
+        m_buf[b] = Buffer{};
         m_buf[b].px = buffers[b];
-        memset(m_buf[b].rec, 0, sizeof(m_buf[b].rec));
-        m_buf[b].freed = 0;
         m_px[b] = buffers[b];
     }
 
@@ -167,11 +165,25 @@ void PageCompositor::GetStats(comp_stats_t *st)
     st->holds      = m_st_holds;
     st->max_key_us = m_st_max_key / port::CyclesPerUs();
     st->busy_us    = m_st_busy / port::CyclesPerUs();
+    st->erases         = m_st_erases;
+    st->chunks         = m_st_chunks;
+    st->gaps           = m_st_gaps;
+    st->bytes          = m_st_bytes;
+    st->max_chunk_us   = m_st_max_chunk_us;
+    st->max_gap_end_us = m_st_max_gap_end_us;
+    st->late_gaps      = m_st_late_gaps;
     m_st_keys = 0;
     m_st_swaps = 0;
     m_st_holds = 0;
     m_st_max_key = 0;
     m_st_busy = 0;
+    m_st_erases = 0;
+    m_st_chunks = 0;
+    m_st_gaps = 0;
+    m_st_bytes = 0;
+    m_st_max_chunk_us = 0;
+    m_st_max_gap_end_us = 0;
+    m_st_late_gaps = 0;
 }
 
 // ===========================================================================
@@ -270,22 +282,83 @@ bool PageCompositor::FrameStartNear(int64_t now_us, int64_t needed_us) const
 }
 
 // ===========================================================================
-// Records and drawing
+// Records and layouts
 // ===========================================================================
+//
+// A buffer's layout is its list of records (rects, no two overlapping); a
+// page's is its list of keys. Records are matched to keys by rect.
 
-int PageCompositor::DiffKeys(int b, const comp_key_t *keys) const
+int PageCompositor::FindRect(int b, KeyPixelRect r) const
 {
-    int n = 0;
-    for (int k = 0; k < COMP_KEYS; k++)
-        n += !rec_is(m_buf[b].rec[k], keys[k]);
+    const Buffer &B = m_buf[b];
+    for (int i = 0; i < B.count; i++)
+        if (rect_eq(B.rec[i].rect, r))
+            return i;
+    return -1;
+}
+
+static bool page_has_rect(const comp_page_t &page, KeyPixelRect r)
+{
+    for (int i = 0; i < page.count; i++)
+        if (rect_eq(page.keys[i].rect, r))
+            return true;
+    return false;
+}
+
+// Record `r` (of some buffer) shows the same as buffer `other`'s record at
+// its rect, both known
+bool PageCompositor::MatchesIn(const CompRecord &r, int other) const
+{
+    int j = FindRect(other, r.rect);
+    return j >= 0 && r.known && m_buf[other].rec[j].known && r.img == m_buf[other].rec[j].img;
+}
+
+// The same rects in the same order
+bool PageCompositor::SameLayout(int b, const comp_page_t &page) const
+{
+    const Buffer &B = m_buf[b];
+    if (B.count != page.count)
+        return false;
+    for (int i = 0; i < B.count; i++)
+        if (!rect_eq(B.rec[i].rect, page.keys[i].rect))
+            return false;
+    return true;
+}
+
+bool PageCompositor::SameLayoutBufs(int a, int b) const
+{
+    if (m_buf[a].count != m_buf[b].count)
+        return false;
+    for (int i = 0; i < m_buf[a].count; i++)
+        if (!rect_eq(m_buf[a].rec[i].rect, m_buf[b].rec[i].rect))
+            return false;
+    return true;
+}
+
+// Units of work to make buffer `b` show `page`: keys not shown, rects to
+// leave, areas to fill
+int PageCompositor::DiffKeys(int b, const comp_page_t &page) const
+{
+    const Buffer &B = m_buf[b];
+    int n = B.erase_count;
+    for (int i = 0; i < page.count; i++) {
+        int j = FindRect(b, page.keys[i].rect);
+        n += j < 0 || !rec_is(B.rec[j], page.keys[i]);
+    }
+    for (int i = 0; i < B.count; i++)
+        n += !page_has_rect(page, B.rec[i].rect);
     return n;
 }
 
+// The same for making `b` a copy of buffer `like`
 int PageCompositor::DiffRecs(int b, int like) const
 {
-    int n = 0;
-    for (int k = 0; k < COMP_KEYS; k++)
-        n += !rec_eq(m_buf[b].rec[k], m_buf[like].rec[k]);
+    const Buffer &B = m_buf[b], &L = m_buf[like];
+    int n = B.erase_count + L.erase_count;
+    for (int i = 0; i < L.count; i++)
+        n += !MatchesIn(L.rec[i], b);
+    for (int i = 0; i < B.count; i++)
+        n += FindRect(like, B.rec[i].rect) < 0;
     return n;
 }
 
@@ -294,14 +367,16 @@ int PageCompositor::CopyOfShown(int b) const
 {
     int most = 0;
     for (int i = 0; i < m_fi.shown_count; i++) {
-        int same = COMP_KEYS - DiffRecs(b, m_fi.shown[i].buf);
+        int s = m_fi.shown[i].buf, same = 0;
+        for (int k = 0; k < m_buf[s].count; k++)
+            same += MatchesIn(m_buf[s].rec[k], b);
         if (same > most)
             most = same;
     }
     return most;
 }
 
-// The free buffer that differs least from `keys` (or, if NULL, from buffer
+// The free buffer that differs least from `page` (or, if NULL, from buffer
 // `like`). On a tie:
 //  - updating a page on screen (`front` >= 0): the one closest to the front,
 //    so there are fewer catch-up keys before the first swap
@@ -309,13 +384,13 @@ int PageCompositor::CopyOfShown(int b) const
 //    (they make the next update cheap)
 // then the one freed longest ago, so the page just left is kept longest.
 // There's always one: at most two buffers are on screen.
-int PageCompositor::ChooseFree(const comp_key_t *keys, int like, int front) const
+int PageCompositor::ChooseFree(const comp_page_t *page, int like, int front) const
 {
     int best = -1, best_diff = 0, best_copy = 0;
     for (int b = 0; b < COMP_BUFFERS; b++) {
         if (IsShown(b))
             continue;
-        int diff = keys ? DiffKeys(b, keys) : DiffRecs(b, like);
+        int diff = page ? DiffKeys(b, *page) : DiffRecs(b, like);
         int copy = front >= 0 ? DiffRecs(b, front) : CopyOfShown(b);
         if (best < 0 || diff < best_diff ||
             (diff == best_diff && (copy < best_copy ||
@@ -329,168 +404,247 @@ int PageCompositor::ChooseFree(const comp_key_t *keys, int like, int front) cons
     return best;
 }
 
-void comp_add_image_rows(const void *img, int *y0, int *y1)
+// Area that may hold pixels outside the layout. If the list is full, it
+// becomes one rect round everything.
+void PageCompositor::AddErase(int b, KeyPixelRect r)
 {
-    if (!img)
+    Buffer &B = m_buf[b];
+    if (B.erase_count < COMP_MAX_KEYS) {
+        B.erase[B.erase_count++] = r;
         return;
-    const IMAGE_RLE *h = (const IMAGE_RLE *)img;
-    assert(h->base.signature == IMAGE_SIGNATURE && h->base.format == IMAGE_FORMAT_RLE);
-    assert(h->base.width == COMP_KEY_SIZE && h->base.height == COMP_KEY_SIZE);
+    }
+    int x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
+    for (int i = 0; i < B.erase_count; i++) {
+        const KeyPixelRect &e = B.erase[i];
+        if (e.x < x0) x0 = e.x;
+        if (e.y < y0) y0 = e.y;
+        if (e.x + e.w > x1) x1 = e.x + e.w;
+        if (e.y + e.h > y1) y1 = e.y + e.h;
+    }
+    B.erase[0]    = KeyPixelRect{ (int16_t)x0, (int16_t)y0, (int16_t)(x1 - x0), (int16_t)(y1 - y0) };
+    B.erase_count = 1;
+}
 
-    int a = (int)h->firstRow, b = (int)(h->firstRow + h->rowCount);
-    if (b > COMP_KEY_SIZE)
-        b = COMP_KEY_SIZE;
-    if (a >= b)
+// Give buffer `b` `page`'s layout (rects, in its order). Records at rects
+// both have keep what they show; new rects are unknown; rects it leaves are
+// queued to be filled with background. No pixels change.
+void PageCompositor::Relayout(int b, const comp_page_t &page)
+{
+    if (SameLayout(b, page))
         return;
-    if (*y0 >= *y1) {
-        *y0 = a;
-        *y1 = b;
-    } else {
-        if (a < *y0) *y0 = a;
-        if (b > *y1) *y1 = b;
+    Buffer &B = m_buf[b];
+    CompRecord rec[COMP_MAX_KEYS];
+    bool       used[COMP_MAX_KEYS] = {};
+    for (int i = 0; i < page.count; i++) {
+        int j = FindRect(b, page.keys[i].rect);
+        if (j >= 0) {
+            rec[i]  = B.rec[j];
+            used[j] = true;
+        } else {
+            rec[i] = CompRecord{ page.keys[i].rect, nullptr, false };
+        }
     }
+    for (int j = 0; j < B.count; j++)
+        if (!used[j])
+            AddErase(b, B.rec[j].rect);
+    memcpy(B.rec, rec, page.count * sizeof(rec[0]));
+    B.count = page.count;
 }
 
-void comp_clear_rows(uint16_t *cell, int stride, int y0, int y1)
+// ===========================================================================
+// Drawing
+// ===========================================================================
+
+// Roughly how long drawing a key at `r` takes from now
+int64_t PageCompositor::KeyTimeUs(KeyPixelRect r) const
 {
-    for (int y = y0; y < y1; y++)
-        memcpy(cell + y * stride, s_bg_row.px, sizeof(s_bg_row.px));
+    int64_t gaps = (int64_t)r.w * r.h * (int64_t)sizeof(uint16_t) / COMP_GAP_BYTES_EST + 1;
+    return gaps * (frame_period(m_fi.period_us) / SCREEN_CHUNKS);
 }
 
-bool comp_image_is_opaque(const void *img, size_t size)
+// Start drawing `key` at record `i` of buffer `b` (which must not be on
+// screen or offered). The record is unknown until the key is done.
+// DrawChunk() draws it in fill gaps. When it's done, if `offer_page` is a
+// page and the swap rule holds, the buffer is offered.
+void PageCompositor::BeginKey(int b, int i, const comp_key_t &key, int offer_page)
 {
-    bool opaque = false;
-    return check_image_header(img, size) &&
-           get_image_width(img) == COMP_KEY_SIZE && get_image_height(img) == COMP_KEY_SIZE &&
-           check_image(img, size, &opaque) && opaque;
-}
-
-// Rows of a key slice copied per fill gap: smaller with two pages in view,
-// when the fill reads one of them cold and has less time to spare
-int PageCompositor::SliceRows() const
-{
-    return m_fi.shown_count >= 2 ? COMP_SLICE_ROWS_TWO_PAGES : COMP_SLICE_ROWS_ONE_PAGE;
-}
-
-// Rows for drawing `key` into cell `k` of buffer `b`:
-//  - [new0, new1): the rows the new images draw (the record's new span)
-//  - [copy0, copy1): the rows to copy to the page buffer: the old span (to
-//    erase it) and the new one, or the whole cell for an opaque bg
-void PageCompositor::KeyRows(int b, int k, const comp_key_t &key, int *new0, int *new1, int *copy0, int *copy1) const
-{
-    *new0 = *new1 = 0;
-    comp_add_image_rows(key.bg, new0, new1);
-    comp_add_image_rows(key.fg, new0, new1);
-
-    bool opaque = key.bg && (key.flags & COMP_KEY_BG_OPAQUE);
-    assert(!opaque || (*new0 == 0 && *new1 == COMP_KEY_SIZE));
-
-    const CompRecord &r = m_buf[b].rec[k];
-    *copy0 = r.known ? r.y0 : 0;
-    *copy1 = r.known ? r.y1 : COMP_KEY_SIZE;
-    if (opaque) {
-        *copy0 = 0;
-        *copy1 = COMP_KEY_SIZE;
-    } else if (*copy0 >= *copy1) {
-        *copy0 = *new0;
-        *copy1 = *new1;
-    } else if (*new0 < *new1) {
-        if (*new0 < *copy0) *copy0 = *new0;
-        if (*new1 > *copy1) *copy1 = *new1;
-    }
-}
-
-// Roughly how long drawing `key` takes from now: the render, then a gap for
-// each slice (the render usually costs one gap too)
-int64_t PageCompositor::KeyTimeUs(int b, int k, const comp_key_t &key) const
-{
-    int n0, n1, c0, c1;
-    KeyRows(b, k, key, &n0, &n1, &c0, &c1);
-    int rows   = c1 > c0 ? c1 - c0 : 0;
-    int slices = (rows + SliceRows() - 1) / SliceRows();
-    int64_t chunk = frame_period(m_fi.period_us) / SCREEN_CHUNKS;
-    return COMP_RENDER_EST_US + (slices + 1) * chunk;
-}
-
-// Start drawing `key` into cell `k` of buffer `b` (which must not be on
-// screen or offered): render it into the cell in internal RAM. CopySlice()
-// then copies it to the page buffer in fill gaps. When it's done, if
-// `offer_page` is a page and the swap rule holds, the buffer is offered.
-void PageCompositor::BeginKey(int b, int k, const comp_key_t &key, int offer_page)
-{
-    uint32_t t0 = port::Cycles();
+    assert(rect_eq(m_buf[b].rec[i].rect, key.rect));
     m_drawing = b;
+    m_buf[b].rec[i] = CompRecord{ key.rect, nullptr, false };
 
-    m_key.active     = true;
-    m_key.buf        = b;
-    m_key.key        = k;
-    m_key.content    = key;
-    m_key.offer_page = offer_page;
-    KeyRows(b, k, key, &m_key.y0, &m_key.y1, &m_key.next, &m_key.end);
-
-    // Background under the rows to copy (an opaque bg covers them), then
-    // bg and fg with alpha
-    if (!(key.bg && (key.flags & COMP_KEY_BG_OPAQUE)))
-        comp_clear_rows(m_cell, COMP_KEY_SIZE, m_key.next, m_key.end);
-    IMAGE_BUFFER view;
-    init_image_buffer(&view, COMP_KEY_SIZE, COMP_KEY_SIZE, m_cell, COMP_KEY_SIZE);
-    if (key.bg)
-        draw_image(&view, key.bg, 0, 0, 0, 0, COMP_KEY_SIZE, COMP_KEY_SIZE, NULL, 255, NULL);
-    Preempt();
-    if (key.fg)
-        draw_image(&view, key.fg, 0, 0, 0, 0, COMP_KEY_SIZE, COMP_KEY_SIZE, NULL, 255, NULL);
-
-    m_total_renders++;
-    m_key.cycles = port::Cycles() - t0;
-    if (m_key.next >= m_key.end)
-        FinishKey();            // nothing to copy
+    m_unit.active     = true;
+    m_unit.erase      = false;
+    m_unit.buf        = b;
+    m_unit.rec        = i;
+    m_unit.rect       = key.rect;
+    m_unit.img        = key.img;
+    m_unit.drawable   = key.img && opaque_image_fits(key.img, key.rect.w, key.rect.h);
+    m_unit.row        = 0;
+    m_unit.offer_page = offer_page;
+    m_unit.cycles     = 0;
+    // The client gives images the size of their rect (an image that doesn't
+    // fit is drawn as background, not past the rect)
+    assert(!key.img || get_image_width(key.img) == (uint32_t)key.rect.w);
 }
 
-// Copy the next slice of the key from the cell to its page buffer, and
-// write it back to PSRAM, so all its bus traffic is in this fill gap.
-void PageCompositor::CopySlice()
+// Start filling buffer `b`'s first erase rect (minus its layout) with background
+void PageCompositor::BeginErase(int b, int offer_page)
+{
+    m_drawing = b;
+    m_unit.active     = true;
+    m_unit.erase      = true;
+    m_unit.buf        = b;
+    m_unit.rec        = -1;
+    m_unit.rect       = m_buf[b].erase[0];
+    m_unit.img        = nullptr;
+    m_unit.drawable   = false;
+    m_unit.row        = 0;
+    m_unit.offer_page = offer_page;
+    m_unit.cycles     = 0;
+}
+
+// Rows [y, y + rows) of the erase rect into `dst` (its first row, at its
+// left edge): background everywhere but the layout's rects
+void PageCompositor::EraseRows(uint16_t *dst, int y, int rows) const
+{
+    const Buffer &B = m_buf[m_unit.buf];
+    const int ex0 = m_unit.rect.x, ex1 = m_unit.rect.x + m_unit.rect.w;
+    for (int r = 0; r < rows; r++, y++, dst += SCREEN_PAGE_W) {
+        // The layout's spans on this row, in x order
+        int16_t s0[COMP_MAX_KEYS], s1[COMP_MAX_KEYS];
+        int n = 0;
+        for (int i = 0; i < B.count; i++) {
+            const KeyPixelRect &k = B.rec[i].rect;
+            if (y < k.y || y >= k.y + k.h)
+                continue;
+            int a = k.x > ex0 ? k.x : ex0, e = k.x + k.w < ex1 ? k.x + k.w : ex1;
+            if (a >= e)
+                continue;
+            int j = n++;
+            for (; j > 0 && s0[j - 1] > a; j--) {
+                s0[j] = s0[j - 1];
+                s1[j] = s1[j - 1];
+            }
+            s0[j] = (int16_t)a;
+            s1[j] = (int16_t)e;
+        }
+        int x = ex0;
+        for (int i = 0; i < n; i++) {
+            if (s0[i] > x)
+                fill_px(dst + (x - ex0), s0[i] - x, COMP_BACKGROUND);
+            if (s1[i] > x)
+                x = s1[i];
+        }
+        if (ex1 > x)
+            fill_px(dst + (x - ex0), ex1 - x, COMP_BACKGROUND);
+    }
+}
+
+// The next ~COMP_CHUNK_BYTES of the unit (at least a row) into its page
+// buffer, written back to PSRAM at once so its bus traffic stays in the gap.
+void PageCompositor::DrawChunk()
 {
     uint32_t t0 = port::Cycles();
-    int rows = m_key.end - m_key.next;
-    if (rows > SliceRows())
-        rows = SliceRows();
+    const KeyPixelRect r = m_unit.rect;
+    int rows = COMP_CHUNK_BYTES / (r.w * (int)sizeof(uint16_t));
+    if (rows < 1)
+        rows = 1;
+    if (rows > r.h - m_unit.row)
+        rows = r.h - m_unit.row;
 
-    uint16_t *dst = m_buf[m_key.buf].px + (COMP_KEY_Y(m_key.key) + m_key.next) * SCREEN_PAGE_W + COMP_KEY_X(m_key.key);
-    const uint16_t *src = m_cell + m_key.next * COMP_KEY_SIZE;
-    for (int y = 0; y < rows; y++)
-        memcpy(dst + y * SCREEN_PAGE_W, src + y * COMP_KEY_SIZE, COMP_KEY_SIZE * sizeof(uint16_t));
+    uint16_t *dst = m_buf[m_unit.buf].px + (r.y + m_unit.row) * SCREEN_PAGE_W + r.x;
+    if (m_unit.erase)
+        EraseRows(dst, r.y + m_unit.row, rows);
+    else if (m_unit.drawable)
+        opaque_draw_rows(dst, SCREEN_PAGE_W, m_unit.img, m_unit.row, rows);
+    else
+        for (int y = 0; y < rows; y++)
+            fill_px(dst + y * SCREEN_PAGE_W, r.w, COMP_BACKGROUND);
     Preempt();
-    port::CacheWriteback(dst, ((rows - 1) * SCREEN_PAGE_W + COMP_KEY_SIZE) * sizeof(uint16_t));
+    port::CacheWriteback(dst, ((rows - 1) * SCREEN_PAGE_W + r.w) * sizeof(uint16_t));
 
-    m_key.next += rows;
-    m_total_slices++;
-    m_key.cycles += port::Cycles() - t0;
-    if (m_key.next >= m_key.end)
-        FinishKey();
+    m_unit.row += rows;
+    m_total_chunks++;
+    m_st_chunks = m_st_chunks + 1;
+    m_st_bytes  = m_st_bytes + (uint32_t)(rows * r.w * sizeof(uint16_t));
+    m_unit.cycles += port::Cycles() - t0;
+    if (m_unit.row >= r.h)
+        FinishUnit();
 }
 
-// The key is in its page buffer: record it, and offer the buffer if asked
+// The unit is in its page buffer: record it, and offer the buffer if asked
 // to and the swap rule holds.
-void PageCompositor::FinishKey()
+void PageCompositor::FinishUnit()
 {
-    int b = m_key.buf;
-    m_buf[b].rec[m_key.key] = CompRecord{ m_key.content.bg, m_key.content.fg, (uint8_t)m_key.content.flags,
-                                          (uint8_t)m_key.y0, (uint8_t)m_key.y1, true };
-    m_key.active = false;
-    m_drawing    = -1;
-    m_total_keys++;
+    int b = m_unit.buf;
+    Buffer &B = m_buf[b];
+    if (m_unit.erase) {
+        for (int i = 0; i < B.erase_count; i++) {
+            if (rect_eq(B.erase[i], m_unit.rect)) {
+                B.erase[i] = B.erase[--B.erase_count];
+                break;
+            }
+        }
+        m_total_erases++;
+        m_st_erases = m_st_erases + 1;
+    } else {
+        B.rec[m_unit.rec] = CompRecord{ m_unit.rect, m_unit.img, true };
+        m_total_keys++;
+        m_st_keys = m_st_keys + 1;
+        if (m_unit.cycles > m_st_max_key)
+            m_st_max_key = m_unit.cycles;
+    }
+    m_st_busy = m_st_busy + m_unit.cycles;
+    m_unit.active = false;
+    m_drawing     = -1;
 
-    m_st_keys = m_st_keys + 1;
-    m_st_busy = m_st_busy + m_key.cycles;
-    if (m_key.cycles > m_st_max_key)
-        m_st_max_key = m_key.cycles;
-
-    int page = m_key.offer_page;
+    int page = m_unit.offer_page;
     if (page != COMP_NO_PAGE && m_job.page == page && m_job.back == b && !m_offer_mine) {
         int front = FrontOf(page);
         if (front >= 0 && SwapOk(b, front))
             PutOffer(b, page);
     }
+}
+
+// Stop drawing the unit. A key's record stays unknown; an erase stays queued
+// (filling it again is harmless).
+void PageCompositor::AbortUnit()
+{
+    m_unit.active = false;
+    m_drawing     = -1;
+}
+
+// Draw chunks of the unit until it's done or the gap's deadline: a chunk is
+// started only if its worst case ends before it.
+bool PageCompositor::GapStep(const comp_gap_t *gap)
+{
+    if (!gap)
+        return false;
+    int64_t deadline = gap->fill_start_us + gap->period_us - COMP_GAP_MARGIN_US;
+    bool drew = false;
+    int64_t t = Clock();
+    while (m_unit.active && t + COMP_CHUNK_WORST_US <= deadline) {
+        DrawChunk();
+        drew = true;
+        int64_t end = Clock();
+        if ((uint32_t)(end - t) > m_st_max_chunk_us)
+            m_st_max_chunk_us = (uint32_t)(end - t);
+        t = end;
+    }
+    if (drew) {
+        // Stats: gaps used (a gap may take several Steps), and where the
+        // gap's work ended against the deadline
+        if (gap->fill_start_us != m_st_gap_start) {
+            m_st_gap_start = gap->fill_start_us;
+            m_st_gaps = m_st_gaps + 1;
+        }
+        uint32_t end_us = (uint32_t)(t - gap->fill_start_us);
+        if (end_us > m_st_max_gap_end_us)
+            m_st_max_gap_end_us = end_us;
+        if (t > deadline)
+            m_st_late_gaps = m_st_late_gaps + 1;
+    }
+    return drew;
 }
 
 // ===========================================================================
@@ -509,9 +663,24 @@ void PageCompositor::StartJob(int page)
     m_job.page = page;
     m_job.back = -1;
     Preempt();
-    if (!m_get_page(page, m_job.snap, m_ctx))
-        memset(m_job.snap, 0, sizeof(m_job.snap));
+    comp_page_t &S = m_job.snap;
+    if (!m_get_page(page, &S, m_ctx))
+        S.count = 0;
     Preempt();
+
+    // Keys the compositor can't draw safely (the client checks them; this
+    // only keeps a bad one from writing outside the buffer)
+    if (S.count < 0)
+        S.count = 0;
+    if (S.count > COMP_MAX_KEYS)
+        S.count = COMP_MAX_KEYS;
+    int n = 0;
+    for (int i = 0; i < S.count; i++) {
+        assert(rect_in_page(S.keys[i].rect));
+        if (rect_in_page(S.keys[i].rect))
+            S.keys[n++] = S.keys[i];
+    }
+    S.count = n;
 
     // A flag set while the snapshot was taken may belong to a change that's
     // in it, so honour it too. It stays set, so the next job may flush as
@@ -539,33 +708,38 @@ void PageCompositor::DropJob()
     EndJob();
 }
 
-// The next key to draw into back `b`: catch-up keys (matching neither the
-// front nor the snapshot) first, then progress keys. -1 = matches the
-// snapshot everywhere.
+// The next unit for back `b` (which has the snapshot's layout): areas to
+// fill first, then catch-up keys (matching neither the front nor the
+// snapshot), then progress keys. NEXT_DONE = matches the snapshot everywhere.
 int PageCompositor::NextKey(int b, int front, bool flush) const
 {
-    const CompRecord *rb = m_buf[b].rec;
-    const comp_key_t *S  = m_job.snap;
+    const Buffer      &B = m_buf[b];
+    const comp_page_t &S = m_job.snap;
 
+    if (B.erase_count)
+        return NEXT_ERASE;
     if (!flush)
-        for (int k = 0; k < COMP_KEYS; k++)
-            if (!rec_is(rb[k], S[k]) && !rec_eq(rb[k], m_buf[front].rec[k]))
+        for (int k = 0; k < B.count; k++)
+            if (!rec_is(B.rec[k], S.keys[k]) && !MatchesIn(B.rec[k], front))
                 return k;
-    for (int k = 0; k < COMP_KEYS; k++)
-        if (!rec_is(rb[k], S[k]))
+    for (int k = 0; k < B.count; k++)
+        if (!rec_is(B.rec[k], S.keys[k]))
             return k;
-    return -1;
+    return NEXT_DONE;
 }
 
 // The swap rule: every key in the back matches the front or the snapshot,
-// and at least one differs from the front.
+// with nothing left to fill, and the back differs from the front somewhere.
 bool PageCompositor::SwapOk(int b, int front) const
 {
-    bool ahead = false;
-    for (int k = 0; k < COMP_KEYS; k++) {
-        const CompRecord &rb = m_buf[b].rec[k];
-        bool same = rec_eq(rb, m_buf[front].rec[k]);
-        if (!same && !rec_is(rb, m_job.snap[k]))
+    const Buffer &B = m_buf[b];
+    if (B.erase_count)
+        return false;
+    assert(SameLayout(b, m_job.snap));
+    bool ahead = !SameLayoutBufs(b, front);
+    for (int k = 0; k < B.count; k++) {
+        bool same = MatchesIn(B.rec[k], front);
+        if (!same && !rec_is(B.rec[k], m_job.snap.keys[k]))
             return false;
         ahead |= !same;
     }
@@ -593,12 +767,17 @@ PageCompositor::StepResult PageCompositor::JobStep(int64_t now_us)
     }
 
     if (m_job.back < 0)
-        m_job.back = ChooseFree(m_job.snap, -1, front);
+        m_job.back = ChooseFree(&m_job.snap, -1, front);
     int  b     = m_job.back;
     bool flush = m_job.flush || front < 0;      // not on screen: always flushed
 
+    // An offered back already has the snapshot's layout, so this never
+    // changes a buffer that may go on screen
+    assert(!m_offer_mine || SameLayout(b, m_job.snap));
+    Relayout(b, m_job.snap);
+
     int k = NextKey(b, front, flush);
-    if (k < 0) {
+    if (k == NEXT_DONE) {
         // Complete: offer it, and wait for the frame start to take it
         if (!m_offer_mine)
             PutOffer(b, page);
@@ -608,7 +787,8 @@ PageCompositor::StepResult PageCompositor::JobStep(int64_t now_us)
     if (m_offer_mine) {
         // With an offer up, don't start a key that can't be finished before
         // the frame start: the offer would miss it
-        if (FrameStartNear(now_us, KeyTimeUs(b, k, m_job.snap[k])))
+        KeyPixelRect r = k == NEXT_ERASE ? m_buf[b].erase[0] : m_buf[b].rec[k].rect;
+        if (FrameStartNear(now_us, KeyTimeUs(r)))
             return StepResult::Wait;
         // Withdraw before drawing. If it's gone, the back is on screen.
         if (!Withdraw()) {
@@ -619,7 +799,11 @@ PageCompositor::StepResult PageCompositor::JobStep(int64_t now_us)
 
     // Incremental: offer the back after the key if the swap rule holds
     Preempt();
-    BeginKey(b, k, m_job.snap[k], flush ? COMP_NO_PAGE : page);
+    int offer = flush ? COMP_NO_PAGE : page;
+    if (k == NEXT_ERASE)
+        BeginErase(b, offer);
+    else
+        BeginKey(b, k, m_job.snap.keys[k], offer);
     return StepResult::Run;
 }
 
@@ -652,7 +836,7 @@ bool PageCompositor::PickJob()
 }
 
 // Idle work: with one page at rest, bring the free buffer closest to the
-// front up to a copy of it, a key at a time. Images in records stay valid
+// front up to a copy of it, a unit at a time. Images in records stay valid
 // (that's the client's contract), so following them is safe.
 PageCompositor::StepResult PageCompositor::IdleStep()
 {
@@ -663,11 +847,20 @@ PageCompositor::StepResult PageCompositor::IdleStep()
         return StepResult::Wait;
 
     int b = ChooseFree(nullptr, front, -1);
-    const CompRecord *rf = m_buf[front].rec;
-    for (int k = 0; k < COMP_KEYS; k++) {
-        if (rf[k].known && !rec_eq(m_buf[b].rec[k], rf[k])) {
-            comp_key_t key = { rf[k].bg, rf[k].fg, rf[k].flags };
-            BeginKey(b, k, key, COMP_NO_PAGE);
+    const Buffer &F = m_buf[front];
+    comp_page_t target;
+    target.count = F.count;
+    for (int k = 0; k < F.count; k++)
+        target.keys[k] = comp_key_t{ F.rec[k].rect, F.rec[k].img };
+    Relayout(b, target);
+
+    if (m_buf[b].erase_count) {
+        BeginErase(b, COMP_NO_PAGE);
+        return StepResult::Run;
+    }
+    for (int k = 0; k < F.count; k++) {
+        if (F.rec[k].known && !MatchesIn(F.rec[k], b)) {
+            BeginKey(b, k, target.keys[k], COMP_NO_PAGE);
             return StepResult::Run;
         }
     }
@@ -676,8 +869,9 @@ PageCompositor::StepResult PageCompositor::IdleStep()
 
 // Sweep: forget retired images. Records that use one become unknown (an
 // unknown key is redrawn before its buffer is offered again; the pixels on
-// screen stay as they are). A job whose snapshot uses one is dropped: the
-// client no longer uses retired images, so the next snapshot won't either.
+// screen stay as they are). A job whose snapshot uses one is dropped, and a
+// key being drawn from one is abandoned: the client no longer uses retired
+// images, so the next snapshot won't either.
 void PageCompositor::DoSweep()
 {
     if (!m_is_retired)
@@ -685,11 +879,12 @@ void PageCompositor::DoSweep()
     auto retired = [this](const void *img) { return img && m_is_retired(img, m_ctx); };
 
     for (int b = 0; b < COMP_BUFFERS; b++) {
-        for (int k = 0; k < COMP_KEYS; k++) {
+        for (int k = 0; k < m_buf[b].count; k++) {
             CompRecord &r = m_buf[b].rec[k];
-            if (!r.known || !(retired(r.bg) || retired(r.fg)))
+            if (!r.known || !retired(r.img))
                 continue;
             r.known = false;
+            r.img   = nullptr;
             // A page on screen with a key forgotten needs a look, even if
             // the change that retired the image was already taken
             for (int i = 0; i < m_fi.shown_count; i++)
@@ -699,27 +894,36 @@ void PageCompositor::DoSweep()
     }
 
     if (m_job.page != COMP_NO_PAGE) {
-        for (int k = 0; k < COMP_KEYS; k++) {
-            if (retired(m_job.snap[k].bg) || retired(m_job.snap[k].fg)) {
+        for (int k = 0; k < m_job.snap.count; k++) {
+            if (retired(m_job.snap.keys[k].img)) {
                 DropJob();
-                memset(m_job.snap, 0, sizeof(m_job.snap));
+                m_job.snap.count = 0;
                 break;
             }
         }
     }
+
+    if (m_unit.active && !m_unit.erase && retired(m_unit.img))
+        AbortUnit();
 }
 
 // Reload: forget every page and image. The buffers on screen stay on screen,
-// belonging to no page, as the fallback until the new page is ready.
+// belonging to no page, as the fallback until the new page is ready. Their
+// layouts stay (they say where pixels may be), with nothing known.
 void PageCompositor::DoReset()
 {
     // Every reference goes, so any sweep asked for so far is done too
     uint32_t sweep = port::AtomicLoad(&m_sweep_request);
 
+    AbortUnit();
     EndJob();
-    memset(m_job.snap, 0, sizeof(m_job.snap));
-    for (int b = 0; b < COMP_BUFFERS; b++)
-        memset(m_buf[b].rec, 0, sizeof(m_buf[b].rec));     // known = false
+    m_job.snap.count = 0;
+    for (int b = 0; b < COMP_BUFFERS; b++) {
+        for (int k = 0; k < m_buf[b].count; k++) {
+            m_buf[b].rec[k].known = false;
+            m_buf[b].rec[k].img   = nullptr;
+        }
+    }
 
     m_lock.Enter();
     for (int i = 0; i < m_frame.shown_count; i++)
@@ -736,18 +940,9 @@ void PageCompositor::DoReset()
     port::AtomicStore(&m_reset_request, 0);
 }
 
-PageCompositor::StepResult PageCompositor::Step(int64_t now_us, bool gap)
+PageCompositor::StepResult PageCompositor::Step(int64_t now_us, const comp_gap_t *gap)
 {
     RefreshFrame();
-
-    // A key being copied: only fill gaps move it on. Everything else
-    // (jobs, resets) waits for the key boundary.
-    if (m_key.active) {
-        if (!gap)
-            return StepResult::Wait;
-        CopySlice();
-        return StepResult::Run;
-    }
 
     if (port::AtomicLoad(&m_reset_request)) {
         DoReset();
@@ -761,6 +956,13 @@ PageCompositor::StepResult PageCompositor::Step(int64_t now_us, bool gap)
         DoSweep();
         port::AtomicStore(&m_sweep_done, sweep);
         return StepResult::Run;
+    }
+
+    // A unit being drawn: only fill gaps move it on. Jobs wait for the unit
+    // boundary.
+    if (m_unit.active) {
+        GapStep(gap);
+        return m_unit.active ? StepResult::Wait : StepResult::Run;
     }
 
     // Changed bits: changed before flush, the reverse of the order

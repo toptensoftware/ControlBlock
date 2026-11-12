@@ -15,6 +15,9 @@ using namespace layout_env;
 
 namespace
 {
+    // The sample's Home keys (by id: the control "touch[id]") that switch activity
+    const uint16_t WATCH = 3, NONE = 10;
+
     struct Rig
     {
         StoreEnv      env;
@@ -38,7 +41,7 @@ namespace
 
         Rig()
         {
-            store.Init(env.Host(), 1u << 20, COMP_KEY_SIZE, COMP_KEY_SIZE);
+            store.Init(env.Host(), 1u << 20, KEY_GRID_W, KEY_GRID_H, true);     // as the device: opaque only
             store.SetListener(&layout);
             layout.Init(&store, [](int, uint32_t, void *) {}, nullptr);
             Assert(LayoutValidate(bytes.GetBuffer(), (uint32_t)bytes.GetCount(), &summary) == LayoutError::Ok);
@@ -67,10 +70,10 @@ namespace
             sa.Init(h, root);
         }
 
-        void Tap(int key)
+        void Tap(uint16_t id)
         {
-            sa.Key(0, key, TOUCH_KEY_PRESS, 1000);
-            sa.Key(0, key, TOUCH_KEY_RELEASE, 1000);
+            sa.Key(id, TOUCH_KEY_PRESS, 1000);
+            sa.Key(id, TOUCH_KEY_RELEASE, 1000);
             for (int i = 0; i < 1000 && sa.Poll(); i++) {}
         }
 
@@ -82,12 +85,16 @@ Fact("ActivityHost Select Swaps The Layout Then Sets Count, Glides And Names It"
 {
     Rig r;
     Assert(r.layout.PageCount() == 1);
-    r.Tap(2);                                           // Home key 2: Watch
+    r.Tap(WATCH);                                       // Home's Watch key
     Assert(r.n == 5);
     Assert(r.Is(0, "lock") && r.Is(1, "unlock"));       // the layout swap is the only thing under the model lock
     Assert(r.Is(2, "count 3") && r.Is(3, "page 1"));    // the count before the glide: Home + 2 pages
     Assert(r.Is(4, "status Watch TV"));                 // displayName
     Assert(r.layout.PageCount() == 3);
+    // Watch's keys, with the blob's ids, on pages 1 and 2
+    int page = -1;
+    Assert(r.layout.Find(16, &page) && page == 1);
+    Assert(r.layout.Find(31, &page) && page == 2);
 }
 
 Fact("ActivityHost Status Text Is The Name When There Is No Display Name")
@@ -97,20 +104,20 @@ Fact("ActivityHost Status Text Is The Name When There Is No Display Name")
     for (uint32_t i = 0; i < r.root->homePage.bindings_count; i++) {
         layoutdata::binding &b = r.root->homePage.bindings[i];
         if (!op && b.ops_count && b.ops[0]->op == OP_SWITCH_ACTIVITY)
-            op = (layoutdata::switchActivityOp *)b.ops[0];      // the first: key 2
+            op = (layoutdata::switchActivityOp *)b.ops[0];      // the first: the Watch key
     }
     Assert(op);
-    op->index = 1;                                      // key 2 now selects Listen
-    r.Tap(2);
+    op->index = 1;                                      // the Watch key now selects Listen
+    r.Tap(WATCH);
     Assert(r.n == 5 && r.Is(2, "count 2") && r.Is(4, "status Listen"));
 }
 
 Fact("ActivityHost None Collapses To Home With Empty Text And No Glide")
 {
     Rig r;
-    r.Tap(2);
+    r.Tap(WATCH);
     r.n = 0;
-    r.Tap(9);                                           // Home key 9: none
+    r.Tap(NONE);                                        // Home's none key
     Assert(r.n == 4);
     Assert(r.Is(0, "lock") && r.Is(1, "unlock") && r.Is(2, "count 1") && r.Is(3, "status "));
     Assert(r.layout.PageCount() == 1);
@@ -119,9 +126,9 @@ Fact("ActivityHost None Collapses To Home With Empty Text And No Glide")
 Fact("ActivityHost Same Activity Only Glides")
 {
     Rig r;
-    r.Tap(2);
+    r.Tap(WATCH);
     r.n = 0;
-    r.Tap(2);
+    r.Tap(WATCH);
     Assert(r.n == 1 && r.Is(0, "page 1"));
     Assert(r.layout.PageCount() == 3);
 }
@@ -131,8 +138,8 @@ Fact("ActivityHost Frees The Old Activity's Images On A Swap")
     Rig r;
     ImageStoreStats home;
     r.store.GetStats(&home);
-    r.Tap(2);
-    r.Tap(9);
+    r.Tap(WATCH);
+    r.Tap(NONE);
     ImageStoreStats after;
     r.store.GetStats(&after);
     Assert(after.count == home.count);                  // back to Home's images only
@@ -141,7 +148,7 @@ Fact("ActivityHost Frees The Old Activity's Images On A Swap")
 Fact("ActivityHost Reset After The Store Was Reset Frees Nothing Twice")
 {
     Rig r;
-    r.Tap(2);
+    r.Tap(WATCH);
     // A hosted session reset the model; release rebuilt Home
     r.layout.Clear();
     r.store.Reset();
@@ -151,7 +158,7 @@ Fact("ActivityHost Reset After The Store Was Reset Frees Nothing Twice")
     r.applier.Reset();
     Assert(r.sa.Activity() == -1);
     r.n = 0;
-    r.Tap(2);
+    r.Tap(WATCH);
     Assert(r.n == 5 && r.Is(4, "status Watch TV") && r.layout.PageCount() == 3);
     Assert(r.applier.Failures() == 0);
 }
@@ -160,9 +167,9 @@ Fact("ActivityHost Nothing Is Called While Hosted")
 {
     Rig r;
     r.sa.SetHosted(true);
-    r.Tap(2);
+    r.Tap(WATCH);
     Assert(r.n == 0 && r.sa.Activity() == -1);
     r.sa.SetHosted(false);
-    r.Tap(2);
+    r.Tap(WATCH);
     Assert(r.n == 5);
 }

@@ -30,8 +30,10 @@ void swipe_set_page_changed_cb(void (*cb)(int page, int cause));
 
 // Told of every key action (TOUCH_KEY_PRESS / RELEASE / CANCEL, touch_router.h)
 // with the device time in ms, on the swipe task. The key's pressed look is
-// already handled. Touches are routed by touch_router; see docs/interactions.md.
-void swipe_set_key_cb(void (*cb)(int page, int key, int action, uint32_t time_ms));
+// already handled. Touches are routed by touch_router (hit test on the page's
+// key rects); see docs/interactions.md. The key is its id; `page` is the page
+// the touch went down on.
+void swipe_set_key_cb(void (*cb)(int page, uint16_t id, int action, uint32_t time_ms));
 
 // The backlight went on or off (docs/backlight.md). While off, touches only
 // wake: nothing reaches keys or swipes. Any task; applied on the swipe task,

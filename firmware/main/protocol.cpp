@@ -1,11 +1,8 @@
 // Mode 1 host protocol. Spec: docs/protocol.md.
 
 #include <string.h>
+#include "Core.h"
 #include "protocol.h"
-
-// KeyDefs are read straight out of the payload: the wire format is the
-// struct's (little endian, natural alignment)
-static_assert(sizeof(KeyDef) == PROTO_KEYDEF_SIZE, "KeyDef must match the wire format");
 
 namespace
 {
@@ -132,6 +129,8 @@ namespace
         case KeyLayoutResult::Ok:       return ST_OK;
         case KeyLayoutResult::BadArg:   return ST_BAD_ARG;
         case KeyLayoutResult::NotFound: return ST_NOT_FOUND;
+        case KeyLayoutResult::BadSize:  return ST_BAD_IMAGE;    // not the key's size
+        default:                        break;                  // geometry and ids
         }
         return ST_BAD_ARG;
     }
@@ -140,7 +139,7 @@ namespace
     int lost_byte(uint8_t type)
     {
         switch (type) {
-        case EVT_KEY:        return 3;
+        case EVT_KEY:        return 4;
         case EVT_WAKE:       return 0;
         case EVT_WIFI_STATE: return 1;
         }
@@ -434,7 +433,7 @@ void Protocol::OnGetInfo()
     bool time_known;
     m_host.get_time(&now, &source, &time_known, m_host.ctx);
 
-    uint8_t out[64 + 2 * 256];
+    uint8_t out[96 + 2 * 256];              // the fixed fields (70 bytes) and two strings
     Writer w = { out, sizeof(out), 0 };
     w.U16(PROTO_VERSION);
     w.U16((m_host.backlight_on(m_host.ctx) ? INFO_FLAG_BACKLIGHT : 0)
@@ -448,12 +447,12 @@ void Protocol::OnGetInfo()
     w.U32(st.largest_free);
     w.U16(SCREEN_W);
     w.U16(SCREEN_H);
-    w.U8(COMP_COLS);
-    w.U8(COMP_ROWS);
+    w.U8(KEY_GRID_COLS);
+    w.U8(KEY_GRID_ROWS);
     w.U8(KEY_LAYOUT_MAX_PAGES);
     w.U8(pages);
-    w.U16(COMP_KEY_SIZE);
-    w.U16(COMP_KEY_SIZE);
+    w.U16(KEY_CELL);                        // key_w/h: 1U
+    w.U16(KEY_CELL);
     w.U16(KEY_ICON_SIZE);
     w.U16(KEY_ICON_SIZE);
     w.U8(m_host.current_page(m_host.ctx));
@@ -464,6 +463,16 @@ void Protocol::OnGetInfo()
     w.U32(m_layout_store->MaxSize());
     w.U32(stored.size);
     w.U32(stored.crc);
+    // v2: the key grid on the screen, the quarter unit, the largest image
+    // (the image store's limit: model.cpp), keys per page
+    w.U16(KEY_GRID_X0);
+    w.U16(SCREEN_PAGE_TOP + KEY_GRID_Y0);
+    w.U16(KEY_GRID_W);
+    w.U16(KEY_GRID_H);
+    w.U16(KEY_QUARTER);
+    w.U16(KEY_GRID_W);
+    w.U16(KEY_GRID_H);
+    w.U8(COMP_MAX_KEYS);
     Respond(ST_OK, out, w.len);
 }
 
@@ -622,6 +631,11 @@ void Protocol::OnSetPageCount()
     Respond(status_of(res));
 }
 
+// u16 count, KeyDef[count] (PROTO_KEYDEF_SIZE each). Edits keys by id: a
+// KeyDef replaces the key with its id (which must be on the same page) or
+// adds it; PROTO_KEYDEF_REMOVE removes it. The pages touched are sent to
+// KeyLayout::SetKeys again with the edits made, so the whole message is
+// checked and applied together (geometry, ids, images), all or nothing.
 void Protocol::OnSetKeys()
 {
     Reader r = { m_buf, m_len, 0 };
@@ -631,10 +645,72 @@ void Protocol::OnSetKeys()
     if (!r.Has(count * PROTO_KEYDEF_SIZE))
         return Respond(ST_BAD_LENGTH);
 
-    // m_buf + 2 is 4-byte aligned (see m_raw)
-    const KeyDef *defs = (const KeyDef *)(m_buf + 2);
+    SimpleLib::List<KeyDef>   edits;
+    SimpleLib::List<bool>     removes;
+    SimpleLib::List<uint16_t> ids;
+    for (uint32_t i = 0; i < count; i++) {
+        KeyDef d = {};
+        d.id     = (uint16_t)r.U16();
+        d.page   = (uint8_t)r.U8();
+        d.rect.x = (uint8_t)r.U8();
+        d.rect.y = (uint8_t)r.U8();
+        d.rect.w = (uint8_t)r.U8();
+        d.rect.h = (uint8_t)r.U8();
+        r.U8();                                 // reserved
+        uint32_t flags = r.U16();
+        r.U16();                                // reserved
+        d.normal  = r.U32();
+        d.pressed = r.U32();
+        if (flags & ~(uint32_t)PROTO_KEYDEF_FLAGS)
+            return Respond(ST_BAD_ARG);
+        d.flags = (uint16_t)(flags & PROTO_KEYDEF_DISABLED);
+        edits.Add(d);
+        removes.Add((flags & PROTO_KEYDEF_REMOVE) != 0);
+        ids.Add(d.id);
+    }
+    // Each id once, none 0
+    if (KeyIdsCheck(ids.GetBuffer(), ids.GetCount(), nullptr, 0) != KEY_GEOM_OK)
+        return Respond(ST_BAD_ARG);
+
     Lock();
-    KeyLayoutResult res = m_keys->SetKeys(defs, (int)count);
+    // The pages touched: each def's, and each removed key's
+    int lo = KEY_LAYOUT_MAX_PAGES, hi = -1;
+    bool ok = true;
+    for (int i = 0; i < edits.GetCount() && ok; i++) {
+        const KeyDef &d = edits.GetBuffer()[i];
+        int page = -1;
+        bool exists = m_keys->Find(d.id, &page) != nullptr;
+        if (removes[i]) {
+            if (!exists)
+                continue;                       // unknown: nothing to remove
+        } else {
+            ok = !exists || page == d.page;     // a key stays on its page
+            page = d.page;
+        }
+        lo = page < lo ? page : lo;
+        hi = page > hi ? page : hi;
+    }
+
+    KeyLayoutResult res = ok ? KeyLayoutResult::Ok : KeyLayoutResult::DuplicateId;
+    if (ok && hi >= 0) {
+        if (hi >= m_keys->PageCount()) {
+            res = KeyLayoutResult::BadArg;
+        } else {
+            // The touched pages' keys, minus the ones named, plus the new definitions
+            SimpleLib::List<KeyDef> keys;
+            KeyDef page_keys[COMP_MAX_KEYS];
+            for (int p = lo; p <= hi; p++) {
+                int n = m_keys->GetKeys(p, page_keys);
+                for (int j = 0; j < n; j++)
+                    if (ids.IndexOf(page_keys[j].id) < 0)
+                        keys.Add(page_keys[j]);
+            }
+            for (int i = 0; i < edits.GetCount(); i++)
+                if (!removes[i])
+                    keys.Add(edits.GetBuffer()[i]);
+            res = m_keys->SetKeys(lo, hi - lo + 1, keys.GetBuffer(), keys.GetCount());
+        }
+    }
     Unlock();
     Respond(status_of(res));
 }
@@ -847,12 +923,16 @@ void Protocol::DropEvents(bool all)
     m_ev_lock.Exit();
 }
 
-void Protocol::PostKey(int page, int key, int action, uint32_t time_ms)
+// u16 id, u8 page, u8 action, u8 lost, u8[3] reserved, u32 time_ms
+void Protocol::PostKey(int page, uint16_t id, int action, uint32_t time_ms)
 {
     if (!Hosted())
         return;
-    Event e = { EVT_KEY, 8, { (uint8_t)page, (uint8_t)key, (uint8_t)action, 0 } };
-    put32(e.data + 4, time_ms);
+    Event e = { EVT_KEY, PROTO_KEY_EVENT_SIZE, {} };
+    put16(e.data, id);
+    e.data[2] = (uint8_t)page;
+    e.data[3] = (uint8_t)action;
+    put32(e.data + 8, time_ms);
     PostEvent(e);
 }
 
