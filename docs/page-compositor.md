@@ -57,7 +57,7 @@ typedef struct {
 
 ## Layout
 
-Keys sit on a grid of 1U cells, `KEY_CELL` = 144 px, 5x3 cells packed edge to edge: 720x432, centred in the page area (800x440 below the 40 px status bar; the pager bar is disabled, `SCREEN_PAGER_H` 0). The grid's origin is (40, 4) in the page area (`KEY_GRID_X0`, `KEY_GRID_Y0`), (40, 44) on the screen. Key rects are placed and sized in quarter units (0.25U = 36 px, `KEY_QUARTER`) from that origin, so a key can be 1U, 2U wide, 2x2, half a unit tall, or sit off the whole-unit grid; `key_geometry.h` converts them to pixels (`KeyRectPixels`) and checks them (inside the grid, no overlaps, at most 32 a page). These constants are reported to the host in `GET_INFO` ([`protocol.md`](protocol.md)).
+Keys sit on a grid of 1U cells, `KEY_CELL` = 144 px, 5x3 cells packed edge to edge: 720x432, centred in the page area (800x440 below the 40 px status bar; there is no pager bar: the pager is pills in the status bar). The grid's origin is (40, 4) in the page area (`KEY_GRID_X0`, `KEY_GRID_Y0`), (40, 44) on the screen. Key rects are placed and sized in quarter units (0.25U = 36 px, `KEY_QUARTER`) from that origin, so a key can be 1U, 2U wide, 2x2, half a unit tall, or sit off the whole-unit grid; `key_geometry.h` converts them to pixels (`KeyRectPixels`) and checks them (inside the grid, no overlaps, at most 32 a page). These constants are reported to the host in `GET_INFO` ([`protocol.md`](protocol.md)).
 
 Everything outside the grid, and any part of the grid no key covers, is background. Buffers are filled with background once, when they're allocated, and start with no records, so a boot or a build with the same layout fills nothing.
 
@@ -80,7 +80,7 @@ Pages can have different layouts, and the three buffers are shared by every page
 2. **Chunks** (`DrawChunk`): in a fill gap, the next ~`COMP_CHUNK_BYTES` (1 KB, at least one row: 3 rows of a 1U key, 1 row of a 2U key) is decoded straight from the image in PSRAM into the page buffer, then **written back to PSRAM at once** (`port::CacheWriteback`), so its bus traffic stays in the gap and each write-back is short.
 3. **Finish** (`FinishUnit`): after the last chunk the record is set (or the erase rect removed), and for an incremental job the back is offered if the swap rule holds. A key is "drawn" only when its last chunk is.
 
-**The deadline is measured from the fill's start.** The next fill is due one fill period (`DISPLAY_BOUNCE_BUDGET_US`, ~615 µs at 20 MHz) after the last one started. Work stops `COMP_GAP_MARGIN_US` (65 µs) before that, and a chunk is started only if its worst case, `COMP_CHUNK_WORST_US` (85 µs, write-back included), still fits. So the deadline is ~550 µs after the fill start, and a long fill, or a gap reached late, gets less work by itself. Several chunks fit in a gap, and one gap can finish a key and carry on into the next.
+**The deadline is measured from the fill's start.** The next fill is due one fill period (`DISPLAY_BOUNCE_BUDGET_US`, ~615 µs at 20 MHz) after the last one started. Work stops `COMP_GAP_MARGIN_US` (65 µs) before that, and a chunk is started only if its worst case, `COMP_CHUNK_WORST_US` (140 µs, write-back included: a chunk measured up to 131 µs under PSRAM contention), still fits. So the deadline is ~550 µs after the fill start, and a long fill, or a gap reached late, gets less work by itself. Several chunks fit in a gap, and one gap can finish a key and carry on into the next.
 
 **Fill gaps.** At the end of every fill the bounce fill calls `fill_gap_done(fill_start_cycles)` (`fill_gap.cpp`), which wakes the compositor task (only while it has a unit to draw: `WantsGaps()`) or the status bar's task, one per gap in turn, so two PSRAM writers never overlap. Each client gets the time its fill started. The compositor task keeps the last gap it was given and passes it to every `Step(now, gap)`; the deadline makes an old one harmless. The status bar still uses `fill_gap_fresh(COMP_GAP_FRESH_US)` (50 µs after the fill end). A host test checks that page buffers are written only in gaps, and that no chunk starts with less than its worst case left.
 
@@ -285,7 +285,7 @@ void comp_get_stats(comp_stats_t *stats);
 
 ### Stats
 
-`comp_stats_t`: `keys` (keys drawn), `swaps`, `holds`, `max_key_us`, `busy_us`, `erases` (uncovered areas filled), `chunks`, `gaps` (gaps that drew at least one chunk), `bytes` (page buffer bytes drawn), `max_chunk_us` (slowest chunk with its write-back, against `COMP_CHUNK_WORST_US`), `max_gap_end_us` (latest end of a gap's work from its fill's start, against period − `COMP_GAP_MARGIN_US`) and `late_gaps` (gaps whose work ended past the deadline: a chunk took longer than its worst case). The stress run prints them as `B/gap`, `chunk max N/85 us`, `gap end max N/550 us` and `N late`. Tuning: if fills stay well under the period and nothing is late, the margin and the worst case can come down (more per gap, faster builds); `missed` fills or buffer mismatches mean the other way.
+`comp_stats_t`: `keys` (keys drawn), `swaps`, `holds`, `max_key_us`, `busy_us`, `erases` (uncovered areas filled), `chunks`, `gaps` (gaps that drew at least one chunk), `bytes` (page buffer bytes drawn), `max_chunk_us` (slowest chunk with its write-back, against `COMP_CHUNK_WORST_US`), `max_gap_end_us` (latest end of a gap's work from its fill's start, against period − `COMP_GAP_MARGIN_US`) and `late_gaps` (gaps whose work ended past the deadline: a chunk took longer than its worst case). The stress run prints them as `B/gap`, `chunk max N/140 us`, `gap end max N/550 us` and `N late`. Tuning: if fills stay well under the period and nothing is late, the margin and the worst case can come down (more per gap, faster builds); `missed` fills or buffer mismatches mean the other way.
 
 ## Image pointers
 
@@ -398,7 +398,7 @@ Once this is agreed, `screen-buffers.md` changes as follows:
 
 ## Measurements to make
 
-1. **The stress run on the hardware** (release `RUN_STRESS`): late and missed fills, start lateness, buffer mismatches, page build times (`build` column), `chunk max` against 85 µs and `gap end max` against 550 µs, then tune `COMP_GAP_MARGIN_US` / `COMP_CHUNK_WORST_US`.
+1. **The stress run on the hardware** (release `RUN_STRESS`): late and missed fills, start lateness, buffer mismatches, page build times (`build` column), `chunk max` against 140 µs and `gap end max` against 550 µs, then tune `COMP_GAP_MARGIN_US` / `COMP_CHUNK_WORST_US`.
 2. **The swipe-start hold** with ~90 ms page builds: does the kick at the start of a drag still feel fine?
 3. **The `-Og` build** with the stress run: it must still keep the display fed.
 4. **Lua and fill starts:** the Lua heap's PSRAM writes on core 0 delayed fill starts by up to 139 µs in the spike's run (worst end 421 µs, still under 615 µs). Watch it.
@@ -407,5 +407,5 @@ Once this is agreed, `screen-buffers.md` changes as follows:
 
 Settled: 3 buffers; one opaque image per key state, pressed state and labels being different image pointers; image lifetime is the client's job; flush holds a page until complete, and there's no forced redraw; padding is baked into the images; one fixed background colour; the status bar and pager are handled separately; one page at a time, limited to its snapshot; the press un-highlight is delayed by the client; keys are drawn straight into PSRAM in time-limited chunks in fill gaps; the compositor runs at priority 4 on core 1.
 
-1. **`COMP_SWAP_GUARD_US`, `COMP_GAP_BYTES_EST`, `COMP_GAP_MARGIN_US`, `COMP_CHUNK_WORST_US`:** 500 µs, 3 KB per fill, 65 µs and 85 µs, from the spike, not tuned. Tune them from the stress run.
+1. **`COMP_SWAP_GUARD_US`, `COMP_GAP_BYTES_EST`, `COMP_GAP_MARGIN_US`, `COMP_CHUNK_WORST_US`:** 500 µs, 3 KB per fill, 65 µs and 140 µs. The worst case was raised from the spike's 85 µs after the first stress run on the hardware (2026-11-12: chunks up to 131 µs with image replaces or Lua writing PSRAM, gap ends up to 573 µs); the others are still the spike's.
 2. **Reload start page:** the scroll is set by the client after `comp_reset()`. Does `RESET` (or an activity) name a start page, and does `PAGE_CHANGED` need a "layout reloaded" cause? (Carried over from `screen-buffers.md`.)

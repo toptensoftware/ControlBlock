@@ -6,12 +6,11 @@
 #define SCREEN_W          800
 #define SCREEN_H          480
 
-// The status bar and pager are fixed; the page area between them scrolls
-// horizontally across a row of pages.
+// The status bar is fixed; the page area below it scrolls
+// horizontally across a row of pages (the pager is pills in the status bar).
 #define SCREEN_STATUS_H   40
-#define SCREEN_PAGER_H    0         // pager bar disabled for now (20 with it); the key gap follows
 #define SCREEN_PAGE_W     SCREEN_W
-#define SCREEN_PAGE_H     (SCREEN_H - SCREEN_STATUS_H - SCREEN_PAGER_H)
+#define SCREEN_PAGE_H     (SCREEN_H - SCREEN_STATUS_H)
 #define SCREEN_PAGE_TOP   SCREEN_STATUS_H
 
 #define SCREEN_MAX_PAGES  8         // at most COMP_MAX_PAGES

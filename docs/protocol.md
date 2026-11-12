@@ -678,6 +678,6 @@ And for a host-controlled session:
 
 ## Open questions
 
-- Status bar: the left and right texts are host-settable (`SET_STATUS_TEXT`), and the device has a clock (`{clock}`, [Clock](#clock)). Still open: other status bar content and the pager bar (disabled for now). Message type `0x04` is reserved for them.
+- Status bar: the left and right texts are host-settable (`SET_STATUS_TEXT`), and the device has a clock (`{clock}`, [Clock](#clock)). Still open: other status bar content (the pager is pills in the status bar; there is no pager bar). Message type `0x04` is reserved for them.
 - Icon size: Somewhere from 80 to 96 px, to be decided by trying it on the hardware. The device reports the sizes in `GET_INFO`, so hosts shouldn't hard-code them.
 - Deflate: images are ~3.5x the bytes of v1's shared layers. Compressing uploads (an optional flag on `PUT_IMAGE`) may follow if hosted updates feel slow.

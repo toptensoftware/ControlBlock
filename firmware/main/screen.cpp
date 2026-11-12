@@ -25,7 +25,7 @@ static_assert(SCREEN_STATUS_H >= SCREEN_BOUNCE_LINES, "first bounce fill must no
 // Measured: a page chunk takes ~285 us copied cold from PSRAM, ~68 us preloaded.
 #define SCREEN_CACHE_PRELOAD 1
 
-// The status bar, page area and pager bar share one background, so a
+// The status bar and page area share one background, so a
 // missing status bar or page is filled the same way (copy_px)
 static_assert(STATUS_BAR_BACKGROUND == COMP_BACKGROUND, "status bar and page area backgrounds differ");
 
@@ -209,8 +209,6 @@ IRAM_ATTR static bool fill_lines(uint16_t *dest, int y, int count, void *ctx)
         if (y < SCREEN_PAGE_TOP) {
             const uint16_t *status = s_status_frame;
             copy_px(dest, status ? status + y * SCREEN_W : NULL, DISPLAY_H_RES);
-        } else if (y >= SCREEN_PAGE_TOP + SCREEN_PAGE_H) {
-            fill_px(dest, DISPLAY_H_RES, COMP_BACKGROUND);      // pager bar, blank for now
         } else {
             int row = y - SCREEN_PAGE_TOP;
             const uint16_t *lp = page_row(0, row);

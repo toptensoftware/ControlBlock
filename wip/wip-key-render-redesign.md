@@ -1449,3 +1449,16 @@ of one picture under A.
 - The bounce fill and its rules don't change.
 - Holes on sparse pages are the motivating case; urem2/examples have such pages (not counted).
 
+
+### Step 16 results (user, 2026-11-12)
+- **Release `RUN_STRESS`: passed.** No corruption seen. 0 fills over, 0 missed, start late <= 3 us except Lua
+  (48/92/137 us, as before); worst fill end 394 us of 615. Page build ~82 ms (1U and spans), 1U key ~3 ms, 2U ~5 ms;
+  98 erases in "layout changes, mid" fine. Internal heap 193,651 free (largest 151,552). **Chunk worst case too
+  small:** under PSRAM contention chunks took up to 102-108 us (image replaces) and 131 us (Lua + keys): gap ends up
+  to 573 us (deadline 550), 2/2/29 late gaps, no harm (next fill at 615). **Fixed:** `COMP_CHUNK_WORST_US` 85 -> 140
+  (docs updated). Re-run the stress once to confirm `late` is 0 (optional).
+- **Standalone:** urem2 (re-baked) works; key-shapes.mjs works; page render delay on swipe feels no different to
+  before.
+- **Pager bar dropped for good** (user): `SCREEN_PAGER_H` and the fill's blank pager branch removed; the pager is
+  the status bar's pills. Debug build 0 errors, fw-test 752 (debug and release).
+- **Not yet run:** hosted `examples/demo.js` and `examples/bench.js` (upload throughput decides deflate).

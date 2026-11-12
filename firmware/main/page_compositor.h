@@ -29,7 +29,7 @@
 // to ~82 us with its write-back.
 #define COMP_CHUNK_BYTES       1024
 #define COMP_GAP_MARGIN_US     65
-#define COMP_CHUNK_WORST_US    85
+#define COMP_CHUNK_WORST_US    140       // measured up to 131 us under PSRAM contention (stress run 2026-11-12)
 // The status bar (status.cpp) uses a gap only if it gets there this soon
 // after the fill ends (the compositor uses the deadline instead).
 #define COMP_GAP_FRESH_US      50
