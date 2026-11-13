@@ -14,7 +14,7 @@ Mostly design. Built so far: the bake tool, the layout upload, loading the store
 
 - Auto repeat (job `wip/complete-auto-repeat.md`, 2026-11-13), works on the hardware for touch keys (macro pad keys host tested only, until the pad's S3 phase): a touch key or macro pad key held down fires `press` and `tap` again each period, with the param `repeat=<n>`; per-key timing in the layout; blob version 3 (a version 2 blob is refused: empty Home). See "Key gestures" and "Schema" below, and [`layout-format.md`](layout-format.md#auto-repeat).
 
-- Activity and device management (job `wip/complete-activity-device-management.md`), host tested and **run on the hardware** (2026-11-07, against a UDP/HTTP test server; real equipment not yet tried): the `switchActivity` op (including the "none" target), device on/off tracking, the switch sequence, the page swap, glide and status text. See "Devices and activity switching" below.
+- Activity and device management (job `wip/complete-activity-device-management.md`), host tested and **run on the hardware** (2026-11-07, against a UDP/HTTP test server; and with the real equipment through urem2, 2026-11-14): the `switchActivity` op (including the "none" target), device on/off tracking, the switch sequence, the page swap, glide and status text. See "Devices and activity switching" below.
 - The net ops (`httpGet`, `httpPost`, `udpPacket`, `sendWol`) work on the hardware, and so do device `turnOn`/`turnOff` lists made from them (with activity switching).
 - The `script` op (Lua 5.4.7), host tested, **not yet run on the hardware** (job `wip/complete-lua-scripts.md`): `script_host`, `script_api`, `lua_heap`. See "Actions" below; the script API is in [`layout-format.md`](layout-format.md#script-api).
 
