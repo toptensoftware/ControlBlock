@@ -1,5 +1,5 @@
-// Tests for the Steam activity (HOT PC and the photo slideshow): every slot and pad binding against urem's
-// activity-steam.js (wip/complete-urem2-layout.md, Notes, Activity steam). From the repo root:
+// Tests for the Steam activity (HOT PC and the photo slideshow): meta, the macro pad bindings (urem's
+// activity-steam.js) and a clean resolve. The pages aren't pinned: rearrange them freely. From the repo root:
 // node --test "urem2/**/*.test.mjs"
 
 import { test } from "node:test";
@@ -7,52 +7,19 @@ import assert from "node:assert/strict";
 import { steam } from "./steam.mjs";
 import { makeContext } from "../context.mjs";
 import { activityMeta } from "../devices.mjs";
-import { key, grid } from "../keys.mjs";
-import { icon, label, COLORS } from "../look.mjs";
-import { volumeBindings, padPage } from "../pad.mjs";
+import { volumeBindings } from "../pad.mjs";
 import { targets } from "../../targets.mjs";
-import { assertSlots, layoutWith } from "../../test/slots.mjs";
-import { cleanLayout } from "../../test/resolve.mjs";
+import { assertActivityResolves } from "../../test/pages.mjs";
 
 for (const [name, target] of Object.entries(targets))
 {
     const ctx = makeContext(target);
-    const { ops } = ctx;
-    const show = cmd => ops.slideshow(cmd);
-    const white = { color: COLORS.white }, orange = { color: COLORS.orange };
+    const show = cmd => ctx.ops.slideshow(cmd);
 
-    test(`${name}: steam meta, the pad page and two pages`, () => {
+    test(`${name}: steam meta, no pad repeats`, () => {
         const { pages, bindings, pad, ...meta } = steam(ctx);
         assert.deepEqual(meta, activityMeta(ctx, "steam"));
         assert.deepEqual(pad, {});  // urem had no repeat on these
-        assert.equal(pages.length, 3);
-    });
-
-    test(`${name}: steam page 1 (HOT PC, slideshow transport) matches urem`, () => {
-        assertSlots(steam(ctx).pages[1].keys, {
-            1: key(icon("#previous-track", white), show("prevDay")),
-            2: key(icon("#next-track", white), show("nextDay")),
-            4: key(label("Steam"), ops.hotpc("launch-steam")),
-            6: key(icon("#rewind", white), show("backward20"), { repeat: 100 }),
-            7: key(icon("#forward", white), show("forward20"), { repeat: 100 }),
-            9: key(label("Slide Show"), ops.hotpc("launch-kiosk")),
-            11: key(icon("#play", orange), show("play")),
-            12: key(icon("#pause", orange), show("pause")),
-            13: key(icon("#info", { color: COLORS.green }), ops.slideshowToggle("all")),
-            14: key(label("Shut Down"), ops.hotpc("shutdown")),
-        });
-    });
-
-    test(`${name}: steam page 2 (display element toggles) matches urem`, () => {
-        const toggle = (text, el) => key(label(text), ops.slideshowToggle(el));
-        assertSlots(steam(ctx).pages[2].keys, {
-            1: toggle("Play State", "transport"),
-            2: toggle("Date", "date"),
-            3: toggle("Time", "time"),
-            4: toggle("Rating", "rating"),
-            6: toggle("Place", "location"),
-            11: toggle("Other", "other"),
-        });
     });
 
     test(`${name}: steam pad: key2/4/5/6 vote and step on press, key1/key3 unbound, then the volume`, () => {
@@ -65,23 +32,5 @@ for (const [name, target] of Object.entries(targets))
         ]);
     });
 
-    test(`${name}: steam resolves clean`, async () => {
-        const tree = await cleanLayout(layoutWith(ctx, { activities: { steam: steam(ctx) } }));
-        assert.deepEqual(tree.activities[2].pages.map(p => p.keys.filter(k => k.normal).length), [7, 10, 6]);
-    });
-}
-
-for (const [name, target] of Object.entries(targets))
-{
-    const ctx = makeContext(target);
-    const show = cmd => ctx.ops.slideshow(cmd);
-
-    test(`${name}: steam pad page: vote and step arrows, slots 1/3 empty`, () => {
-        const page = steam(ctx).pages[0].keys;
-        assert.equal(page[1], null);
-        assert.equal(page[3], null);
-        assert.deepEqual([2, 6, 7, 8].map(s => page[s].tap), ["voteUp", "prev", "voteDown", "next"].map(show));
-        assert.deepEqual(page, grid(padPage(ctx, { key2: { tap: show("voteUp") }, key4: { tap: show("prev") },
-            key5: { tap: show("voteDown") }, key6: { tap: show("next") } })));
-    });
+    test(`${name}: steam resolves clean`, () => assertActivityResolves(ctx, "steam", steam(ctx)));
 }

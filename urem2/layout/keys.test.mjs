@@ -3,7 +3,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { key, withRepeat, sevenChKey, muteKey, grid, transportKeys } from "./keys.mjs";
+import { key, withRepeat, sevenChKey, muteKey, volumeStep, volUpKey, volDownKey, VOLUME_REPEAT } from "./keys.mjs";
+import { setVolume } from "../tables/yamaha.mjs";
 import { makeContext } from "./context.mjs";
 import { icon, label, COLORS, ROOT_DEFAULTS } from "./look.mjs";
 import { yamahaToggle } from "./scripts.mjs";
@@ -51,51 +52,33 @@ test("the shared sound keys: 7ch Stereo label and mute icon, purple, Yamaha togg
                      key(icon("#volume-mute", { color: COLORS.purple }), yamahaToggle(ctx.target, "mute")));
 });
 
-test("grid: a slot map to 15 row-major keys, null elsewhere", () => {
-    const a = key(icon("#play"), ops.atvKey("play"));
-    const b = muteKey(ctx);
-    const keys = grid({ 1: a, 14: b });
-    assert.equal(keys.length, 15);
-    assert.deepEqual(keys[1], a);
-    assert.deepEqual(keys[14], b);
-    assert.equal(keys.filter(k => k === null).length, 13);
-    assert.deepEqual(grid({}), Array(15).fill(null));
-    for (const bad of [{ 15: a }, { "-1": a }, { 1.5: a }, { x: a }])
-        assert.throws(() => grid(bad), /slot/, JSON.stringify(Object.keys(bad)));
+test("volumeStep: one Yamaha step per tap", () => {
+    assert.deepEqual(volumeStep(ctx, "up"), ops.yamaha(setVolume("up", 1)));
+    assert.deepEqual(volumeStep(ctx, "down"), ops.yamaha(setVolume("down", 1)));
+    assert.throws(() => volumeStep(ctx, "sideways"), /volume direction/);
 });
 
-test("transportKeys: urem's transport row (white track/seek, orange play/pause/stop)", () => {
-    const o = name => ops.atvKey(name);
-    const white = { color: COLORS.white }, orange = { color: COLORS.orange };
-    const all = { previous: o("previous"), next: o("next"), rewind: o("left"), forward: o("right"), play: o("play"),
-                  pause: o("pause"), stop: o("menu") };
-    assert.deepEqual(transportKeys(all, { repeat: 100 }), {
-        1: key(icon("#previous-track", white), o("previous")),
-        2: key(icon("#next-track", white), o("next")),
-        6: key(icon("#rewind", white), o("left"), { repeat: 100 }),
-        7: key(icon("#forward", white), o("right"), { repeat: 100 }),
-        11: key(icon("#play", orange), o("play")),
-        12: key(icon("#pause", orange), o("pause")),
-        13: key(icon("#stop", orange), o("menu")),
-    });
-    // no stop: slot 13 is the caller's
-    const { stop, ...noStop } = all;
-    assert.equal(transportKeys(noStop)[13], undefined);
-    assert.throws(() => transportKeys({ ...all, rewnd: [] }), /unknown transport key/);
-    assert.throws(() => transportKeys({ ...all, play: undefined }), /transport key "play"/);
+test("Vol+ and Vol-: purple volume icons, one step per tap, repeating while held", () => {
+    const purple = { color: COLORS.purple };
+    assert.deepEqual(VOLUME_REPEAT, { initialDelay: 500, period: 100 });
+    const repeat = VOLUME_REPEAT;
+    assert.deepEqual(volUpKey(ctx), key(icon("#volume-up", purple), volumeStep(ctx, "up"), { repeat }));
+    assert.deepEqual(volDownKey(ctx), key(icon("#volume-down", purple), volumeStep(ctx, "down"), { repeat }));
 });
 
 test("a layout with the key helpers is clean", async () => {
     const tree = await cleanLayout({ version: 1, defaults: ROOT_DEFAULTS, home: { keys: [
         key(icon("#forward"), ops.atvKey("right"), { repeat: 100 }),
         key(icon("#play"), ops.atvKey("menu"), { long: ops.atvKey("menu", "hold") }),
-        sevenChKey(ctx), muteKey(ctx),
+        sevenChKey(ctx), muteKey(ctx), volUpKey(ctx), volDownKey(ctx),
     ] } });
     assert.deepEqual(tree.home.bindings.map(b => `${b.control} ${b.event}`),
-                     ["touch[1] tap", "touch[2] tap", "touch[2] long", "touch[3] tap", "touch[4] tap"]);
-    assert.equal(tree.home.keys.filter(k => k.normal).length, 4);
+                     ["touch[1] tap", "touch[2] tap", "touch[2] long", "touch[3] tap", "touch[4] tap", "touch[5] tap",
+                      "touch[6] tap"]);
+    assert.equal(tree.home.keys.filter(k => k.normal).length, 6);
     // urem's meaning: a number is both the initial delay and the period
-    assert.deepEqual(tree.home.keys.map(k => [k.repeatDelayMs, k.repeatMs]), [[100, 100], [0, 0], [0, 0], [0, 0]]);
+    assert.deepEqual(tree.home.keys.map(k => [k.repeatDelayMs, k.repeatMs]),
+                     [[100, 100], [0, 0], [0, 0], [0, 0], [500, 100], [500, 100]]);
 });
 
 test("key: repeat and long together throw (the bake refuses them)", () => {

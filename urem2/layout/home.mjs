@@ -1,7 +1,7 @@
 // Home (urem homePage.js + core.js). Not ported: the Home toggle (0: Home is page 0, swipe back), the Moonraker
 // printer status (3) and the clock (5).
 
-import { key, grid, sevenChKey } from "./keys.mjs";
+import { key, sevenChKey } from "./keys.mjs";
 import { icon, label, COLORS } from "./look.mjs";
 import { switchTo, activityKeyGestures } from "./devices.mjs";
 
@@ -16,18 +16,24 @@ export function home(ctx)
     const appKey = (svg, app) => thenKey(icon(`icons/${svg}.svg`), "atv", ops.atvApp(app));
     const dvrKey = (iconName, code) => thenKey(icon(iconName, orange), "hdd", ops.ir(`pana.${code}`));
 
-    return { keys: grid({
-        1: activityKey(icon("#playstation"), "playstation"),
-        2: activityKey(icon("#steam"), "steam"),
-        4: activityKey(icon("#power", { color: COLORS.red, scale: 0.7 }), null),     // long: everything off again
-        6: activityKey(icon("#apple-tv", { color: COLORS.grey }), "atv"),
+    return { keys: [
+
+        { ...activityKey(icon("#power", { color: COLORS.red, scale: 0.7 }), null), x: 0, y: 0 },    // long: everything off again
+
+
+        { ...activityKey(icon("#playstation"), "playstation"), x: 1, y: 0, w: 2, h: 1.5 },
+        { ...activityKey(icon("#steam"), "steam"), x: 3, y: 0, w: 2, h:1.5 },
+        { ...activityKey(icon("#apple-tv", { color: COLORS.grey }), "atv"), x: 1, y: 1.5, w: 2, h: 1.5 },
+        { ...activityKey(label("TV", { ...orange, font: "bold 38px sans-serif" }), "hdd"), x: 3, y: 1.5, w: 2, h: 1.5 },
+
+        /*
+        { ...sevenChKey(ctx), x: 0, y: 2 },
         7: appKey("netflix", "Netflix"),
         8: appKey("prime", "Prime Video"),
         9: appKey("youtube", "YouTube"),
-        10: sevenChKey(ctx),
-        11: activityKey(label("TV", { ...orange, font: "bold 28px sans-serif" }), "hdd"),
         12: dvrKey("#list", "videoMenu"),
         13: dvrKey("#guide", "guide"),
         14: dvrKey("#function", "functionMenu"),
-    }) };
+        */
+    ] };
 }

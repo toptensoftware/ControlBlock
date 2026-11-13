@@ -21,7 +21,7 @@ layout/                The layout as modules:
   context.mjs            ctx = { target, ops }: what every module builds from
   ops.mjs                Op builders over the tables (ir, irPower, atvKey, atvApp, yamaha, hotpc, wake, slideshow, ...)
   look.mjs               Root look (border face, grey pressed fill), colours, ICON_SCALE, icon()/label()
-  keys.mjs               key(), grid(), the transport row, the shared 7ch Stereo and mute keys, the repeat check
+  keys.mjs               key(), the repeat check, the shared single keys (7ch Stereo, mute, Vol+, Vol-)
   pad.mjs                Macro pad and encoder bindings; the volume bindings every activity gets
   devices.mjs            Devices (power op lists), activity meta (devices, Yamaha input, name), switch and resync
   lua.mjs, scripts.mjs   Lua scripts with a generated prelude of constants (addresses, patterns, step tables)
@@ -31,7 +31,7 @@ scripts/               Lua: yamaha-toggle.lua (mute and 7ch Stereo), volume.lua 
 icons/                 Netflix, Prime Video and YouTube SVGs (copied from urem)
 test-server/           Fake devices for the hardware test (logs what each one received)
 atvdaemon/             The Apple TV daemon (Python, pyatv), runs on the NAS (submodule: toptensoftware/atv-daemon)
-test/                  Test helpers (resolve, slot checks, a wasmoon Lua harness)
+test/                  Test helpers (resolve, page key checks, a wasmoon Lua harness)
 ```
 
 Every code, path and command comes from `tables/`; every address from `targets.mjs`. The layout and the test server
@@ -86,9 +86,14 @@ ControlBlock can't read UDP replies. It runs in Docker on the NAS (`compose.yaml
 
 ## Key map
 
-Same grid as urem's 15-key Stream Deck (index = row * 5 + column). urem's column 0 navigation keys (Home toggle, pager
-arrows, clock) are empty: swipe instead. Every key is a plain 1U key in its slot, with the bake's default id (page
-number across the layout x 15 + slot + 1, so its bindings are `touch[id]`); no spans or groups yet.
+Every page lists each of its keys explicitly with its position, `{ ...key(...), x, y }` (plus `w`, `h` when not 1U;
+grid units, 5 x 3), so a key moves or resizes by editing its own line. The helpers in `layout/keys.mjs` (and the
+activities' local ones, like hdd's `irKey`, `num` and `ch`) each make **one** key with no position; there are no
+helpers that lay out groups of keys. Keys get the bake's default ids (bindings `touch[id]`). The activity tests
+don't pin pages (only meta, the macro pad bindings and a clean resolve with every key drawn), so keys can be moved,
+added or dropped without test changes; the bake test checks the geometry as the device does. Home's test still
+lists its keys (`test/pages.mjs` `assertKeys`, any order and position). Most pages still follow urem's 15-key Stream Deck grid, with urem's
+column 0 navigation keys (Home toggle, pager arrows, clock) left empty: swipe instead.
 
 **Auto-repeat** is ported with urem's settings (`wip/complete-auto-repeat.md`): rewind/forward on Apple TV and Steam
 (`repeat: 100`, so the first repeat waits for the swipe window, 150 ms) and the pad arrows on Apple TV and TV
@@ -96,8 +101,9 @@ number across the layout x 15 + slot + 1, so its bindings are `touch[id]`); no s
 map (`padControls()` in `layout/pad.mjs`); the physical pad's repeat waits for the macro pad's S3 phase
 (`wip/wip-macro-pad.md`).
 
-- **Home:** PlayStation, Steam, power (everything off), Apple TV, Netflix / Prime Video / YouTube (switch to Apple TV,
-  then open the app), 7ch Stereo, TV, DVR list / guide / function (switch to TV, then the IR key). **Long press** an
+- **Home:** power (everything off, 1U) and PlayStation, Steam, Apple TV and TV as 2 x 1.5 keys. Being reworked: the
+  Netflix / Prime Video / YouTube keys (switch to Apple TV, then open the app), 7ch Stereo and the DVR list / guide /
+  function keys (switch to TV, then the IR key) are commented out in `layout/home.mjs` for now. **Long press** an
   activity key (PlayStation, Steam, Apple TV, TV) to switch and then re-send every device's power-on and the receiver
   input (re-sync drifted equipment).
 - **Apple TV:** transport, 7ch Stereo, mute. Pad: menu (long: menu hold), arrows, select (long: select hold).
@@ -109,11 +115,13 @@ map (`padControls()` in `layout/pad.mjs`); the physical pad's repeat waits for t
 - **Every activity:** the encoder sets the volume (step 1/3/5 by spin speed, as urem), pad key 7 (encoder push)
   toggles mute.
 - **Pad page** (the first page of Apple TV, TV and Steam; not PlayStation, which has no pad keys): on-screen keys
-  doing the pad's job while the pad hardware isn't ready. The pad's 2x3 shape in slots 1-3 / 6-8 (red cross =
-  Escape, up, green tick = Enter / left, down, right), Vol+ (4), Vol- (9) and mute (14). Built from the activity's
-  pad spec (`padPage()` in `layout/pad.mjs`), so it always matches the pad: a key the pad leaves unbound (Steam's
-  cross and tick) is empty. Every key fires on tap (touch keys have no press event; long kept, e.g. Apple TV's
-  menu/select hold; the arrows repeat as the pad's do), and Vol+/Vol- move 1 step per tap.
+  doing the pad's job while the pad hardware isn't ready. The pad's 2x3 shape in rows 2-3, columns 2-4 (red cross =
+  Escape, up, green tick = Enter / left, down, right), Vol+, Vol- and mute down the right-hand column. Each activity
+  writes these keys out like any other page, next to its `pad` spec (the physical pad's bindings), so keep the two
+  in step by hand: a key the pad leaves unbound (Steam's cross and tick) is left off. Every key fires on tap (touch
+  keys have no press event; long kept, e.g. Apple TV's menu/select hold; the arrows repeat as the pad's do), and
+  Vol+/Vol- move 1 step per tap and repeat while held (`VOLUME_REPEAT` in `layout/keys.mjs`: 500 ms, then every
+  100 ms).
 
 Look: each key has a grey rounded border on black; pressed, the square fills mid grey. Icons are node-buttonImage
 built-ins with urem's colours, scales and offsets, times `ICON_SCALE` (`layout/look.mjs`, 0.9 for now; the glyphs
