@@ -21,7 +21,7 @@ layout/                The layout as modules:
   context.mjs            ctx = { target, ops }: what every module builds from
   ops.mjs                Op builders over the tables (ir, irPower, atvKey, atvApp, yamaha, hotpc, wake, slideshow, ...)
   look.mjs               Root look (border face, grey pressed fill), colours, ICON_SCALE, icon()/label()
-  keys.mjs               key(), grid(), the transport row, the shared 7ch Stereo and mute keys, the repeat placeholder
+  keys.mjs               key(), grid(), the transport row, the shared 7ch Stereo and mute keys, the repeat check
   pad.mjs                Macro pad and encoder bindings; the volume bindings every activity gets
   devices.mjs            Devices (power op lists), activity meta (devices, Yamaha input, name), switch and resync
   lua.mjs, scripts.mjs   Lua scripts with a generated prelude of constants (addresses, patterns, step tables)
@@ -89,6 +89,12 @@ Same grid as urem's 15-key Stream Deck (index = row * 5 + column). urem's column
 arrows, clock) are empty: swipe instead. Every key is a plain 1U key in its slot, with the bake's default id (page
 number across the layout x 15 + slot + 1, so its bindings are `touch[id]`); no spans or groups yet.
 
+**Auto-repeat** is ported with urem's settings (`wip/complete-auto-repeat.md`): rewind/forward on Apple TV and Steam
+(`repeat: 100`, so the first repeat waits for the swipe window, 150 ms) and the pad arrows on Apple TV and TV
+(`{ initialDelay: 500, period: 100 }`; on-screen on the pad page too). The pad's repeats go in each activity's `pad`
+map (`padControls()` in `layout/pad.mjs`); the physical pad's repeat waits for the macro pad's S3 phase
+(`wip/wip-macro-pad.md`).
+
 - **Home:** PlayStation, Steam, power (everything off), Apple TV, Netflix / Prime Video / YouTube (switch to Apple TV,
   then open the app), 7ch Stereo, TV, DVR list / guide / function (switch to TV, then the IR key). **Long press** an
   activity key (PlayStation, Steam, Apple TV, TV) to switch and then re-send every device's power-on and the receiver
@@ -106,7 +112,7 @@ number across the layout x 15 + slot + 1, so its bindings are `touch[id]`); no s
   Escape, up, green tick = Enter / left, down, right), Vol+ (4), Vol- (9) and mute (14). Built from the activity's
   pad spec (`padPage()` in `layout/pad.mjs`), so it always matches the pad: a key the pad leaves unbound (Steam's
   cross and tick) is empty. Every key fires on tap (touch keys have no press event; long kept, e.g. Apple TV's
-  menu/select hold), with no auto-repeat, and Vol+/Vol- move 1 step per tap.
+  menu/select hold; the arrows repeat as the pad's do), and Vol+/Vol- move 1 step per tap.
 
 Look: each key has a grey rounded border on black; pressed, the square fills mid grey. Icons are node-buttonImage
 built-ins with urem's colours, scales and offsets, times `ICON_SCALE` (`layout/look.mjs`, 0.9 for now; the glyphs
@@ -116,7 +122,6 @@ come out ~50-83 px, so it may go up after a look on the hardware).
 
 | urem feature | In urem2 | What ControlBlock would need |
 |---|---|---|
-| **Auto-repeat while held** (rewind/forward on Apple TV and Steam, the pad arrows) | Single shot. Each key carries its urem `repeat` setting, which `withRepeat()` in `layout/keys.mjs` drops for now: one place to change once repeat exists. | A `repeat` gesture (fires every period after an initial delay while held), for touch keys and the pad. |
 | **Display off / idle dim** (off with no activity, dim after 8 s idle, first touch only wakes) | Not ported: the screen stays lit. | The backlight is locked on (switch-on glitch, `docs/backlight.md`); then a standalone idle policy. Backlogged in `docs/backlight.md` Open items. |
 | **Re-selecting the current activity re-syncs** (urem re-ran every power-on and the input) | Long press on Home's activity keys (switch, then re-send power-on for its devices and the input, then power-off for every other device), and on the power key (everything off again). Tap only switches; reselecting the current activity only glides. | Possibly a `resync` option on `switchActivity`. |
 | **Global pad bindings** (urem's volume encoder and mute button worked everywhere, even on Home) | The volume bindings are repeated in every activity; with no activity selected the pad does nothing (the receiver is off then anyway). | Root-level (global) bindings. |

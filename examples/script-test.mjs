@@ -83,8 +83,10 @@ const layout = {
 
     activities: {
         Scripts: {
-            hooks: { didActivate: lua(`log('Scripts didActivate')`),
-                     willDeactivate: lua(`log('Scripts willDeactivate')`) },
+            // Plain ops, not scripts: a script's switchActivity() is refused if the switch would run a script
+            // (the "Switch Scripts" and "None (script)" keys switch from a script)
+            hooks: { didActivate: udp("Scripts didActivate"),
+                     willDeactivate: udp("Scripts willDeactivate") },
             pages: [{
                 keys: [
                     key("None\n(script)", "#555a66", `log('none:', switchActivity(nil))`),
@@ -92,6 +94,16 @@ const layout = {
                     key("GET\nreply", "#2a9d8f", `
                         local body, status = http.get('${HTTP}/get?from=activity')
                         log('get:', status, body)`),
+
+                    // Auto repeat (wip/complete-auto-repeat.md): hold for "repeat repeat=0, 1, 2..." every 100 ms (the
+                    // first repeat waits for the 150 ms swipe window), then one "released" with an empty param
+                    { label: "Repeat\n100 ms", color: "#fb8500", repeat: 100,
+                      tap: lua(`log('repeat', param)`),
+                      release: lua(`log('repeat: released, param "' .. param .. '"')`) },
+                    // Busy skip: each run holds the queue 400 ms, so repeats are skipped while one waits (n jumps
+                    // by ~4) and at most one more runs after the release
+                    { label: "Repeat\nslow op", color: "#fb8500", repeat: { initialDelay: 300, period: 100 },
+                      tap: [lua(`log('slow', param, millis())`), { op: "delay", ms: 400 }] },
                 ],
             }],
         },

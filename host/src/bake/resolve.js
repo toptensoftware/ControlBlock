@@ -6,12 +6,12 @@
 // Never throws on bad input: problems are collected with their JSON paths.
 // Images are left as specs (layer definitions at the key's pixel size; stage 2 renders them).
 
-import { BLOB_VERSION, FILE_VERSION, LONG_PRESS_MIN, LONG_PRESS_MAX } from "./consts.js";
+import { BLOB_VERSION, FILE_VERSION, LONG_PRESS_MIN, LONG_PRESS_MAX, MAX_CONTROLS } from "./consts.js";
 import { Diagnostics, childPath } from "./diag.js";
 import { t, required, checkProps } from "./check.js";
 import { resolveOpList } from "./ops.js";
 import { DEFAULTS_SPEC } from "./look.js";
-import { resolvePage, assignIds, touchBindings } from "./keys.js";
+import { resolvePage, assignIds, touchBindings, repeatCheck, timingOf, checkRepeatGesture } from "./keys.js";
 import { setKeyPath } from "./tree.js";
 
 const isNote = name => name.startsWith("_") || name.startsWith("$");
@@ -20,6 +20,14 @@ const nonEmptyString = t.string({ nonEmpty: true });
 const HOOKS = ["willDeactivate", "willActivate", "didActivate", "didDeactivate"];
 
 const BINDING_SPEC = { control: required(nonEmptyString), event: required(nonEmptyString), do: required(t.any) };
+const longPressMs = t.integer(LONG_PRESS_MIN, LONG_PRESS_MAX);
+const PAD_SPEC = { repeat: repeatCheck, longPressMs };
+
+// A macro pad key's number (key1..key32), or 0 for any other name
+const padKeyNumber = name => {
+    const m = /^key([1-9][0-9]?)$/.exec(name);
+    return m && Number(m[1]) <= MAX_CONTROLS ? Number(m[1]) : 0;
+};
 
 const fileVersion = (v, p, d) =>
     t.integer()(v, p, d) && (v === FILE_VERSION || (d.error(p, `unsupported version ${v} (this tool reads version ${FILE_VERSION})`), false));
@@ -42,7 +50,7 @@ function build(layout, host, diag)
         home: required(t.any), activities: t.map(t.any),
     }, "", diag) ?? {};
 
-    const settings = section(root.settings ?? {}, { longPressMs: t.integer(LONG_PRESS_MIN, LONG_PRESS_MAX) }, "settings", diag) ?? {};
+    const settings = section(root.settings ?? {}, { longPressMs }, "settings", diag) ?? {};
     const rc = {
         diag, host,
         actions: root.actions ?? {},
@@ -142,6 +150,7 @@ function resolveActivities(activities, rootDefaults, rc, defaultsOf)
             hooks: t.object(Object.fromEntries(HOOKS.map(h => [h, t.any]))),
             pages: required(t.array(t.any)),
             bindings: t.array(t.any),
+            pad: t.map(t.any),
         }, path, rc.diag) ?? {};
 
         const defaults = defaultsOf(a, path);
@@ -157,7 +166,11 @@ function resolveActivities(activities, rootDefaults, rc, defaultsOf)
             return { keys: keys.map(k => k.key) };
         });
         // the touch bindings go in front once the keys have ids (finishKeys)
-        const bindings = resolveBindings(a.bindings ?? [], childPath(path, "bindings"), rc);
+        const pad = resolvePad(a.pad ?? {}, childPath(path, "pad"), rc);
+        const bindings = resolveBindings(a.bindings ?? [], childPath(path, "bindings"), rc, pad);
+        for (const { control, path: p } of pad)
+            if (!bindings.some(b => b.control === control.control))
+                rc.diag.warn(p, `${control.control} has no binding in this activity`);
 
         const hooks = a.hooks ?? {};
         const out = {
@@ -165,6 +178,7 @@ function resolveActivities(activities, rootDefaults, rc, defaultsOf)
             displayName: a.displayName ?? null,
             devices: (a.devices ?? []).map((d, i) => deviceIndexOf(d, childPath(childPath(path, "devices"), i), rc)),
             pages, bindings,
+            controls: pad.map(c => c.control),
             ...Object.fromEntries(HOOKS.map(h => [h, resolveOpList(hooks[h], childPath(childPath(path, "hooks"), h), rc, "hook")])),
         };
         rc.touchOwners.push({ owner: out, keys: touchKeys });
@@ -181,8 +195,23 @@ function deviceIndexOf(name, path, rc)
 }
 
 
-function resolveBindings(list, path, rc)
+// An activity's `pad` map (macro pad keys' timing) -> [{ control (a controlTiming), path }] in key order
+function resolvePad(pad, path, rc)
 {
+    return realNames(pad).flatMap(name => {
+        const p = childPath(path, name);
+        const n = padKeyNumber(name);
+        if (!n)
+            return rc.diag.error(p, `pad entries are macro pad keys, key1..key${MAX_CONTROLS}`), [];
+        const own = section(pad[name], PAD_SPEC, p, rc.diag);
+        return own ? [{ n, path: p, control: { control: name, ...timingOf(own, own.longPressMs, p, rc.diag) } }] : [];
+    }).sort((a, b) => a.n - b.n);
+}
+
+// `pad`: the activity's resolvePad result (a repeating control's bindings are checked against it)
+function resolveBindings(list, path, rc, pad)
+{
+    const repeating = new Set(pad.filter(c => c.control.repeatMs).map(c => c.control.control));
     const out = [];
     list.forEach((b, i) => {
         const p = childPath(path, i);
@@ -190,7 +219,10 @@ function resolveBindings(list, path, rc)
             return;
         if (b.control.startsWith("touch["))
             return void rc.diag.error(childPath(p, "control"), "touch keys are bound by the buttons themselves; use a gesture on the button");
-        out.push({ control: b.control, event: b.event, ops: resolveOpList(b.do, childPath(p, "do"), rc, b.event) });
+        const ops = resolveOpList(b.do, childPath(p, "do"), rc, b.event);
+        if (repeating.has(b.control))
+            checkRepeatGesture(b.event, ops, p, rc.diag);
+        out.push({ control: b.control, event: b.event, ops });
     });
     return out;
 }

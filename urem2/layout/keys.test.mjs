@@ -25,12 +25,15 @@ test("key: look plus tap, and long when given", () => {
                      { ...look, tap: ops.atvKey("menu"), long: ops.atvKey("menu", "hold") });
 });
 
-test("repeat is accepted where urem had it and absent from the output", () => {
+test("repeat is kept where urem had it (the bake's key repeat), absent when not given", () => {
     const look = icon("#rewind");
     const plain = key(look, ops.atvKey("left"));
-    assert.deepEqual(key(look, ops.atvKey("left"), { repeat: 100 }), plain);
-    assert.deepEqual(key(look, ops.atvKey("left"), { repeat: { initialDelay: 500, period: 100 } }), plain);
-    assert.deepEqual(withRepeat({ press: [], repeat: 100 }), { press: [] });
+    assert.equal(Object.hasOwn(plain, "repeat"), false);
+    assert.deepEqual(key(look, ops.atvKey("left"), { repeat: 100 }), { ...plain, repeat: 100 });
+    assert.deepEqual(key(look, ops.atvKey("left"), { repeat: { initialDelay: 500, period: 100 } }),
+                     { ...plain, repeat: { initialDelay: 500, period: 100 } });
+    assert.deepEqual(withRepeat({ press: [], repeat: 100 }), { press: [], repeat: 100 });
+    assert.deepEqual(withRepeat({ press: [], repeat: undefined }), { press: [] });
     assert.deepEqual(withRepeat({ press: [] }), { press: [] });
 });
 
@@ -69,8 +72,8 @@ test("transportKeys: urem's transport row (white track/seek, orange play/pause/s
     assert.deepEqual(transportKeys(all, { repeat: 100 }), {
         1: key(icon("#previous-track", white), o("previous")),
         2: key(icon("#next-track", white), o("next")),
-        6: key(icon("#rewind", white), o("left")),
-        7: key(icon("#forward", white), o("right")),
+        6: key(icon("#rewind", white), o("left"), { repeat: 100 }),
+        7: key(icon("#forward", white), o("right"), { repeat: 100 }),
         11: key(icon("#play", orange), o("play")),
         12: key(icon("#pause", orange), o("pause")),
         13: key(icon("#stop", orange), o("menu")),
@@ -91,4 +94,10 @@ test("a layout with the key helpers is clean", async () => {
     assert.deepEqual(tree.home.bindings.map(b => `${b.control} ${b.event}`),
                      ["touch[1] tap", "touch[2] tap", "touch[2] long", "touch[3] tap", "touch[4] tap"]);
     assert.equal(tree.home.keys.filter(k => k.normal).length, 4);
+    // urem's meaning: a number is both the initial delay and the period
+    assert.deepEqual(tree.home.keys.map(k => [k.repeatDelayMs, k.repeatMs]), [[100, 100], [0, 0], [0, 0], [0, 0]]);
+});
+
+test("key: repeat and long together throw (the bake refuses them)", () => {
+    assert.throws(() => key(icon("#play"), [], { long: [], repeat: 100 }), /repeat.*long|long.*repeat/);
 });

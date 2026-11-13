@@ -3,13 +3,13 @@
 
 import { activityMeta } from "../devices.mjs";
 import { grid } from "../keys.mjs";
-import { padBindings, volumeBindings, padPage } from "../pad.mjs";
+import { padBindings, padControls, volumeBindings, padPage } from "../pad.mjs";
 
 // The volume's controls: every activity gets them from volumeBindings, so an activity's pad spec can't use them
 const VOLUME_CONTROLS = ["key7", "enc1"];
 
-// pages: [{ slot: key }, ...] (at least one); pad: padBindings spec for key1..key6; padPage: put the on-screen pad
-// page (pad.mjs padPage) first
+// pages: [{ slot: key }, ...] (at least one); pad: padBindings spec for key1..key6 (its repeats become the activity's
+// `pad` map, padControls); padPage: put the on-screen pad page (pad.mjs padPage) first
 export function defineActivity(ctx, name, { pages, pad = {}, padPage: withPadPage = false })
 {
     const meta = activityMeta(ctx, name);
@@ -22,5 +22,6 @@ export function defineActivity(ctx, name, { pages, pad = {}, padPage: withPadPag
         ...meta,
         pages: [...(withPadPage ? [padPage(ctx, pad)] : []), ...pages].map(slots => ({ keys: grid(slots) })),
         bindings: [...padBindings(pad), ...volumeBindings(ctx)],
+        pad: padControls(pad),
     };
 }

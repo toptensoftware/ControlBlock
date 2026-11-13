@@ -46,15 +46,29 @@ op("scriptOp",         [{ name: "source", type: "length" }, { name: "source", ty
 
 // A key: its id (unique across the layout; touch bindings name it as "touch[id]"), its rect
 // [x, y, w, h] in quarter units from the grid's top-left (the firmware's KeyRect), and one opaque
-// image per state (absent: drawn as background)
+// image per state (absent: drawn as background), and its gesture timing in ms (0 = the root's long
+// press; repeatMs 0 = no auto repeat, repeatDelayMs 0 = the period). A function: binpack writes
+// into its field objects (offset, type), so two types can't share them.
+const timing = () => [
+    { name: "longPressMs", type: "uint", default: 0 },
+    { name: "repeatDelayMs", type: "uint", default: 0 },
+    { name: "repeatMs", type: "uint", default: 0 },
+];
 registerType({
     name: "key",
     fields: [
         { name: "id", type: "ushort" },
         { name: "rect", type: "byte[4]" },
         ...bytes("normal"), ...bytes("pressed"),
-        { name: "longPressMs", type: "uint", default: 0 },
+        ...timing(),
     ],
+});
+
+// A non-touch control's gesture timing (an activity's pad keys, by control name, e.g. "key3"). The type
+// can't be named "control": C++ rejects a member named like its type.
+registerType({
+    name: "controlTiming",
+    fields: [{ name: "control", type: "string" }, ...timing()],
 });
 
 registerType({
@@ -82,6 +96,7 @@ registerType({
         ...list("devices", "int*"),
         ...list("pages", "page*"),
         ...list("bindings", "binding*"),
+        ...list("controls", "controlTiming*"),
         ...opList("willDeactivate"), ...opList("willActivate"), ...opList("didActivate"), ...opList("didDeactivate"),
     ],
 });

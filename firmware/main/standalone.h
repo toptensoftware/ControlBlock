@@ -69,7 +69,13 @@ public:
     // the key with `id` (the control "touch[id]")
     void Key(uint16_t id, int action, uint32_t time_ms);
 
-    // Once per frame: `long` presses that are due
+    // A control's timing from the selected activity's `controls` table (the macro
+    // pad's keys, `key1`..), for GestureBank::Press: zeros (the layout's long-press
+    // time, no repeat) with no activity, while hosted, or for a control not in it.
+    // No swipe-window hold (not_before_ms 0).
+    GestureTiming ControlTiming(const char *control) const;
+
+    // Once per frame: `long` presses and repeats that are due
     void Tick();
 
     // The op task: start the next op. True while there is work.
@@ -95,10 +101,11 @@ private:
     // While a script runs (it waits for the lists) a switch whose lists hold a `script` op
     // is refused: there is one Lua state.
     const char *SwitchActivity(int to);
-    uint32_t KeyLongPressMs(uint16_t id) const;
+    GestureTiming KeyTiming(uint16_t id) const;
 
     static bool GestureHasBinding(const char *control, const char *event, void *ctx);
-    static void GestureTrigger(const char *control, const char *event, void *ctx);
+    static void GestureTrigger(const char *control, const char *event, const char *param, void *ctx);
+    static bool GestureBusy(void *ctx);
 
     StandaloneHost    m_host = {};
     const layoutdata::layoutRoot *m_root = nullptr;

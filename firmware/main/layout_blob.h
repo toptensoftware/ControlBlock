@@ -30,8 +30,9 @@
 #define BPAK_SIGNATURE      0x4B415042u     // "BPAK" as bytes 42 50 41 4B
 #define BPAK_FORMAT_VERSION 1
 #define BPAK_HEADER_SIZE    32
-#define LAYOUT_BLOB_VERSION 2               // the root's `version`; BLOB_VERSION in host/src/bake/consts.js
-                                            // (2: keys are { id, rect, normal, pressed }; 1, the 128 slot keys, is refused)
+#define LAYOUT_BLOB_VERSION 3               // the root's `version`; BLOB_VERSION in host/src/bake/consts.js
+                                            // (3: keys gain repeatDelayMs/repeatMs, activities a `controls` table;
+                                            // 2, keys { id, rect, normal, pressed, longPressMs }, and 1 are refused)
 
 // Limits (a layout over them is rejected)
 #define LAYOUT_MAX_DEVICES      32
@@ -41,6 +42,7 @@
 #define LAYOUT_MAX_ACTIVITY_PAGES (SCREEN_MAX_PAGES - 1)    // Home is page 0
 #define LAYOUT_MAX_OP_DATA      4096        // bytes of an http body or a UDP payload
 #define LAYOUT_MAX_SCRIPT       16384       // bytes of a script's source (MAX_SCRIPT_BYTES in host/src/bake/consts.js)
+#define LAYOUT_MAX_CONTROLS     32          // control timings per activity (pad keys; MAX_CONTROLS in consts.js)
 
 // An image in the blob: its file offset (the image store ID) and byte size.
 // offset 0 = no image.

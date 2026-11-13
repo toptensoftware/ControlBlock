@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { padBindings, volumeBindings, padArrows, padPage, volumeStep, ARROW_REPEAT, PAD_CONTROLS } from "./pad.mjs";
+import { padBindings, padControls, volumeBindings, padArrows, padPage, volumeStep, ARROW_REPEAT, PAD_CONTROLS } from "./pad.mjs";
 import { key, grid, muteKey } from "./keys.mjs";
 import { icon, COLORS } from "./look.mjs";
 import { setVolume } from "../tables/yamaha.mjs";
@@ -41,6 +41,24 @@ test("padBindings: unknown controls, events and bad repeats throw", () => {
     assert.throws(() => padBindings({ key2: { press: [], repeat: 0 } }), /repeat/);
 });
 
+test("padControls: each repeating key's repeat, in control order; no repeat, no entry", () => {
+    assert.deepEqual(Object.entries(padControls({
+        key6: { press: [], repeat: 100 },
+        key1: { tap: [] },
+        key2: { press: [], repeat: ARROW_REPEAT },
+    })), [["key2", { repeat: ARROW_REPEAT }], ["key6", { repeat: 100 }]]);
+    assert.deepEqual(padControls({}), {});
+    assert.deepEqual(padControls({ key1: { tap: [], long: [] } }), {});
+});
+
+test("padControls: the same checks as padBindings; a repeat on the encoder or with long throws", () => {
+    assert.throws(() => padControls({ key8: { press: [], repeat: 100 } }), /unknown pad control/);
+    assert.throws(() => padControls({ key2: { press: [], repeat: 0 } }), /repeat/);
+    assert.throws(() => padControls({ enc1: { turn: [], repeat: 100 } }), /repeat/);
+    assert.throws(() => padControls({ key1: { tap: [], long: [], repeat: 100 } }), /long/);
+    assert.throws(() => padBindings({ key1: { tap: [], long: [], repeat: 100 } }), /long/);
+});
+
 test("volumeBindings: key7 tap mutes, enc1 turn runs the volume script", () => {
     assert.deepEqual(volumeBindings(ctx), [
         { control: "key7", event: "tap", do: yamahaToggle(ctx.target, "mute") },
@@ -48,16 +66,19 @@ test("volumeBindings: key7 tap mutes, enc1 turn runs the volume script", () => {
     ]);
 });
 
-test("an activity with pad and volume bindings is clean", async () => {
+test("an activity with pad and volume bindings and the pad's repeats is clean", async () => {
+    const spec = { key3: { press: ops.ir("pana.ok") }, key4: { press: ops.ir("pana.left"), repeat: 100 } };
     const tree = await cleanLayout({
         version: 1, defaults: ROOT_DEFAULTS, home: { keys: [] },
         activities: { a: { pages: [{ keys: [] }], bindings: [
-            ...padBindings({ key3: { press: ops.ir("pana.ok") }, key4: { press: ops.ir("pana.left"), repeat: 100 } }),
+            ...padBindings(spec),
             ...volumeBindings(ctx),
-        ] } },
+        ], pad: padControls(spec) } },
     });
     assert.deepEqual(tree.activities[0].bindings.map(b => `${b.control} ${b.event}`),
                      ["key3 press", "key4 press", "key7 tap", "enc1 turn"]);
+    assert.deepEqual(tree.activities[0].controls,
+                     [{ control: "key4", longPressMs: 0, repeatDelayMs: 100, repeatMs: 100 }]);
 });
 
 test("padArrows: urem's arrow keys key2/4/5/6 = up/left/down/right on press, with the arrow repeat", () => {
@@ -80,17 +101,18 @@ test("volumeStep: one Yamaha step per tap", () => {
     assert.throws(() => volumeStep(ctx, "sideways"), /volume direction/);
 });
 
-test("padPage: the pad's keys in its 2x3 shape, tap ?? press and long, then Vol+/Vol-/mute", () => {
+test("padPage: the pad's keys in its 2x3 shape, tap ?? press, long and repeat, then Vol+/Vol-/mute", () => {
     const k = n => ops.atvKey(n);
     const spec = { key1: { tap: k("menu"), long: k("home") }, key3: { press: k("select") }, ...padArrows(k) };
     const white = { color: COLORS.white }, purple = { color: COLORS.purple };
+    const repeat = ARROW_REPEAT;
     assert.deepEqual(padPage(ctx, spec), {
         1: key(icon("#cross", { color: COLORS.red }), k("menu"), { long: k("home") }),
-        2: key(icon("#arrow-up", white), k("up")),
+        2: key(icon("#arrow-up", white), k("up"), { repeat }),
         3: key(icon("#check", { color: COLORS.green }), k("select")),
-        6: key(icon("#arrow-left", white), k("left")),
-        7: key(icon("#arrow-down", white), k("down")),
-        8: key(icon("#arrow-right", white), k("right")),
+        6: key(icon("#arrow-left", white), k("left"), { repeat }),
+        7: key(icon("#arrow-down", white), k("down"), { repeat }),
+        8: key(icon("#arrow-right", white), k("right"), { repeat }),
         4: key(icon("#volume-up", purple), volumeStep(ctx, "up")),
         9: key(icon("#volume-down", purple), volumeStep(ctx, "down")),
         14: muteKey(ctx),

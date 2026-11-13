@@ -8,7 +8,7 @@ import { unpackRle } from "rle565/unpack.js";
 import { createRenderer } from "../../src/bake/render-node.js";
 import { FACE_MARGIN } from "../../src/images.js";
 import {
-    KEY_CELL, KEY_COLS, KEY_ROWS, GRID_SLOTS, KEY_QUARTER, MAX_KEYS_PER_PAGE, MAX_KEY_ID, FACE_SIZE, BLOB_VERSION,
+    KEY_CELL, KEY_COLS, KEY_ROWS, GRID_SLOTS, KEY_QUARTER, MAX_KEYS_PER_PAGE, MAX_KEY_ID, FACE_SIZE, BLOB_VERSION, MAX_CONTROLS,
 } from "../../src/bake/consts.js";
 import { ok } from "./helpers.js";
 
@@ -37,6 +37,8 @@ test("the grid constants match the firmware's key_geometry.h", () => {
 test("the blob version matches the firmware's layout_blob.h", () => {
     const h = fs.readFileSync(path.join(here, "../../../firmware/main/layout_blob.h"), "utf8");
     assert.equal(BLOB_VERSION, define(h, "LAYOUT_BLOB_VERSION"));
+    assert.equal(BLOB_VERSION, 3);
+    assert.equal(MAX_CONTROLS, define(h, "LAYOUT_MAX_CONTROLS"));
 });
 
 const decode = buf => {

@@ -29,6 +29,14 @@ Fact("LayoutTypes Read The Sample Blob As Baked")
     Assert((const uint8_t *)k1 == b.GetBuffer() + HomeKey(b, 1));
     Assert(k1->normal_count == U32(b, CB_KEY_COUNT(HomeKey(b, 1), LAYOUT_KEY_NORMAL)));
     Assert(k1->id == 2);
+    // Key 2 doesn't repeat (0 = off); the repeating key (id 400, `repeat: 100`) after it does
+    Assert(k1->repeatDelayMs == 0 && k1->repeatMs == 0);
+    const layoutdata::key *k3 = k1 + 2;
+    Assert(k3->id == 400 && k3->repeatDelayMs == 100 && k3->repeatMs == 100 && k3->longPressMs == 0);
+    // Watch's control timings: key1 alone
+    const layoutdata::activity *a0 = (const layoutdata::activity *)(b.GetBuffer() + (uint32_t)(uintptr_t)root->activities);
+    Assert(a0->controls_count == 1);
+    Assert(a0[1].controls_count == 0);
 }
 
 Fact("LayoutTypes Read The Relocated Sample Through The Structs")
@@ -59,13 +67,18 @@ Fact("LayoutTypes Read The Relocated Sample Through The Structs")
     Assert(strcmp(root->activities[0].displayName, "Watch TV") == 0);
     Assert(root->activities[0].pages_count == 2 && root->activities[0].pages[0].keys_count == 1);
     Assert(root->activities[0].pages[0].keys[0].id == 16 && root->activities[0].pages[1].keys[0].id == 31);
-    // touch[16] tap (the script) and macro1 tap (a hidKey)
-    Assert(root->activities[0].bindings_count == 2);
+    // touch[16] tap (the script), macro1 tap (a hidKey) and key1 press (a script)
+    Assert(root->activities[0].bindings_count == 3);
     bool macro = false;
     for (uint32_t i = 0; i < root->activities[0].bindings_count; i++)
         macro = macro || strcmp(root->activities[0].bindings[i].control, "macro1") == 0;
     Assert(macro);
     Assert(root->devices_count == 2 && strcmp(root->devices[0].name, "tv") == 0);
+
+    // Watch's control timing for the pad's key1: `repeat: { initialDelay: 300, period: 100 }`
+    const layoutdata::controlTiming &c = root->activities[0].controls[0];
+    Assert(strcmp(c.control, "key1") == 0);
+    Assert(c.longPressMs == 0 && c.repeatDelayMs == 300 && c.repeatMs == 100);
 }
 
 Fact("LayoutTypes Key Images Follow The Schema")

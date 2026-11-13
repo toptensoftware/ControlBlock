@@ -1,9 +1,0 @@
-# Bigger USB receive transfers (wip/wip-upload-throughput.md, an experiment, not the default):
-# the vendor OUT endpoint is armed for 4096 bytes at a time instead of 512, so it is re-armed
-# 8x less often, with a 16 KB RX FIFO behind it. The protocol task reads one transfer's worth
-# at a time (host_link.cpp follows CONFIG_TINYUSB_VENDOR_EPSIZE).
-# Internal RAM: the IN and OUT endpoint buffers are both EPSIZE (+7 KB), the RX FIFO +12 KB,
-# the protocol read buffer +3.5 KB.
-# Presets debug-usbbig / release-usbbig (CMakePresets.json), in their own build folders.
-CONFIG_TINYUSB_VENDOR_EPSIZE=4096
-CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=16384

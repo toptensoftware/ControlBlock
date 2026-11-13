@@ -57,3 +57,17 @@ test("key-shapes.mjs: spans, the Volume group, fractional keys and a named id", 
     assert.notDeepEqual(minus.normal, plus.normal);
     assert.notDeepEqual(minus.normal, minus.pressed);
 });
+
+test("script-test.mjs: the Scripts page's repeating keys (log param, slow op for the busy skip)", { timeout: 120000 }, async () => {
+    const { tree } = await bakeChecked(path.join(here, "script-test.mjs"));
+    const scripts = tree.activities.find(a => a.name === "Scripts");
+    const keys = scripts.pages[0].keys.filter(k => k.repeatMs);
+    // repeat: 100 (urem's meaning: delay and period), then { initialDelay: 300, period: 100 }
+    assert.deepEqual(keys.map(k => [k.repeatDelayMs, k.repeatMs, k.longPressMs]), [[100, 100, 0], [300, 100, 0]]);
+    const events = id => scripts.bindings.filter(b => b.control === `touch[${id}]`).map(b => b.event);
+    assert.deepEqual(events(keys[0].id).sort(), ["release", "tap"]);
+    assert.deepEqual(events(keys[1].id), ["tap"]);
+    // the slow key's list ends in a delay long enough to cover several periods
+    const slow = scripts.bindings.find(b => b.control === `touch[${keys[1].id}]`);
+    assert.ok(slow.ops.some(op => op.duration >= 300), JSON.stringify(slow.ops));  // the delay op (resolved: duration)
+});

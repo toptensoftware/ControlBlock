@@ -24,21 +24,31 @@ export const PAD_CONTROLS = [...KEYS, "enc1"];
 const KEY_EVENTS = ["press", "release", "tap", "long"];
 const eventsOf = control => control === "enc1" ? ["turn"] : KEY_EVENTS;
 
-// spec: { key1: { tap, long }, key2: { press, repeat }, enc1: { turn }, ... } -> layout bindings, in control order
-// then event order
-export function padBindings(spec)
+// spec: { key1: { tap, long }, key2: { press, repeat }, enc1: { turn }, ... } -> [[control, { repeat, events }]], in
+// control order, each checked (control, events, repeat). Shared by padBindings and padControls.
+function padEntries(spec)
 {
     for (const control of Object.keys(spec))
         if (!PAD_CONTROLS.includes(control))
             throw new Error(`unknown pad control ${JSON.stringify(control)}`);
-    return PAD_CONTROLS.filter(c => spec[c] !== undefined).flatMap(control => {
-        const events = withRepeat(spec[control]);
+    return PAD_CONTROLS.filter(c => spec[c] !== undefined).map(control => {
+        const { repeat, ...events } = withRepeat(spec[control]);
+        if (repeat !== undefined && control === "enc1")
+            throw new Error(`${control} can't repeat`);
         for (const e of Object.keys(events))
             if (!eventsOf(control).includes(e))
                 throw new Error(`unknown event ${JSON.stringify(e)} for ${control}`);
-        return eventsOf(control).filter(e => events[e] !== undefined).map(event => ({ control, event, do: events[event] }));
+        return [control, { repeat, events }];
     });
 }
+
+// spec (above) -> layout bindings, in control order then event order (the repeat goes to padControls)
+export const padBindings = spec => padEntries(spec).flatMap(([control, { events }]) =>
+    eventsOf(control).filter(e => events[e] !== undefined).map(event => ({ control, event, do: events[event] })));
+
+// spec (above) -> the activity's `pad` map: { key2: { repeat }, ... } for each repeating key, in control order
+export const padControls = spec => Object.fromEntries(
+    padEntries(spec).filter(([, { repeat }]) => repeat !== undefined).map(([control, { repeat }]) => [control, { repeat }]));
 
 // urem volume.js: the encoder steps the Yamaha's volume, its push toggles mute
 export const volumeBindings = ctx => padBindings({

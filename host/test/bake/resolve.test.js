@@ -10,7 +10,7 @@ const act = (extra = {}) => ({ pages: [{ keys: [] }], ...extra });
 test("a minimal layout resolves to an empty Home", () => {
     const t = ok({ version: 1, home: {} });
     assert.equal(t.version, BLOB_VERSION);
-    assert.equal(BLOB_VERSION, 2);
+    assert.equal(BLOB_VERSION, 3);
     assert.equal(t.longPressMs, 0);
     assert.deepEqual(t.home.keys, []);
     assert.deepEqual(t.home.bindings, []);
@@ -77,6 +77,7 @@ test("devices and activities keep file order; names become indices", () => {
     assert.deepEqual(t.activities[0].didDeactivate, []);
     assert.equal(t.activities[0].pages.length, 1);
     assert.deepEqual(t.activities[0].pages[0].keys, []);
+    assert.deepEqual(t.activities[0].controls, []);     // pad control timings (none yet)
 });
 
 test("activity errors: no pages, unknown device, unknown hook, unknown property", () => {
@@ -166,4 +167,57 @@ test("warning: two buttons on a page with identical look and actions", () => {
     assert.match(warningText(r), /home\.keys\[1\]: .*same as.*\[0\]/);
     // empty buttons are not flagged, nor are different actions
     assert.equal(run({ version: 1, home: { keys: [{}, {}, { icon: "#x", tap: delay(1) }, { icon: "#x", tap: delay(2) }] } }).warnings.length, 0);
+});
+
+// ---------------------------------------------------------------- pad controls
+
+const padAct = (pad, bindings = []) => ({ version: 1, home: {}, activities: { A: act({ pad, bindings }) } });
+const bind = (control, event, ops = delay(1)) => ({ control, event, do: ops });
+const hold = { op: "hidKey", keys: "a", mode: "hold" };
+
+test("an activity's pad map becomes its controls table, in control order", () => {
+    const t = ok(padAct({ key3: { repeat: 100 }, key1: { longPressMs: 800 }, key12: { repeat: { initialDelay: 500, period: 100 } } },
+                        [bind("key1", "long"), bind("key3", "press"), bind("key12", "tap")]));
+    assert.deepEqual(t.activities[0].controls, [
+        { control: "key1", longPressMs: 800, repeatDelayMs: 0, repeatMs: 0 },
+        { control: "key3", longPressMs: 0, repeatDelayMs: 100, repeatMs: 100 },
+        { control: "key12", longPressMs: 0, repeatDelayMs: 500, repeatMs: 100 },
+    ]);
+    assert.deepEqual(ok({ version: 1, home: {}, activities: { A: act() } }).activities[0].controls, []);
+    assert.deepEqual(ok(padAct({ _note: "x" })).activities[0].controls, []);
+});
+
+test("pad names are key1..key32; entries take repeat and longPressMs only", () => {
+    for (const name of ["key0", "key33", "key", "enc1", "Key1", "key01"])
+        assert.match(errorText(run(padAct({ [name]: { repeat: 100 } }))), new RegExp(`activities\\.A\\.pad\\.${name}: .*key1\\.\\.key32`));
+    assert.match(errorText(run(padAct({ key1: { rate: 1 } }, [bind("key1", "tap")]))), /activities\.A\.pad\.key1\.rate: unknown property/);
+    assert.match(errorText(run(padAct({ key1: { repeat: 20 } }, [bind("key1", "tap")]))), /activities\.A\.pad\.key1\.repeat: must be between/);
+    assert.match(errorText(run(padAct({ key1: { longPressMs: 5 } }, [bind("key1", "tap")]))), /activities\.A\.pad\.key1\.longPressMs/);
+    assert.match(errorText(run(padAct({ key1: 100 }))), /activities\.A\.pad\.key1: expected an object/);
+    assert.match(errorText(run(padAct([]))), /activities\.A\.pad/);
+    assert.equal(run(padAct({ key32: { repeat: 100 } }, [bind("key32", "tap")])).errors.length, 0);
+});
+
+test("pad errors: a repeating control has no long press (binding or longPressMs) and no hidKey hold under press", () => {
+    assert.match(errorText(run(padAct({ key3: { repeat: 100 } }, [bind("key3", "tap"), bind("key3", "long")]))),
+        /activities\.A\.bindings\[1\]: .*repeat/);
+    assert.match(errorText(run(padAct({ key3: { repeat: 100, longPressMs: 800 } }, [bind("key3", "tap")]))),
+        /activities\.A\.pad\.key3\.longPressMs: .*repeat/);
+    assert.match(errorText(run(padAct({ key3: { repeat: 100 } }, [bind("key3", "press", hold)]))),
+        /activities\.A\.bindings\[0\]: .*hold/);
+    // another control, a non-repeating one, or a hold under release may
+    const fine = run(padAct({ key3: { repeat: 100 } }, [bind("key3", "tap"), bind("key4", "long"), bind("key4", "press", hold), bind("key3", "release", hold)]));
+    assert.equal(fine.errors.length, 0, errorText(fine));
+    assert.equal(run(padAct({ key3: { longPressMs: 900 } }, [bind("key3", "long")])).errors.length, 0);
+});
+
+test("warning: a pad entry for a control with no binding in the activity", () => {
+    const r = run(padAct({ key3: { repeat: 100 } }, [bind("key4", "tap")]));
+    assert.equal(r.errors.length, 0);
+    assert.match(warningText(r), /activities\.A\.pad\.key3: .*no binding/);
+    assert.equal(run(padAct({ key3: { repeat: 100 } }, [bind("key3", "tap")])).warnings.length, 0);
+});
+
+test("pad is only for activities", () => {
+    assert.match(errorText(run({ version: 1, home: { pad: {} } })), /home\.pad: unknown property/);
 });

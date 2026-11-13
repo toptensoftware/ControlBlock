@@ -131,7 +131,7 @@ Fact("LayoutApply Shows Home's Keys With Their Ids And Rects")
     Fixture f;
     Assert(f.Apply());
     Assert(f.layout.PageCount() == 1);
-    Assert(f.layout.KeyCount(0) == (int)f.summary.home_count && f.summary.home_count == 12);
+    Assert(f.layout.KeyCount(0) == (int)f.summary.home_count && f.summary.home_count == 13);
 
     for (uint32_t i = 0; i < f.summary.home_count; i++) {
         const LayoutKey &src = f.summary.home[i];
@@ -173,8 +173,8 @@ Fact("LayoutApply Registers Each Image Once Under Its Offset")
         }
     }
     // The pressed image keys 5 and 10 share is one entry held by both
-    Assert(f.summary.home[3].pressed.offset == f.summary.home[6].pressed.offset);
-    Assert(f.store.Find(f.summary.home[3].pressed.offset)->key_refs == 2);
+    Assert(f.summary.home[4].pressed.offset == f.summary.home[7].pressed.offset);
+    Assert(f.store.Find(f.summary.home[4].pressed.offset)->key_refs == 2);
 }
 
 Fact("LayoutApply Pressed Keys Show Their Pressed Image")

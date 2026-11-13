@@ -14,7 +14,7 @@
       { "icon": "#play", "label": "Play", "action": { "op": "hidKey", "keys": "space" } },
       { "icon": "#next-track", "label": "Next", "tap": { "op": "hidKey", "keys": "ctrl+right" }, "long": { "op": "delay", "ms": 100 } },
       { "icon": "#volume-mute", "label": "Watch", "action": { "op": "switchActivity", "activity": "Watch" } },
-      null,
+      { "id": 400, "label": "Rpt", "repeat": 100, "tap": { "op": "script", "lua": "return param" } },
       { "color": "#aa2222" },
       null,
       { "color": "#225522", "icon": "#play", "label": "Copy", "tap": { "op": "hidKey", "keys": "ctrl+c" } },
@@ -40,7 +40,11 @@
         { "keys": [ { "icon": "#play", "label": "Go", "action": { "op": "script", "lua": "return param" } } ] },
         { "keys": [ { "icon": "#next-track", "label": "N" } ] }
       ],
-      "bindings": [ { "control": "macro1", "event": "tap", "do": { "op": "hidKey", "keys": "ctrl+c" } } ]
+      "bindings": [
+        { "control": "macro1", "event": "tap", "do": { "op": "hidKey", "keys": "ctrl+c" } },
+        { "control": "key1", "event": "press", "do": { "op": "script", "lua": "return param" } }
+      ],
+      "pad": { "key1": { "repeat": { "initialDelay": 300, "period": 100 } } }
     },
     "Listen": {
       "devices": ["avr"],

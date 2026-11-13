@@ -34,6 +34,7 @@ typedef struct udpPacketOp udpPacketOp;
 typedef struct sendWolOp sendWolOp;
 typedef struct scriptOp scriptOp;
 typedef struct key key;
+typedef struct controlTiming controlTiming;
 typedef struct binding binding;
 typedef struct page page;
 typedef struct home home;
@@ -143,8 +144,20 @@ struct key
 	/*   16 */	uint32_t pressed_count;
 	/*   20 */	uint8_t* pressed;
 	/*   24 */	uint32_t longPressMs;
+	/*   28 */	uint32_t repeatDelayMs;
+	/*   32 */	uint32_t repeatMs;
 };
-static_assert(sizeof(key) == 28, "Size of key must be 28 bytes");
+static_assert(sizeof(key) == 36, "Size of key must be 36 bytes");
+
+// controlTiming
+struct controlTiming
+{
+	/*    0 */	const char* control;
+	/*    4 */	uint32_t longPressMs;
+	/*    8 */	uint32_t repeatDelayMs;
+	/*   12 */	uint32_t repeatMs;
+};
+static_assert(sizeof(controlTiming) == 16, "Size of controlTiming must be 16 bytes");
 
 // binding
 struct binding
@@ -196,16 +209,18 @@ struct activity
 	/*   20 */	page* pages;
 	/*   24 */	uint32_t bindings_count;
 	/*   28 */	binding* bindings;
-	/*   32 */	uint32_t willDeactivate_count;
-	/*   36 */	op** willDeactivate;
-	/*   40 */	uint32_t willActivate_count;
-	/*   44 */	op** willActivate;
-	/*   48 */	uint32_t didActivate_count;
-	/*   52 */	op** didActivate;
-	/*   56 */	uint32_t didDeactivate_count;
-	/*   60 */	op** didDeactivate;
+	/*   32 */	uint32_t controls_count;
+	/*   36 */	controlTiming* controls;
+	/*   40 */	uint32_t willDeactivate_count;
+	/*   44 */	op** willDeactivate;
+	/*   48 */	uint32_t willActivate_count;
+	/*   52 */	op** willActivate;
+	/*   56 */	uint32_t didActivate_count;
+	/*   60 */	op** didActivate;
+	/*   64 */	uint32_t didDeactivate_count;
+	/*   68 */	op** didDeactivate;
 };
-static_assert(sizeof(activity) == 64, "Size of activity must be 64 bytes");
+static_assert(sizeof(activity) == 72, "Size of activity must be 72 bytes");
 
 // layoutRoot
 struct layoutRoot

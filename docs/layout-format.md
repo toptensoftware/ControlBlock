@@ -10,6 +10,7 @@ The file a user writes (by hand now, from a web front end later) to define a sta
 - Not checked yet (deliberately): device limits (pages, images, blob size, op list length) and the "icon larger than the icon area" warning.
 - The default pressed look is the normal face with a 35% black overlay, unless `pressed` sets its own `color` or `face`.
 - Keys are rects on the 5x3 grid with ids, spans and groups (see [Keys](#keys)); since 2026-11-12 (blob version 2) each key state is baked into one opaque image. A layout baked before that is refused by the device (empty Home) until it's baked and uploaded again.
+- Auto repeat (see [Auto repeat](#auto-repeat)) came with blob version 3 (2026-11-13): a layout baked before it is refused the same way.
 - The packed structs are in `host/src/bake/schema.js`; `node tools/codegen/gen-types.js` writes their C declarations (`firmware/main/layout_types.gen.h`).
 
 ## Goals
@@ -47,7 +48,8 @@ The file a user writes (by hand now, from a web front end later) to define a sta
       "defaults": { ... },
       "hooks": { "willActivate": [ ... ] },
       "pages": [ { "keys": [ ... ] } ],
-      "bindings": [ ... ]       // macro pad, encoder, anything that isn't a touch key
+      "bindings": [ ... ],      // macro pad, encoder, anything that isn't a touch key
+      "pad": { "key3": { "repeat": 100 } }   // macro pad keys' timing (see Auto repeat)
     }
   }
 }
@@ -91,7 +93,8 @@ More settings (HTTP timeout, Lua limits) are firmware constants today and become
       "willActivate": [], "didActivate": [], "willDeactivate": [], "didDeactivate": []
     },
     "pages": [ { "defaults": { ... }, "keys": [ ... ] }, ... ],
-    "bindings": [ Binding, ... ]
+    "bindings": [ Binding, ... ],
+    "pad": { "key1": { "repeat": ..., "longPressMs": ... }, ... }   // optional; see Auto repeat
   }
 }
 ```
@@ -121,7 +124,7 @@ The page area holds a grid of 5x3 **cells**, 1U each (144x144 px on the device, 
   - a key whose top-left corner is on a whole unit gets that slot's **plain grid id**, `g × 15 + slot + 1`, where `g` numbers the pages across the whole layout (Home 0, then each activity's pages in file order). So a plain 5x3 page keeps the same ids as before keys could move;
   - any other key (corner off the whole-unit lines) gets the lowest free id above `pages × 15`, in layout order. That id changes if pages are added: name an `id` for a stable one.
   - Two keys with the same id (named or default) are an error at the later one: give one of them another `id`.
-- **Groups:** an entry with a `keys` array of its own is a **group**: one picture split into several keys, each pressing alone (Volume `-`/`+` with one "Volume" label across both). The group has `x`, `y` (or its slot), `w`, `h` and look properties: its face, and its own `icon`/`label`, are drawn once across the whole group. Each of its keys has its own `id`, gestures, `longPressMs`, `icon` and `label`, at `x`/`y` (default 0 each) and `w`/`h` (default 1) **relative to the group**. Rules:
+- **Groups:** an entry with a `keys` array of its own is a **group**: one picture split into several keys, each pressing alone (Volume `-`/`+` with one "Volume" label across both). The group has `x`, `y` (or its slot), `w`, `h` and look properties: its face, and its own `icon`/`label`, are drawn once across the whole group. Each of its keys has its own `id`, gestures, `longPressMs`, `repeat`, `icon` and `label`, at `x`/`y` (default 0 each) and `w`/`h` (default 1) **relative to the group**. Rules:
   - The keys inherit the chain plus the group's look, but not its `icon`, `iconText`, `label` or `image`.
   - They can't set `face`, `color`, `image` or `pressed.face`/`pressed.color` (an error: set it on the group).
   - A group has no gestures and no `id` (unknown property), and groups don't nest.
@@ -241,8 +244,38 @@ A button's actions are op lists keyed by the gesture that triggers them. These a
 | `long` | at the long-press time while still held | |
 | `action` | alias for `tap` | The common case: `"action": [...]` reads better than `"tap"` for a plain button. Setting both is an error |
 | `longPressMs` | (timing) | Per-button override of `settings.longPressMs` |
+| `repeat` | (timing) | Auto repeat while held: see [Auto repeat](#auto-repeat) |
 
 Each gesture's value is an [OpList](#op-lists). Double press is not supported yet.
+
+### Auto repeat
+
+A held key can repeat its action, on touch keys (`repeat` on a button or a group's key) and macro pad keys (an activity's `pad` map):
+
+```jsonc
+{ "icon": "#forward", "repeat": 100, "tap": { "op": "udpPacket", ... } }       // first repeat at 100 ms, then every 100 ms
+{ "label": "Up", "repeat": { "initialDelay": 500, "period": 100 }, "tap": [ ... ] }
+
+"activities": { "Watch TV": {
+  "bindings": [ { "control": "key3", "event": "press", "do": { "op": "script", "file": "scripts/vol.lua" } } ],
+  "pad": { "key3": { "repeat": { "initialDelay": 500, "period": 100 } }, "key4": { "longPressMs": 800 } }
+} }
+```
+
+| Form | Meaning |
+|---|---|
+| `repeat: <ms>` | The period, and the initial delay too (as urem) |
+| `repeat: { initialDelay?, period }` | `initialDelay` defaults to `period` |
+
+- Both are integers, 40..10000 ms (40 is about two frames of the device's tick).
+- While held, the key fires `press` and `tap` at the press, again after the initial delay, then every period. Lifting it fires one `release`. Bind the action to `tap` (or `action`) or `press`; both repeat.
+- Each repeat's `param` is `repeat=<n>`: 0 at the press, then 1, 2, ... counting the periods held, so a script can take bigger steps the longer the key is held (`tonumber(param:match("repeat=(%d+)"))`). `release` has no param.
+- A repeat is skipped while earlier ops are still waiting in the queue, so a slow action doesn't pile up and run on after the key is lifted; `n` still counts time, not repeats.
+- On a touch key the first repeat waits for the swipe window (150 ms) even if the delay is shorter, so a swipe that starts on the key runs its action once. Pad keys repeat exactly on time.
+- **Not with long press:** a repeating key can't have a `long` gesture (or, on a pad key, a `long` binding) or its own `longPressMs` (errors); an inherited `longPressMs` is ignored. A `hidKey` op with mode `hold` under the `press` of a repeating key is an error too (each repeat would press the key again; the PC repeats a held key itself): use mode `tap`.
+- `repeat` is a behaviour, not a look property: it doesn't inherit through `defaults` (an error there), and a group can't have one (set it on the group's keys).
+- **`pad`** (on an activity): a map from macro pad key names `key1`..`key32` to `{ repeat?, longPressMs? }` (same forms and ranges as on a button). It gives that activity's bindings for the key their timing. A `pad` entry for a key the activity doesn't bind is a warning. Encoders have no timing.
+- Repeats run only in standalone mode; a host gets plain press and release.
 
 ## Op lists
 
@@ -282,7 +315,7 @@ Every op has an `op` code. Properties beyond those listed are errors.
 ```
 
 - `file` is read at bake time and its **source** goes into the blob (the device stores Lua source, not bytecode).
-- The script receives the trigger's `param` string as a global.
+- The script receives the trigger's `param` string as a global (empty for most triggers; `repeat=<n>` on an [auto repeat](#auto-repeat) key's `press` and `tap`).
 - Stage 1 compiles each script with a Lua 5.4 compiler and fails on a syntax error, naming the path and the Lua error line. Identical sources are stored once. A source is at most **16 KB** (16384 bytes; the device refuses a bigger one too).
 - Only `script` ops use `param`. Other ops ignore it.
 - Lua 5.4 with 64-bit integers and doubles. Available: base (without `dofile`, `loadfile`, `load`, `require`), `string`, `table`, `math`, `utf8`. No `io`, `os`, `package`, `debug` or `coroutine`. Each script has its own globals, which last until the next takeover or release (not shared between scripts).
@@ -332,6 +365,7 @@ A button's gestures cover touch keys. Everything else (the 6-key macro pad, the 
 - Several bindings can match one trigger; all are enqueued in file order.
 - Home has no `bindings`. With no activity selected, the pad and encoder do nothing.
 - The encoder's velocity arrives as the trigger's `param` string for a script to read.
+- A pad key's long-press time and auto repeat are set in the activity's `pad` map ([Auto repeat](#auto-repeat)), not on the binding.
 
 ## Inheritance and defaults
 
@@ -344,7 +378,7 @@ root.defaults  →  (home | activity).defaults  →  page.defaults  →  button
 (Home's chain is `root.defaults → home.defaults → button`.)
 
 - **Merge rule:** property by property, nearest wins. Object-valued properties (`pressed`, `face`, `image`, `iconOffset`) merge **recursively**, so `"pressed": { "color": ... }` on a key keeps an inherited `pressed.iconColor`. An array or scalar replaces. An explicit `null` clears an inherited value (so a key can opt out of an inherited `icon`).
-- **Only look properties and `longPressMs` inherit.** Gestures (`tap`, `long`, `press`, ...) and `label` do not: inheriting an action or a label across buttons is almost never intended. (A default `label` can be set explicitly where wanted.)
+- **Only look properties and `longPressMs` inherit.** Gestures (`tap`, `long`, `press`, ...), `repeat` and `label` do not: inheriting an action or a label across buttons is almost never intended. (A default `label` can be set explicitly where wanted.)
 - `defaults` takes the same look properties as a button, minus gestures and `label`.
 - **Empty slots** (`null`) never inherit anything.
 - **Groups** sit between the page and their keys in the chain (see [Keys](#keys)).
@@ -356,13 +390,14 @@ Stage 1 of the pipeline ([`standalone.md`](standalone.md#build-pipeline-and-sour
 
 | In the file | In the blob |
 |---|---|
-| `home.keys` | `home.keys[]`: per key `{ id, rect: [x, y, w, h] (quarter units), normal, pressed (rle565, or absent), longPressMs }`; a group becomes its keys; `null` entries are left out |
+| `home.keys` | `home.keys[]`: per key `{ id, rect: [x, y, w, h] (quarter units), normal, pressed (rle565, or absent), longPressMs, repeatDelayMs, repeatMs }` (0 = default long press / no repeat; a repeating key has `longPressMs` 0); a group becomes its keys; `null` entries are left out |
 | `home.keys[i]` gestures | `home.bindings[]`: `{ control: "touch[id]", event, ops }` |
 | `activities` map | `activities[]` in file order; `switchActivity` names → indices |
 | `pages[p].keys` | `pages[p].keys[]`, as for Home |
 | `pages[p].keys[i]` gestures | the activity's `bindings[]`, with `control: "touch[id]"`: ids are unique across the layout, so the name alone says which key |
 | `activity.devices` | `devices: int[]` (indices into the root `devices` order) |
 | `activity.bindings[]` | appended to the activity's `bindings[]` after the generated touch ones |
+| `activity.pad` | the activity's `controls[]`: `{ control: "keyN", longPressMs, repeatDelayMs, repeatMs }`, sorted by key number |
 | `devices.<name>` | `devices[]` in file order |
 | `use` references | expanded inline |
 | `script` ops | Lua source strings (deduplicated), already compile-checked |
@@ -388,6 +423,7 @@ Errors:
 - A `script` with both or neither of `lua` and `file`; a missing file; a Lua syntax error; a source over 16 KB.
 - A missing icon/SVG file, or a render that fails.
 - A `control` of the form `touch[...]` in `bindings`.
+- Auto repeat: a `repeat` of the wrong shape or outside 40..10000 ms; `repeat` with a `long` gesture (or a `long` binding of a repeating pad key), or with the key's own `longPressMs`; a `hidKey` `hold` under the `press` of a repeating key or pad key; `repeat` in `defaults` or on a group; a `pad` name other than `key1`..`key32`.
 - Resolved layout exceeds a device limit: images or pages (the PSRAM image store and the three page buffers are the real limit), blob size (the partition), op list length. Limits are read from the firmware's published constants (the same source as GET_INFO), so they stay in one place.
 
 Warnings:
@@ -396,6 +432,7 @@ Warnings:
 - A device listed by no activity; an action that nothing uses.
 - Two buttons that resolve to identical images *and* actions (a likely copy-paste), at most once per page.
 - A group whose keys don't cover it (that part shows black).
+- A `pad` entry for a key the activity has no binding for.
 - An `icon` larger than the icon area will be clipped.
 
 ## Example

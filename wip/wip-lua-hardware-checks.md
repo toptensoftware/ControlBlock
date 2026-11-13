@@ -162,8 +162,9 @@ Home keys, by row:
   next script still runs.
 - [ ] `Type Hi!` (focus a text box first): types `Hi!`.
 - [ ] `Switch Scripts`: `bad name: nil unknown activity`, `switch: true`, the `after` line, then
-  `activity: none -> Scripts` and `Scripts didActivate`. On its page: `GET reply` works, `None (script)` goes back
-  (`Scripts willDeactivate`, `activity: Scripts -> none`).
+  `activity: none -> Scripts` and `Scripts didActivate` (a UDP line on the test server: the hooks are plain ops
+  since a script's switch that would run a script is refused). On its page: `GET reply` works, `None (script)`
+  goes back (`Scripts willDeactivate` on the test server, `activity: Scripts -> none`).
 
 ## Doc changes (approved and applied 2026-11-07)
 - CLAUDE.md: the `RUN_STRESS` bullet names the Lua churn cases; the Lua module entry has the `scripts:` log line and

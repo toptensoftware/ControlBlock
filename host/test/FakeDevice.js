@@ -60,7 +60,7 @@ function checkImage(bytes)
 const rectValid = k => k.w > 0 && k.h > 0 && k.x + k.w <= GRID_QW && k.y + k.h <= GRID_QH;
 const rectsOverlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
-const USB_RX_TRANSFER = 512;    // the firmware's receive transfer (CONFIG_TINYUSB_VENDOR_EPSIZE)
+const USB_RX_TRANSFER = 4096;   // the firmware's receive transfer (CONFIG_TINYUSB_VENDOR_EPSIZE)
 
 // Requests that edit the keys, images or status bar: refused while standalone
 const HOSTED_REQUESTS = [Msg.RESET, Msg.SET_STATUS_TEXT, Msg.PUT_IMAGE, Msg.FREE_IMAGES, Msg.SET_PAGE_COUNT, Msg.SET_KEYS, Msg.SET_PAGE];
@@ -136,7 +136,7 @@ export class FakeDevice
     }
 
     // Like the firmware's USB receive (docs/protocol.md, "Zero-length packets"): bytes arrive in
-    // 512-byte receive transfers of 64-byte packets, and a transfer only completes when it is full
+    // 4096-byte receive transfers of 64-byte packets, and a transfer only completes when it is full
     // or a short packet (or a ZLP) ends it. So a transfer that ends on a whole packet leaves the
     // bytes since the last 512 boundary undelivered until the next short packet or ZLP.
     _receive(bytes)
@@ -156,6 +156,8 @@ export class FakeDevice
 
     async transferOut(ep, data)
     {
+        if (this.gone)                      // off the bus (restarting): nothing is received or answered
+            throw new Error("LIBUSB_ERROR_NO_DEVICE");
         for (const msg of this._parser.push(this._receive(new Uint8Array(data)))) {
             this.requests.push(msg);
             if (msg.type === Msg.SET_BACKLIGHT && msg.payload.length >= 1)
@@ -532,7 +534,12 @@ export class FakeDevice
                 this.gone = true;               // restart
                 this.push(null);
                 if (c.restartMs)
-                    setTimeout(() => { this.gone = false; }, c.restartMs);
+                    setTimeout(() => {          // a restarted device has nothing left to send or half-received
+                        this._out = [];
+                        this._held = new Uint8Array(0);
+                        this._parser = new MessageParser();
+                        this.gone = false;
+                    }, c.restartMs);
             }
         };
         c.inflight++;

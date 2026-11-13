@@ -63,7 +63,9 @@ Fact("LayoutBlob Sample Is Valid")
     // corners an assigned one (above the layout's pages * 15)
     struct Want { uint16_t id; KeyRect r; };
     const Want want[] = {
-        { 1, { 0, 0, 4, 4 } }, { 2, { 4, 0, 4, 4 } }, { 3, { 8, 0, 4, 4 } }, { 5, { 16, 0, 4, 4 } },
+        { 1, { 0, 0, 4, 4 } }, { 2, { 4, 0, 4, 4 } }, { 3, { 8, 0, 4, 4 } },
+        { 400, { 12, 0, 4, 4 } },                               // its own id (the repeating key)
+        { 5, { 16, 0, 4, 4 } },
         { 7, { 4, 4, 4, 4 } }, { 8, { 8, 4, 4, 4 } }, { 10, { 16, 4, 4, 4 } },
         { 11, { 0, 8, 8, 4 } },                                 // 2U
         { 13, { 8, 8, 2, 4 } }, { 61, { 10, 8, 2, 4 } },         // 0.5U each
@@ -86,8 +88,8 @@ Fact("LayoutBlob Sample Is Valid")
         Assert(k.normal.offset != k.pressed.offset);
     }
     // Shared images are stored once: keys 5 and 10 (plain colour, no icon) press the same way
-    Assert(s.home[3].pressed.offset == s.home[6].pressed.offset);
-    Assert(s.home[3].normal.offset != s.home[6].normal.offset);
+    Assert(s.home[4].pressed.offset == s.home[7].pressed.offset);
+    Assert(s.home[4].normal.offset != s.home[7].normal.offset);
 }
 
 Fact("LayoutBlob LayoutKeyOf Reads A Relocated Key Like The Summary")
@@ -123,11 +125,67 @@ Fact("LayoutBlob Key With No Images Is Valid")
     Assert(sum.home[0].normal.size == 0 && sum.home[0].pressed.size == 0);
 }
 
-Fact("LayoutBlob Refuses The Old Version")
+Fact("LayoutBlob Refuses The Old Versions")
 {
-    // Version 1 had fixed pages of 15 slot keys with four 128 images each
-    Assert(LAYOUT_BLOB_VERSION == 2);
+    // Version 1 had fixed pages of 15 slot keys with four 128 images each; version 2's keys had no
+    // repeat timing and its activities no `controls` table
+    Assert(LAYOUT_BLOB_VERSION == 3);
     Assert(Validate(With(CB_ROOT, 1)) == LayoutError::BadVersion);
+    Assert(Validate(With(CB_ROOT, 2)) == LayoutError::BadVersion);
+}
+
+namespace
+{
+    // The sample with the first activity's `controls` table pointed at `target` with `count` entries.
+    // The sample's own table is left unreferenced, so its name slots leave the relocation table
+    // (every relocated slot must be reached); if it had no table, the pointer slot joins it.
+    List<uint8_t> WithControls(uint32_t target, uint32_t count)
+    {
+        List<uint8_t> b = LoadSample();
+        uint32_t acts = U32(b, CB_ROOT_ACTIVITIES_PTR);
+        uint32_t slot = acts + CB_OFF(activity, controls);
+        uint32_t old = U32(b, slot), old_count = U32(b, acts + CB_OFF(activity, controls_count));
+        Put32(b, acts + CB_OFF(activity, controls_count), count);
+        Put32(b, slot, target);
+        List<uint32_t> r = Relocs(b);
+        for (uint32_t i = 0; old && i < old_count; i++)
+            r.RemoveAt(r.IndexOf(old + i * (uint32_t)sizeof(layoutdata::controlTiming) + CB_OFF(controlTiming, control)));
+        if (!old) {
+            int at = 0;
+            while (at < r.GetCount() && r[at] < slot)
+                at++;
+            r.InsertAt(at, slot);
+        }
+        return WithRelocs(b, r);
+    }
+}
+
+Fact("LayoutBlob Checks An Activity's Control Timings")
+{
+    List<uint8_t> b = LoadSample();
+    uint32_t acts = U32(b, CB_ROOT_ACTIVITIES_PTR);
+    uint32_t listen = acts + (uint32_t)sizeof(layoutdata::activity);
+    // The sample's Watch has one (key1), Listen none
+    Assert(U32(b, acts + CB_OFF(activity, controls_count)) == 1);
+    Assert(U32(b, listen + CB_OFF(activity, controls_count)) == 0);
+    // A controlTiming is a name then three u32s, as big as a binding, whose first field is its
+    // control's name: the Watch bindings read as control timings are a valid table
+    Assert(sizeof(layoutdata::controlTiming) == sizeof(layoutdata::binding));
+    Assert(CB_OFF(controlTiming, control) == CB_OFF(binding, control));
+    uint32_t bindings = U32(b, acts + CB_OFF(activity, bindings));
+    Assert(Validate(WithControls(bindings, 1)) == LayoutError::Ok);
+    Assert(Validate(WithControls(bindings, 2)) == LayoutError::Ok);
+    // Over the limit
+    Assert(LAYOUT_MAX_CONTROLS == 32);
+    Assert(Validate(WithControls(bindings, LAYOUT_MAX_CONTROLS + 1)) == LayoutError::BadLimit);
+    // A null name (Listen's displayName slot as the control)
+    uint32_t null_name = listen + CB_OFF(activity, displayName);
+    Assert(U32(b, null_name) == 0);
+    Assert(Validate(WithControls(null_name, 1)) == LayoutError::BadPointer);
+    // A name that isn't a pointer (a binding's ops_count as the control)
+    Assert(Validate(WithControls(bindings + CB_OFF(binding, ops_count), 1)) != LayoutError::Ok);
+    // Running off the end of the data
+    Assert(Validate(WithControls(Table(b) - 8, 1)) == LayoutError::BadPointer);
 }
 
 Fact("LayoutBlob Rejects Bad Key Rects")
@@ -262,7 +320,7 @@ Fact("LayoutBlob Rejects A Bad Header")
     Assert(Validate(With(0, 0x34365042)) == LayoutError::BadSignature);        // "BP64"
     Assert(Validate(With(4, 2)) == LayoutError::BadVersion);
     Assert(Validate(With(4, 0)) == LayoutError::BadVersion);
-    Assert(Validate(With(CB_ROOT, 3)) == LayoutError::BadVersion);             // the root's version
+    Assert(Validate(With(CB_ROOT, LAYOUT_BLOB_VERSION + 1)) == LayoutError::BadVersion);     // the root's version
 
     List<uint8_t> b = LoadSample();
     uint32_t table = Table(b), count = RelocCount(b);

@@ -46,6 +46,7 @@ namespace
         LayoutError Op(uint32_t op);
         LayoutError OpList(uint32_t count_off, uint32_t ptr_off);
         LayoutError Bindings(uint32_t count_off, uint32_t ptr_off);
+        LayoutError Controls(uint32_t count_off, uint32_t ptr_off);
         LayoutError Device(uint32_t device);
         LayoutError Activity(uint32_t activity);
 
@@ -334,6 +335,16 @@ namespace
         return LayoutError::Ok;
     }
 
+    // An activity's control timings: names only (any ms value is safe; the bake checks the ranges)
+    LayoutError Validator::Controls(uint32_t count_off, uint32_t ptr_off)
+    {
+        uint32_t list, n;
+        TRY(Array(count_off, ptr_off, SIZE(controlTiming), LAYOUT_MAX_CONTROLS, &list, &n));
+        for (uint32_t i = 0; i < n; i++)
+            TRY(Str(list + i * SIZE(controlTiming) + OFF(controlTiming, control), false));
+        return LayoutError::Ok;
+    }
+
     LayoutError Validator::Device(uint32_t d)
     {
         TRY(Str(d + OFF(device, name), false));
@@ -361,6 +372,7 @@ namespace
         }
 
         TRY(Bindings(PAIR(a, activity, bindings)));
+        TRY(Controls(PAIR(a, activity, controls)));
         TRY(OpList(PAIR(a, activity, willDeactivate)));
         TRY(OpList(PAIR(a, activity, willActivate)));
         TRY(OpList(PAIR(a, activity, didActivate)));

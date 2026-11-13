@@ -22,8 +22,9 @@ for (const [name, target] of Object.entries(targets))
     const white = { color: COLORS.white }, orange = { color: COLORS.orange };
 
     test(`${name}: steam meta, the pad page and two pages`, () => {
-        const { pages, bindings, ...meta } = steam(ctx);
+        const { pages, bindings, pad, ...meta } = steam(ctx);
         assert.deepEqual(meta, activityMeta(ctx, "steam"));
+        assert.deepEqual(pad, {});  // urem had no repeat on these
         assert.equal(pages.length, 3);
     });
 

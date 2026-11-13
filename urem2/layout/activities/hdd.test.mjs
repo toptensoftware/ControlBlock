@@ -9,7 +9,7 @@ import { makeContext } from "../context.mjs";
 import { activityMeta } from "../devices.mjs";
 import { key, grid, muteKey } from "../keys.mjs";
 import { icon, label, COLORS } from "../look.mjs";
-import { volumeBindings, padPage } from "../pad.mjs";
+import { volumeBindings, padPage, ARROW_REPEAT } from "../pad.mjs";
 import { targets } from "../../targets.mjs";
 import { assertSlots, layoutWith } from "../../test/slots.mjs";
 import { cleanLayout } from "../../test/resolve.mjs";
@@ -24,8 +24,10 @@ for (const [name, target] of Object.entries(targets))
     const square = color => icon("#square", { color, scale: 0.6 });
 
     test(`${name}: hdd meta, the pad page and three pages`, () => {
-        const { pages, bindings, ...meta } = hdd(ctx);
+        const { pages, bindings, pad, ...meta } = hdd(ctx);
         assert.deepEqual(meta, activityMeta(ctx, "hdd"));
+        assert.deepEqual(pad, { key2: { repeat: ARROW_REPEAT }, key4: { repeat: ARROW_REPEAT },
+                                key5: { repeat: ARROW_REPEAT }, key6: { repeat: ARROW_REPEAT } });
         assert.equal(pages.length, 4);
     });
 
@@ -103,7 +105,10 @@ for (const [name, target] of Object.entries(targets))
         const page = hdd(ctx).pages[0].keys;
         assert.deepEqual([1, 2, 3, 6, 7, 8].map(s => page[s].tap),
                          ["return", "up", "ok", "left", "down", "right"].map(ir));
-        assert.deepEqual(page, grid(padPage(ctx, { key1: { tap: ir("return") }, key2: { tap: ir("up") },
-            key3: { tap: ir("ok") }, key4: { tap: ir("left") }, key5: { tap: ir("down") }, key6: { tap: ir("right") } })));
+        const repeat = ARROW_REPEAT;
+        assert.deepEqual(page, grid(padPage(ctx, { key1: { tap: ir("return") }, key2: { tap: ir("up"), repeat },
+            key3: { tap: ir("ok") }, key4: { tap: ir("left"), repeat }, key5: { tap: ir("down"), repeat },
+            key6: { tap: ir("right"), repeat } })));
+        assert.deepEqual([2, 6, 7, 8].map(s => page[s].repeat), Array(4).fill(ARROW_REPEAT));
     });
 }

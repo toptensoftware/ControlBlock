@@ -4,7 +4,8 @@
 // sample baked by host/src/bake (longPressMs 650). Keys go by id (the control
 // "touch[id]"; the sample's plain grid keys have the bake's ids page * 15 + slot + 1):
 // Home: touch[1] tap (hidKey), touch[2] tap (hidKey) + long (delay), touch[3] tap
-// (switchActivity).
+// (switchActivity), touch[400] repeating tap (script). Watch's `key1` press (script)
+// repeats too (its `pad` entry: delay 300, period 100).
 
 #include "UnitTesting.h"
 #include "Core.h"
@@ -33,6 +34,7 @@ namespace
     const uint16_t K_WIDE  = 11;        // slots 10-11 (2U): tap w, its own longPressMs 900
     const uint16_t K_R     = 61;        // a 0.5U key off the whole-unit corners: an assigned id, tap r
     const uint16_t K_GO    = 16;        // Watch's page 0 (the layout's page 1), slot 0: script
+    const uint16_t K_RPT   = 400;       // Home slot 3: repeat 100 (delay and period), tap script `return param`
 
     struct Rig
     {
@@ -136,6 +138,197 @@ namespace
 
     const uint32_t WOL = OP_SEND_WOL, GET = OP_HTTP_GET, POST = OP_HTTP_POST, UDP = OP_UDP_PACKET, SCRIPT = OP_SCRIPT;
     const uint32_t TV = 1, AVR = 2;
+
+    layoutdata::scriptOp ScriptOf(const char *src)
+    {
+        layoutdata::scriptOp s = {};
+        s.base.op       = OP_SCRIPT;
+        s.source        = src;
+        s.source_count  = (uint32_t)strlen(src);
+        return s;
+    }
+
+    // Ops of `code` that ran
+    int Ran(const Rig &r, uint32_t code)
+    {
+        int n = 0;
+        for (int i = 0; i < r.ran; i++)
+            n += r.run[i] == code;
+        return n;
+    }
+
+    // K_RPT's tap logs its param, and touch[1]'s binding becomes K_RPT's release, logging its own
+    struct RepeatRig : Rig
+    {
+        layoutdata::scriptOp tap = ScriptOf("log('tap ' .. param)");
+        layoutdata::scriptOp rel = ScriptOf("log('rel ' .. param)");
+        layoutdata::op *tap_list[1] = { &tap.base };
+        layoutdata::op *rel_list[1] = { &rel.base };
+        bool bound = false;
+
+        RepeatRig() : Rig(false)
+        {
+            scripts = true;
+            layoutdata::binding *t = FindBinding(root->homePage.bindings, root->homePage.bindings_count, "touch[400]");
+            layoutdata::binding *r = &root->homePage.bindings[0];
+            bound = t && strcmp(t->event, "tap") == 0 && strcmp(r->control, "touch[1]") == 0;
+            if (t) { t->ops = tap_list; t->ops_count = 1; }
+            r->control = "touch[400]"; r->event = "release"; r->ops = rel_list; r->ops_count = 1;
+            Start();
+        }
+    };
+
+    bool IsZero(const GestureTiming &t)
+    {
+        return !t.long_ms && !t.repeat_delay_ms && !t.repeat_ms && !t.not_before_ms;
+    }
+}
+
+// ---- auto repeat (K_RPT: repeat 100 = first repeat 100 ms after the press, then every 100 ms;
+// a touch key's first repeat waits for the swipe window) ----
+
+Fact("Standalone Repeating Key Runs Its Ops At The Press And Each Period With The Repeat Param")
+{
+    RepeatRig r;
+    Assert(r.bound);
+    r.Key(K_RPT, TOUCH_KEY_PRESS);
+    r.Drain();
+    Assert(strcmp(r.script_log, "tap repeat=0|") == 0);
+    r.Advance(100);                                     // the delay has passed, the swipe window hasn't
+    r.Drain();
+    r.Advance(TOUCH_SWIPE_WINDOW_MS - 100 - 1);
+    r.Drain();
+    Assert(strcmp(r.script_log, "tap repeat=0|") == 0);
+    r.Advance(1);                                       // 150 ms: the first repeat, n from the schedule
+    r.Drain();
+    Assert(strcmp(r.script_log, "tap repeat=0|tap repeat=1|") == 0);
+    r.Advance(50);                                      // 200 ms
+    r.Drain();
+    r.Advance(100);                                     // 300 ms
+    r.Drain();
+    Assert(strcmp(r.script_log, "tap repeat=0|tap repeat=1|tap repeat=2|tap repeat=3|") == 0);
+
+    // The release runs `release` once, with no param, and the repeats stop
+    r.Key(K_RPT, TOUCH_KEY_RELEASE);
+    r.Drain();
+    for (int i = 0; i < 10; i++) { r.Advance(100); r.Drain(); }
+    Assert(strcmp(r.script_log, "tap repeat=0|tap repeat=1|tap repeat=2|tap repeat=3|rel |") == 0);
+    Assert(r.sa.Scripts().Errors() == 0 && r.sa.Errors() == 0);
+}
+
+Fact("Standalone Repeating Key Cancelled By A Swipe Releases Once And Stops")
+{
+    RepeatRig r;
+    r.Key(K_RPT, TOUCH_KEY_PRESS);
+    r.Drain();                                          // (undrained, the press's list would make the repeat skip)
+    r.Advance(TOUCH_SWIPE_WINDOW_MS);
+    r.Drain();
+    r.Key(K_RPT, TOUCH_KEY_CANCEL);
+    r.Drain();
+    for (int i = 0; i < 10; i++) { r.Advance(100); r.Drain(); }
+    Assert(strcmp(r.script_log, "tap repeat=0|tap repeat=1|rel |") == 0);
+}
+
+Fact("Standalone Repeats Are Skipped While The Op Queue Has Lists Waiting")
+{
+    Rig r(false);
+    layoutdata::delayOp slow = {};
+    slow.base.op  = OP_DELAY;
+    slow.duration = 1000;
+    layoutdata::op *list[1] = { &slow.base };
+    layoutdata::binding *b = FindBinding(r.root->homePage.bindings, r.root->homePage.bindings_count, "touch[400]");
+    Assert(b);
+    b->ops = list; b->ops_count = 1;
+    r.Start();
+
+    r.Key(K_RPT, TOUCH_KEY_PRESS);                      // at 1000: the first delay starts
+    r.Drain();
+    Assert(r.ran == 1 && r.run[0] == DELAY && r.sa.Queued() == 0);
+    r.Advance(TOUCH_SWIPE_WINDOW_MS);                   // the first repeat waits behind it
+    r.Drain();
+    Assert(r.sa.Queued() == 1);
+    for (int i = 0; i < 16; i++) {                      // to 1950: every repeat skipped, the queue doesn't grow
+        r.Advance(50);
+        r.Drain();
+        Assert(r.sa.Queued() == 1 && r.ran == 1);
+    }
+    r.Advance(50);                                      // 2000: the first delay ends, the waiting one starts
+    r.Drain();
+    Assert(r.ran == 2 && r.sa.Queued() == 0);
+    r.Advance(50);                                      // nothing waits: the next repeat fires
+    r.Drain();
+    Assert(r.sa.Queued() == 1);
+    r.Key(K_RPT, TOUCH_KEY_RELEASE);
+    r.Settle();
+    Assert(r.ran == 3 && r.sa.Queued() == 0);           // nothing ran after the last repeat
+}
+
+Fact("Standalone Activity Switch Stops A Repeating Key")
+{
+    Rig r;
+    r.Key(K_RPT, TOUCH_KEY_PRESS);
+    r.Drain();
+    Assert(Ran(r, SCRIPT) == 1);
+    r.Tap(K_WATCH);
+    r.Drain();
+    for (int i = 0; i < 10; i++) { r.Advance(100); r.Drain(); }
+    r.Key(K_RPT, TOUCH_KEY_RELEASE);
+    r.Drain();
+    Assert(Ran(r, SCRIPT) == 1 && r.sa.Activity() == 0);
+}
+
+Fact("Standalone Takeover Stops A Repeating Key")
+{
+    Rig r;
+    r.Key(K_RPT, TOUCH_KEY_PRESS);
+    r.Drain();
+    r.sa.SetHosted(true);
+    r.sa.SetHosted(false);
+    for (int i = 0; i < 10; i++) { r.Advance(100); r.Drain(); }
+    Assert(Ran(r, SCRIPT) == 1);
+}
+
+Fact("Standalone Repeat Of An Activity Key Is Read From The Activity's Pages")
+{
+    Rig r(false);
+    layoutdata::key &go = r.root->activities[0].pages[0].keys[0];
+    Assert(go.id == K_GO && go.repeatMs == 0);
+    go.repeatDelayMs = 300;
+    go.repeatMs      = 200;
+    r.Start();
+    Assert(r.sa.SelectActivity(0));
+    r.Key(K_GO, TOUCH_KEY_PRESS);
+    r.Drain();
+    Assert(Ran(r, SCRIPT) == 1);
+    r.Advance(299);
+    r.Drain();
+    Assert(Ran(r, SCRIPT) == 1);
+    r.Advance(1);
+    r.Drain();
+    Assert(Ran(r, SCRIPT) == 2);
+    r.Advance(200);
+    r.Drain();
+    Assert(Ran(r, SCRIPT) == 3);
+    r.Key(K_GO, TOUCH_KEY_RELEASE);
+    r.Advance(1000);
+    r.Drain();
+    Assert(Ran(r, SCRIPT) == 3);
+}
+
+Fact("Standalone ControlTiming Reads The Selected Activity's Controls")
+{
+    Rig r;
+    Assert(IsZero(r.sa.ControlTiming("key1")));         // no activity (Home has no controls table)
+    Assert(r.sa.SelectActivity(0));                     // Watch: key1 repeats, delay 300, period 100
+    GestureTiming t = r.sa.ControlTiming("key1");
+    Assert(t.long_ms == 0 && t.repeat_delay_ms == 300 && t.repeat_ms == 100 && t.not_before_ms == 0);
+    Assert(IsZero(r.sa.ControlTiming("key2")));
+    Assert(IsZero(r.sa.ControlTiming("macro1")));
+    Assert(IsZero(r.sa.ControlTiming("touch[400]")));
+    Assert(r.sa.SelectActivity(1));                     // Listen: no controls
+    Assert(IsZero(r.sa.ControlTiming("key1")));
+    r.sa.SetHosted(true);                               // hosted: nothing
+    Assert(IsZero(r.sa.ControlTiming("key1")));
 }
 
 // ---- switchActivity (the sample: Watch uses tv + avr and has a didActivate; Listen uses avr

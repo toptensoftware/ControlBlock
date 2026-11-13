@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include "standalone.h"
 #include "touch_router.h"       // TOUCH_KEY_*
 
@@ -7,9 +8,16 @@ bool Standalone::GestureHasBinding(const char *control, const char *event, void 
     return ((Standalone *)ctx)->m_dispatch.HasBinding(control, event);
 }
 
-void Standalone::GestureTrigger(const char *control, const char *event, void *ctx)
+void Standalone::GestureTrigger(const char *control, const char *event, const char *param, void *ctx)
 {
-    ((Standalone *)ctx)->m_dispatch.Trigger(control, event, "");
+    ((Standalone *)ctx)->m_dispatch.Trigger(control, event, param);
+}
+
+// Repeats are skipped while lists wait behind the active one (no backlog
+// of repeats running after the key is let go)
+bool Standalone::GestureBusy(void *ctx)
+{
+    return ((Standalone *)ctx)->m_queue.Lists() > 0;
 }
 
 void Standalone::Init(const StandaloneHost &host, const layoutdata::layoutRoot *root)
@@ -57,6 +65,7 @@ void Standalone::Arm()
     gh.ctx         = this;
     gh.has_binding = GestureHasBinding;
     gh.trigger     = GestureTrigger;
+    gh.busy        = GestureBusy;
     m_gestures.Init(gh, m_root->longPressMs);
 }
 
@@ -110,27 +119,48 @@ const char *Standalone::SwitchActivity(int to)
     return nullptr;
 }
 
-// A key's own long-press time, by id: Home's keys, then the selected
-// activity's pages (the pages on screen). 0 = the layout's default, also for
-// an id that isn't there.
-uint32_t Standalone::KeyLongPressMs(uint16_t id) const
+// The blob's timing fields (a key's or a controls entry's), with no hold
+template <class T>
+static GestureTiming TimingOf(const T &t)
 {
-    auto find = [id](const layoutdata::key *keys, uint32_t count, uint32_t *ms) {
+    GestureTiming g   = {};
+    g.long_ms         = t.longPressMs;
+    g.repeat_delay_ms = t.repeatDelayMs;
+    g.repeat_ms       = t.repeatMs;
+    return g;
+}
+
+// A key's own timing, by id: Home's keys, then the selected activity's pages
+// (the pages on screen). Zeros (the layout's long-press time, no repeat) for an
+// id that isn't there. A touch key's first repeat waits for the swipe window.
+GestureTiming Standalone::KeyTiming(uint16_t id) const
+{
+    auto find = [id](const layoutdata::key *keys, uint32_t count) -> const layoutdata::key * {
         for (uint32_t i = 0; i < count; i++)
-            if (keys[i].id == id) {
-                *ms = keys[i].longPressMs;
-                return true;
-            }
-        return false;
+            if (keys[i].id == id)
+                return &keys[i];
+        return nullptr;
     };
-    uint32_t ms = 0;
-    if (find(m_root->homePage.keys, m_root->homePage.keys_count, &ms) || m_activity < 0)
-        return ms;
+    const layoutdata::key *k = find(m_root->homePage.keys, m_root->homePage.keys_count);
+    if (!k && m_activity >= 0) {
+        const layoutdata::activity &a = m_root->activities[m_activity];
+        for (uint32_t p = 0; p < a.pages_count && !k; p++)
+            k = find(a.pages[p].keys, a.pages[p].keys_count);
+    }
+    GestureTiming t = k ? TimingOf(*k) : GestureTiming{};
+    t.not_before_ms = TOUCH_SWIPE_WINDOW_MS;
+    return t;
+}
+
+GestureTiming Standalone::ControlTiming(const char *control) const
+{
+    if (!Active() || m_activity < 0 || !control)
+        return {};
     const layoutdata::activity &a = m_root->activities[m_activity];
-    for (uint32_t p = 0; p < a.pages_count; p++)
-        if (find(a.pages[p].keys, a.pages[p].keys_count, &ms))
-            break;
-    return ms;
+    for (uint32_t i = 0; i < a.controls_count; i++)
+        if (strcmp(a.controls[i].control, control) == 0)
+            return TimingOf(a.controls[i]);
+    return {};
 }
 
 void Standalone::Key(uint16_t id, int action, uint32_t time_ms)
@@ -140,7 +170,7 @@ void Standalone::Key(uint16_t id, int action, uint32_t time_ms)
     char control[GESTURE_NAME_MAX];
     TouchControlName(id, control);
     switch (action) {
-    case TOUCH_KEY_PRESS:   m_gestures.Press(control, time_ms, KeyLongPressMs(id)); break;
+    case TOUCH_KEY_PRESS:   m_gestures.Press(control, time_ms, KeyTiming(id)); break;
     case TOUCH_KEY_RELEASE: m_gestures.Release(control, time_ms); break;
     case TOUCH_KEY_CANCEL:  m_gestures.Cancel(control, time_ms); break;
     }

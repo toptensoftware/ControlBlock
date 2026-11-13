@@ -32,6 +32,16 @@ const READ_SIZE        = 4096;      // a multiple of the 64-byte packet size
 // A pending read can't be cancelled (usb 3.x), and close() and the process
 // exit wait for it: at most one heartbeat interval on a live device.
 const READ_TIMEOUT_MS  = 5 * HEARTBEAT_INTERVAL_MS;
+// While writes are queued, the next read isn't submitted (for up to this long): a pending bulk IN
+// read that the device NAKs is polled so often that it halves the bulk OUT rate (measured: 251 vs
+// 493 KB/s; wip/complete-upload-throughput.md). The replies wait in the device's 2 KB transmit
+// FIFO meanwhile; the cap keeps it draining (the device drops a reply it can't send in 1 s).
+// A read is only held back, never submitted and cancelled, so the deaf-pipe rule above holds.
+// Only bulk-data requests hold reads: their replies are 16 bytes. Any other request queued keeps
+// reads going, since its reply may be big (an 8 KB ping echo would fill the FIFO, block the
+// device's writes and stall its reads: pipelined 8 KB pings fell from 702 to 259 KB/s).
+const READ_HOLD_MS     = 20;
+const SMALL_REPLY      = new Set([Msg.PUT_IMAGE, Msg.LAYOUT_DATA]);
 const DEFAULT_TIMEOUT  = 5000;      // per request
 const LAYOUT_COMMIT_TIMEOUT = 30000; // the device checks and reads back the whole layout
 const LAYOUT_WINDOW    = 4;         // layout chunks in flight: each takes the device a while (flash erases)
@@ -59,11 +69,15 @@ export class ControlBlockError extends Error
 export class ControlBlock extends Emitter
 {
     // `device`: a WebUSB USBDevice. Call connect() before anything else.
-    constructor(device, { timeoutMs = DEFAULT_TIMEOUT } = {})
+    constructor(device, { timeoutMs = DEFAULT_TIMEOUT, readHoldMs = READ_HOLD_MS } = {})
     {
         super();
         this.device    = device;
         this.timeoutMs = timeoutMs;
+        this.readHoldMs = readHoldMs;
+        this._queuedWrites = 0;         // _write calls not yet done
+        this._bigReplyWrites = 0;       // ... of which not small-reply ones: reads aren't held
+        this._releaseRead  = null;      // ends a held read's wait (writes drained, or close)
         this.info      = null;
         this.connected = false;
         this._parser   = new MessageParser();
@@ -118,6 +132,7 @@ export class ControlBlock extends Emitter
         if (!this.connected)
             return;
         this.connected = false;
+        this._releaseRead?.();
         this._failAll(new Error("Connection closed"));
         try { await this.device.releaseInterface(INTERFACE); } catch { }
         try { await this.device.close(); } catch { }
@@ -156,7 +171,7 @@ export class ControlBlock extends Emitter
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => this._timeout(seq), timeoutMs);
             this._pending.set(seq, { type, resolve, reject, timer });
-            this._write(encodeMessage(type, seq, payload)).catch(err => this._fail(seq, err));
+            this._write(encodeMessage(type, seq, payload), SMALL_REPLY.has(type)).catch(err => this._fail(seq, err));
         });
     }
 
@@ -515,15 +530,43 @@ export class ControlBlock extends Emitter
     // Writes go out in order, one transfer at a time. A transfer of a whole
     // number of packets is ended with a zero-length packet: the device only
     // sees the end of a transfer at a short packet (docs/protocol.md)
-    _write(bytes)
+    // `smallReply`: the message's reply is small, so reads may be held while it's queued (READ_HOLD_MS)
+    _write(bytes, smallReply = false)
     {
+        this._queuedWrites++;
+        if (!smallReply) {
+            this._bigReplyWrites++;
+            this._releaseRead?.();
+        }
         const p = this._writes.then(async () => {
             await this._transferOut(bytes);
             if (bytes.length % USB_PACKET_SIZE === 0)
                 await this._transferOut(new Uint8Array(0));
+        }).finally(() => {
+            this._queuedWrites--;
+            if (!smallReply)
+                this._bigReplyWrites--;
+            if (!this._queuedWrites)
+                this._releaseRead?.();
         });
         this._writes = p.catch(() => { });
         return p;
+    }
+
+    // Before submitting a read: wait while only small-reply writes are queued, up to readHoldMs
+    _holdRead()
+    {
+        if (!this._queuedWrites || this._bigReplyWrites || !this.connected)
+            return null;
+        return new Promise(resolve => {
+            const done = () => {
+                clearTimeout(timer);
+                this._releaseRead = null;
+                resolve();
+            };
+            const timer = setTimeout(done, this.readHoldMs);
+            this._releaseRead = done;
+        });
     }
 
     async _transferOut(bytes)
@@ -536,6 +579,9 @@ export class ControlBlock extends Emitter
     async _readLoop()
     {
         while (this.connected) {
+            await this._holdRead();
+            if (!this.connected)
+                break;
             let r;
             try {
                 r = await this.device.transferIn(ENDPOINT, READ_SIZE, READ_TIMEOUT_MS);

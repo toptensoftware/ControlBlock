@@ -8,7 +8,7 @@ import { makeContext } from "../context.mjs";
 import { activityMeta } from "../devices.mjs";
 import { key, grid, muteKey } from "../keys.mjs";
 import { icon } from "../look.mjs";
-import { padBindings, volumeBindings, padPage } from "../pad.mjs";
+import { padBindings, padControls, volumeBindings, padPage, ARROW_REPEAT } from "../pad.mjs";
 import { targets } from "../../targets.mjs";
 
 const ctx = makeContext(targets.test);
@@ -21,6 +21,7 @@ test("defineActivity: meta, one page per slot map, pad bindings then volume", ()
         ...activityMeta(ctx, "hdd"),
         pages: [{ keys: grid({ 11: a }) }, { keys: grid({ 14: muteKey(ctx) }) }],
         bindings: [...padBindings(pad), ...volumeBindings(ctx)],
+        pad: {},
     });
 });
 
@@ -37,4 +38,12 @@ test("defineActivity: padPage puts the pad page first, bindings unchanged", () =
     const withPage = defineActivity(ctx, "hdd", { pages: [{ 11: a }], pad, padPage: true });
     assert.deepEqual(withPage.pages, [{ keys: grid(padPage(ctx, pad)) }, { keys: grid({ 11: a }) }]);
     assert.deepEqual(withPage.bindings, defineActivity(ctx, "hdd", { pages: [{ 11: a }], pad }).bindings);
+});
+
+test("defineActivity: pad is padControls of the pad spec (the pad's repeats)", () => {
+    const pad = { key3: { press: ops.ir("pana.ok") }, key5: { press: ops.ir("pana.down"), repeat: ARROW_REPEAT } };
+    const a = defineActivity(ctx, "hdd", { pages: [{}], pad });
+    assert.deepEqual(a.pad, padControls(pad));
+    assert.deepEqual(a.pad, { key5: { repeat: ARROW_REPEAT } });
+    assert.deepEqual(defineActivity(ctx, "playstation", { pages: [{}] }).pad, {});
 });

@@ -60,6 +60,95 @@ test("pipelined requests resolve in order", async () => {
     await cb.close();
 });
 
+// The device's writes wait for the test (`release()` lets every write so far complete), and each
+// transferIn and transferOut is logged ("in" when a read is submitted, "out"/"out done" for writes)
+function slowWrites(dev)
+{
+    const log = [];
+    let gate = [];
+    const send = dev.transferOut.bind(dev), read = dev.transferIn.bind(dev);
+    dev.transferOut = async (ep, data) => {
+        log.push("out");
+        await new Promise(r => gate.push(r));
+        const r = await send(ep, data);
+        log.push("out done");
+        return r;
+    };
+    dev.transferIn = (...args) => { log.push("in"); return read(...args); };
+    return { log, release() { const g = gate; gate = []; g.forEach(r => r()); }, waiting: () => gate.length };
+}
+
+const tick = ms => new Promise(r => setTimeout(r, ms));
+
+// A PUT_IMAGE the device refuses (id 0): a bulk-data request with a 16-byte reply, like an upload chunk
+const bulk = (cb, i) => cb.request(Msg.PUT_IMAGE, encodePutImage(0, 1, 0, Uint8Array.of(i)));
+
+// Release every write until none is waiting; the log from the first write to the last one's end
+async function drain(w)
+{
+    const first = w.log.indexOf("out");
+    while (w.waiting()) {
+        w.release();
+        await tick(5);
+    }
+    return w.log.slice(first, w.log.lastIndexOf("out done"));
+}
+
+test("no read is submitted while bulk-data writes are queued (a pending read slows bulk OUT); reads resume when they drain", async () => {
+    const dev = new FakeDevice({ hosted: true });
+    const cb = new ControlBlock(dev, { timeoutMs: 2000, readHoldMs: 1000 });
+    await cb.connect();
+    const w = slowWrites(dev);
+    const sent = Array.from({ length: 4 }, (_, i) => bulk(cb, i));
+    // FakeDevice's idle reads end every 50 ms ("Cancelled") and the loop resubmits: held now
+    await tick(120);
+    assert.equal(w.waiting(), 1);
+    const during = await drain(w);
+    assert.ok(!during.includes("in"), w.log.join(", "));
+    for (const r of await Promise.all(sent))            // the replies were read after
+        assert.equal(r.status, Status.BAD_ARG);
+    await cb.close();
+});
+
+test("reads aren't held while any other request is queued (its reply may be big: held, it would fill the device's FIFO)", async () => {
+    const dev = new FakeDevice({ hosted: true });
+    const cb = new ControlBlock(dev, { timeoutMs: 2000, readHoldMs: 1000 });
+    await cb.connect();
+    const w = slowWrites(dev);
+    const sent = [bulk(cb, 1), cb.ping(new Uint8Array(100)), bulk(cb, 2)];
+    await tick(120);                                    // FakeDevice's idle reads end and are resubmitted
+    assert.ok(w.log.slice(w.log.indexOf("out")).includes("in"), w.log.join(", "));
+    await drain(w);
+    await Promise.all(sent);
+    await cb.close();
+});
+
+test("a held read still goes out after readHoldMs while writes stay queued (the device's transmit FIFO must drain)", async () => {
+    const dev = new FakeDevice({ hosted: true });
+    const cb = new ControlBlock(dev, { timeoutMs: 2000, readHoldMs: 30 });
+    await cb.connect();
+    const w = slowWrites(dev);
+    const sent = bulk(cb, 7);
+    await tick(150);                                    // the write never completes meanwhile
+    assert.equal(w.waiting(), 1);
+    assert.ok(w.log.slice(w.log.indexOf("out")).includes("in"), w.log.join(", "));
+    w.release();
+    assert.equal((await sent).status, Status.BAD_ARG);
+    await cb.close();
+});
+
+test("close() releases a held read", async () => {
+    const dev = new FakeDevice({ hosted: true });
+    const cb = new ControlBlock(dev, { timeoutMs: 2000, readHoldMs: 60000 });
+    await cb.connect();
+    const w = slowWrites(dev);
+    bulk(cb, 1).catch(() => { });
+    await tick(80);
+    const closed = cb.close();
+    w.release();
+    await closed;                                       // the test runner would hang on a stuck loop
+});
+
 test("a message that ends on a whole USB packet is followed by a zero-length packet", async () => {
     // FakeDevice holds back a transfer that ends on a full packet until a short
     // packet or a ZLP ends it, like the device: without the ZLP these hang
@@ -68,9 +157,9 @@ test("a message that ends on a whole USB packet is followed by a zero-length pac
     const send = dev.transferOut.bind(dev);
     dev.transferOut = async (ep, data) => { sizes.push(new Uint8Array(data).length); return send(ep, data); };
 
-    for (const n of [52, 52 + 64, 52 + 512, 500])     // messages of 64, 128, 576 and 512 bytes
+    for (const n of [52, 52 + 64, 52 + 512, 500, 4084, 4084 + 64])     // messages of 64, 128, 576, 512, 4096 and 4160 bytes
         assert.equal((await cb.ping(new Uint8Array(n))).length, n);
-    assert.deepEqual(sizes, [64, 0, 128, 0, 576, 0, 512, 0]);
+    assert.deepEqual(sizes, [64, 0, 128, 0, 576, 0, 512, 0, 4096, 0, 4160, 0]);
 
     sizes.length = 0;
     await cb.ping(new Uint8Array(53));                  // 65 bytes: a short packet ends it

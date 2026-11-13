@@ -38,10 +38,15 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 # lets one transfer carry several 64-byte packets. A transfer then only ends
 # when full or at a short packet, so hosts must send a ZLP after a write that
 # is a multiple of 64 bytes (docs/protocol.md, "Zero-length packets").
+# 4 KB transfers: each re-arm of the OUT endpoint costs about a 1 ms frame, so
+# 512 B transfers capped uploads at ~493 KB/s and 4 KB ones reach ~845 KB/s
+# (wip/complete-upload-throughput.md). The RX FIFO holds two of them (TinyUSB
+# arms a transfer only for what the FIFO has room for, so less is never lost).
+# Internal RAM: ~15 KB more than 512 B transfers and a 4 KB FIFO.
 CONFIG_TINYUSB_VENDOR_COUNT=1
-CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=4096
+CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=8192
 CONFIG_TINYUSB_VENDOR_TX_BUFSIZE=2048
-CONFIG_TINYUSB_VENDOR_EPSIZE=512
+CONFIG_TINYUSB_VENDOR_EPSIZE=4096
 # The host going away (unplug or suspend) hands the device back to standalone
 # mode (docs/standalone.md "Runtime modes"). Unplug needs no option.
 CONFIG_TINYUSB_SUSPEND_CALLBACK=y

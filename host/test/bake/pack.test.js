@@ -21,12 +21,14 @@ test("the whole tree packs and unpacks to the same values", async () => {
     const tree = await baked({
         version: 1, settings: { longPressMs: 650 },
         devices: { tv: { turnOn: { op: "sendWol", mac: "aa:bb:cc:dd:ee:ff" }, turnOff: { op: "httpPost", url: "http://tv/off", body: "x=1" } } },
-        home: { keys: [{ color: "red", icon: "#a", label: "Go", tap: { op: "switchActivity", activity: "A" } }, null, { id: 300, x: 3.5, y: 2.25, w: 1.5, h: 0.75 }] },
+        home: { keys: [{ color: "red", icon: "#a", label: "Go", tap: { op: "switchActivity", activity: "A" } }, null, { id: 300, x: 3.5, y: 2.25, w: 1.5, h: 0.75, repeat: { initialDelay: 400, period: 90 } }] },
         activities: { A: {
             displayName: "Alpha", devices: ["tv"],
             hooks: { didActivate: { op: "delay", ms: 10 } },
             pages: [{ keys: [{ icon: "#b", longPressMs: 900, tap: { op: "script", lua: "return param" } }] }],
-            bindings: [{ control: "macro1", event: "tap", do: [{ op: "hidKey", keys: "ctrl+c" }, { op: "udpPacket", host: "10.0.0.1", port: 9, data: "hi" }] }],
+            bindings: [{ control: "macro1", event: "tap", do: [{ op: "hidKey", keys: "ctrl+c" }, { op: "udpPacket", host: "10.0.0.1", port: 9, data: "hi" }] },
+                       { control: "key2", event: "tap", do: { op: "delay", ms: 5 } }, { control: "key5", event: "long", do: { op: "delay", ms: 6 } }],
+            pad: { key5: { longPressMs: 1200 }, key2: { repeat: 120 } },
         } },
     });
     const { binary } = packTree(tree);
@@ -59,6 +61,11 @@ test("the whole tree packs and unpacks to the same values", async () => {
     assert.equal(a.didActivate[0].duration, 10);
     assert.equal(a.pages.length, 1);
     assert.equal(a.pages[0].keys[0].longPressMs, 900);
+    // auto repeat (0 = off) and the pad control timings
+    assert.deepEqual([...u.home.keys, ...a.pages[0].keys].map(k => [k.longPressMs, k.repeatDelayMs, k.repeatMs]),
+        [[0, 0, 0], [0, 400, 90], [900, 0, 0]]);
+    assert.deepEqual(a.controls.map(c => [c.control, c.longPressMs, c.repeatDelayMs, c.repeatMs]),
+        [["key2", 0, 120, 120], ["key5", 1200, 0, 0]]);
     assert.equal(a.pages[0].keys[0].id, 16);
     assert.equal(a.bindings[0].control, "touch[16]");
     assert.equal(a.bindings[0].ops[0].source, "return param");

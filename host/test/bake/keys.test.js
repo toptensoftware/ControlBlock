@@ -15,6 +15,7 @@ test("a plain grid: entry i is slot i (row-major, 5x3), a 1U key with id i + 1; 
     const t = ok(home([{}, null, { label: "c" }, ...new Array(11).fill(null), { label: "o" }]));
     assert.deepEqual(rects(t.home.keys), [[1, 0, 0, 4, 4], [3, 8, 0, 4, 4], [15, 16, 8, 4, 4]]);
     assert.equal(t.home.keys[0].longPressMs, 0);
+    assert.deepEqual([t.home.keys[0].repeatDelayMs, t.home.keys[0].repeatMs], [0, 0]);    // no auto repeat
 });
 
 test("plain grid ids continue across pages: Home is page 0, then every activity's pages in file order", () => {
@@ -162,4 +163,61 @@ test("the key placement example (for docs/layout-format.md) resolves", () => {
         [200, 4, 8, 12, 4],       // a 3U key with its own id
     ]);
     assert.deepEqual(t.home.bindings.map(b => b.control), ["touch[1]", "touch[3]", "touch[5]", "touch[10]", "touch[6]", "touch[16]", "touch[200]"]);
+});
+
+// ---------------------------------------------------------------- auto repeat
+
+const timing = k => [k.longPressMs, k.repeatDelayMs, k.repeatMs];
+const hidOp = mode => ({ op: "hidKey", keys: "a", mode });
+
+test("repeat: a number is the period and the initial delay (as urem); an object gives both, initialDelay defaulting to the period", () => {
+    const t = ok(home([{ repeat: 100, tap: delay(1) }, { repeat: { initialDelay: 500, period: 100 } }, { repeat: { period: 80 } }]));
+    assert.deepEqual(t.home.keys.map(timing), [[0, 100, 100], [0, 500, 100], [0, 80, 80]]);
+});
+
+test("repeat on a group's keys; a group itself has none", () => {
+    const t = ok(home([{ w: 2, color: "red", keys: [{ repeat: 100, tap: delay(1) }, { x: 1, tap: delay(2) }] }]));
+    assert.deepEqual(t.home.keys.map(timing), [[0, 100, 100], [0, 0, 0]]);
+    assert.match(errs([{ w: 2, repeat: 100, keys: [{}] }]), /home\.keys\[0\]\.repeat: unknown property/);
+});
+
+test("repeat is not a look property: not allowed in defaults, and an inherited longPressMs is ignored on a repeating key", () => {
+    assert.match(errorText(run({ version: 1, defaults: { repeat: 100 }, home: {} })), /defaults\.repeat: unknown property/);
+    const t = ok({ version: 1, defaults: { longPressMs: 700 }, home: { keys: [{ repeat: 100 }, {}] } });
+    assert.deepEqual(t.home.keys.map(timing), [[0, 100, 100], [700, 0, 0]]);
+});
+
+test("repeat errors: shape and range (40..10000 ms)", () => {
+    assert.match(errs([{ repeat: 39 }]), /home\.keys\[0\]\.repeat: must be between 40 and 10000/);
+    assert.match(errs([{ repeat: 10001 }]), /home\.keys\[0\]\.repeat/);
+    assert.match(errs([{ repeat: 50.5 }]), /home\.keys\[0\]\.repeat/);
+    assert.match(errs([{ repeat: "100" }]), /home\.keys\[0\]\.repeat/);
+    assert.match(errs([{ repeat: { initialDelay: 500 } }]), /home\.keys\[0\]\.repeat\.period: required/);
+    assert.match(errs([{ repeat: { period: 100, initialDelay: 20 } }]), /home\.keys\[0\]\.repeat\.initialDelay: must be between/);
+    assert.match(errs([{ repeat: { period: 100, rate: 2 } }]), /home\.keys\[0\]\.repeat\.rate: unknown property/);
+    assert.equal(run(home([{ repeat: 40 }, { repeat: 10000 }])).errors.length, 0);
+});
+
+test("repeat errors: no long press on a repeating key (a long gesture or its own longPressMs)", () => {
+    assert.match(errs([{ repeat: 100, tap: delay(1), long: delay(2) }]), /home\.keys\[0\]\.long: .*repeat/);
+    assert.match(errs([{ repeat: 100, longPressMs: 800 }]), /home\.keys\[0\]\.longPressMs: .*repeat/);
+    assert.match(errs([{ w: 2, keys: [{ repeat: 100, long: delay(2) }] }]), /home\.keys\[0\]\.keys\[0\]\.long: .*repeat/);
+    assert.equal(run(home([{ repeat: 100, longPressMs: null }])).errors.length, 0);    // null only clears
+});
+
+test("repeat errors: hidKey hold under the press of a repeating key (each repeat would press it again)", () => {
+    assert.match(errs([{ repeat: 100, press: hidOp("hold") }]), /home\.keys\[0\]\.press: .*hold/);
+    assert.match(errs([{ repeat: 100, press: [delay(1), hidOp("hold")] }]), /home\.keys\[0\]\.press: .*hold/);
+    // through a named action too
+    const r = run({ version: 1, actions: { h: hidOp("hold") }, home: { keys: [{ repeat: 100, press: { use: "h" } }] } });
+    assert.match(errorText(r), /home\.keys\[0\]\.press: .*hold/);
+    // tap mode repeats fine, and a hold under release only sends the key up
+    assert.equal(run(home([{ repeat: 100, press: hidOp("tap"), release: hidOp("hold") }])).errors.length, 0);
+    assert.equal(run(home([{ press: hidOp("hold"), release: hidOp("hold") }])).errors.length, 0);   // not repeating
+});
+
+test("warning: duplicate keys count repeat", () => {
+    const b = extra => ({ icon: "#x", tap: delay(1), ...extra });
+    assert.equal(run(home([b({ repeat: 100 }), b({})])).warnings.length, 0);
+    assert.match(warningText(run(home([b({ repeat: 100 }), b({ repeat: 100 })]))), /home\.keys\[1\]: .*same as/);
 });

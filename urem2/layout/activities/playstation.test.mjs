@@ -18,8 +18,9 @@ for (const [name, target] of Object.entries(targets))
     const ctx = makeContext(target);
 
     test(`${name}: playstation: meta, one page with 7ch Stereo and mute, volume bindings only`, () => {
-        const { pages, bindings, ...meta } = playstation(ctx);
+        const { pages, bindings, pad, ...meta } = playstation(ctx);
         assert.deepEqual(meta, activityMeta(ctx, "playstation"));
+        assert.deepEqual(pad, {});
         assert.equal(pages.length, 1);
         assertSlots(pages[0].keys, { 10: sevenChKey(ctx), 14: muteKey(ctx) });
         assert.deepEqual(bindings, volumeBindings(ctx));

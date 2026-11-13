@@ -167,8 +167,8 @@ static void ph_mode_changed(bool hosted, void *)
 
 static void protocol_task(void *)
 {
-    // One receive transfer per read (the endpoint buffer: sdkconfig.defaults, or the
-    // usbbig presets' sdkconfig.usbbig)
+    // One receive transfer per read (the endpoint buffer, CONFIG_TINYUSB_VENDOR_EPSIZE:
+    // sdkconfig.defaults)
     static uint8_t buf[CONFIG_TINYUSB_VENDOR_EPSIZE];
     uint32_t epoch = 0;
     bool     waiting = false;       // images waiting for a sweep

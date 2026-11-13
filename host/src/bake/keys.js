@@ -11,13 +11,49 @@
 // (Home 0, then each activity's pages in file order); a key may name its own `id`; any other key
 // gets the lowest free id above every page's plain grid ids. Touch bindings name the id: touch[id].
 
-import { KEY_COLS, KEY_ROWS, GRID_SLOTS, KEY_QUARTER, MAX_KEYS_PER_PAGE, MAX_KEY_ID, GESTURES } from "./consts.js";
+import { KEY_COLS, KEY_ROWS, GRID_SLOTS, KEY_QUARTER, MAX_KEYS_PER_PAGE, MAX_KEY_ID, GESTURES, OP, HID_MODE, REPEAT_MIN_MS, REPEAT_MAX_MS } from "./consts.js";
 import { childPath } from "./diag.js";
-import { t, required, checkProps } from "./check.js";
+import { t, required, checkProps, checkObject } from "./check.js";
 import { resolveOpList } from "./ops.js";
 import { BUTTON_LOOK_SPEC, MEMBER_LOOK_SPEC, inheritLook, groupLookForKeys, lookImages, imageSpecs, faceBox } from "./look.js";
 
 const GRID_QW = KEY_COLS * 4, GRID_QH = KEY_ROWS * 4;      // the grid in quarter units
+const isObject = v => v !== null && typeof v === "object" && !Array.isArray(v);
+
+// ------------------------------------------------------------ auto repeat (touch keys and pad controls)
+
+const repeatMs = t.integer(REPEAT_MIN_MS, REPEAT_MAX_MS);
+
+// `repeat`: a period in ms that is also the initial delay (as urem), or { initialDelay, period }
+// (initialDelay defaults to the period)
+export const repeatCheck = (v, p, d) =>
+    isObject(v) ? checkObject(v, { initialDelay: repeatMs, period: required(repeatMs) }, p, d) : repeatMs(v, p, d);
+
+// A key's or pad control's timing fields (the blob's `key` and `controlTiming`). `own`: its own
+// checked properties (repeat, longPressMs); `longPressMs`: the long press it would otherwise have
+// (its own or inherited). A repeating control has no long press.
+export function timingOf(own, longPressMs, path, diag)
+{
+    const r = own.repeat;
+    if (r === undefined)
+        return { longPressMs: longPressMs ?? 0, repeatDelayMs: 0, repeatMs: 0 };
+    if (own.longPressMs !== undefined && own.longPressMs !== null)
+        diag.error(childPath(path, "longPressMs"), "auto repeat and long press don't mix: drop longPressMs or repeat");
+    const period = isObject(r) ? r.period : r;
+    return { longPressMs: 0, repeatDelayMs: isObject(r) ? r.initialDelay ?? period : period, repeatMs: period };
+}
+
+// A repeating control's op list for `event` (resolved ops): no long press (it never fires), and no
+// hidKey hold under press (every repeat would send the key down again; the PC repeats a held key itself)
+export function checkRepeatGesture(event, ops, path, diag)
+{
+    if (event === "long")
+        diag.error(path, "auto repeat and long press don't mix: drop the long gesture or the repeat");
+    else if (event === "press" && ops.some(o => o.op === OP.hid_key && o.mode === HID_MODE.hold))
+        diag.error(path, 'hidKey mode "hold" under press would press the key again on every repeat: use mode "tap", or drop the repeat');
+}
+
+// ------------------------------------------------------------ keys
 
 // A position or size in grid units: a whole number of quarters, at least `min`
 const units = min => (v, p, d) =>
@@ -29,12 +65,11 @@ const RECT_SPEC = { x: units(0), y: units(0), w: units(0.25), h: units(0.25) };
 const GESTURE_SPEC = Object.fromEntries([...GESTURES, "action"].map(g => [g, t.any]));
 const ID_SPEC = { id: t.integer(1, MAX_KEY_ID) };
 
-const BUTTON_SPEC = { ...BUTTON_LOOK_SPEC, ...GESTURE_SPEC, ...ID_SPEC, ...RECT_SPEC };
+const BUTTON_SPEC = { ...BUTTON_LOOK_SPEC, ...GESTURE_SPEC, ...ID_SPEC, ...RECT_SPEC, repeat: repeatCheck };
 const GROUP_SPEC = { ...BUTTON_LOOK_SPEC, ...RECT_SPEC, keys: required(t.array(t.any, { min: 1 })) };
-const MEMBER_SPEC = { ...MEMBER_LOOK_SPEC, ...GESTURE_SPEC, ...ID_SPEC, ...RECT_SPEC };
-const NOT_LOOK = [...GESTURES, "action", "id", "x", "y", "w", "h", "keys"];
+const MEMBER_SPEC = { ...MEMBER_LOOK_SPEC, ...GESTURE_SPEC, ...ID_SPEC, ...RECT_SPEC, repeat: repeatCheck };
+const NOT_LOOK = [...GESTURES, "action", "id", "x", "y", "w", "h", "keys", "repeat"];
 
-const isObject = v => v !== null && typeof v === "object" && !Array.isArray(v);
 const lookOf = b => Object.fromEntries(Object.entries(b).filter(([k]) => !NOT_LOOK.includes(k)));
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 const describe = r => `x ${r.x / 4}, y ${r.y / 4}, w ${r.w / 4}, h ${r.h / 4}`;
@@ -78,8 +113,15 @@ function gesturesOf(b, path, rc)
         rc.diag.warn(path, "has a long gesture but no tap");
     const gestures = { ...b, tap: b.tap ?? b.action };
     const tapName = b.tap !== undefined ? "tap" : "action";
-    return GESTURES.map(g => ({ event: g, ops: resolveOpList(gestures[g], childPath(path, g === "tap" ? tapName : g), rc, g) }))
-                   .filter(g => g.ops.length);
+    return GESTURES.flatMap(g => {
+        const p = childPath(path, g === "tap" ? tapName : g);
+        const ops = resolveOpList(gestures[g], p, rc, g);
+        if (!ops.length)
+            return [];
+        if (b.repeat !== undefined)
+            checkRepeatGesture(g, ops, p, rc.diag);
+        return [{ event: g, ops }];
+    });
 }
 
 // A key: { key, path, gestures, explicitId, slotId }. `rect` is absolute (quarter units); `placed`
@@ -93,7 +135,7 @@ function makeKey(b, rect, look, path, page, rc, placed = [], ownFace = true)
     const { normal, pressed } = imageSpecs([...placed, { defs: own, ...box }], width, height);
     const onSlot = rect.x % 4 === 0 && rect.y % 4 === 0;
     return {
-        key: { id: 0, rect: [rect.x, rect.y, rect.w, rect.h], normal, pressed, longPressMs: look.longPressMs ?? 0 },
+        key: { id: 0, rect: [rect.x, rect.y, rect.w, rect.h], normal, pressed, ...timingOf(b, look.longPressMs, path, rc.diag) },
         path,
         gestures: gesturesOf(b, path, rc),
         explicitId: b.id ?? null,
@@ -180,7 +222,7 @@ function warnDuplicates(keys, diag)
     {
         if (!key.normal && !key.pressed && gestures.length === 0)
             continue;
-        const signature = JSON.stringify([key.normal, key.pressed, key.longPressMs, gestures]);
+        const signature = JSON.stringify([key.normal, key.pressed, key.longPressMs, key.repeatDelayMs, key.repeatMs, gestures]);
         if (seen.has(signature))
             diag.warn(path, `is the same as ${seen.get(signature)}`);
         else

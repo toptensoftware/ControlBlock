@@ -15,14 +15,18 @@ function checkRepeat(r)
         throw new Error(`repeat must be a period in ms or { initialDelay, period }, got ${JSON.stringify(r)}`);
 }
 
-// urem's auto-repeat (`repeat: 100` or `{ initialDelay, period }`), kept where urem had it. ControlBlock has no
-// repeat gesture yet, so this is the one place that checks it and drops it (later: emit the repeat gesture here).
+// urem's auto-repeat (`repeat: 100` or `{ initialDelay, period }`), kept where urem had it: the bake's `repeat`
+// has urem's meaning (a number is both the initial delay and the period). The one place that checks it: an
+// undefined repeat is dropped, and a repeat with a long gesture throws (the bake refuses it).
 export function withRepeat(spec)
 {
     const { repeat, ...rest } = spec;
-    if (repeat !== undefined)
-        checkRepeat(repeat);
-    return rest;
+    if (repeat === undefined)
+        return rest;
+    checkRepeat(repeat);
+    if (rest.long !== undefined)
+        throw new Error("repeat and long can't both be on one key");
+    return { ...rest, repeat };
 }
 
 // look: from icon()/label() (spread together for both); ops: the tap's op or op list

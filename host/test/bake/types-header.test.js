@@ -14,7 +14,7 @@ test("the committed layout_types.gen.h matches the schema (run `node tools/codeg
 
 test("the header declares every struct the firmware reads", () => {
     const h = typesHeader();
-    for (const name of ["layoutRoot", "home", "key", "binding", "device", "activity", "page",
+    for (const name of ["layoutRoot", "home", "key", "binding", "device", "activity", "page", "controlTiming",
                         "delayOp", "hidKeyOp", "httpGetOp", "httpPostOp", "udpPacketOp", "sendWolOp", "scriptOp"])
         assert.match(h, new RegExp(`struct ${name}\\s*\\n\\{`), name);
 });

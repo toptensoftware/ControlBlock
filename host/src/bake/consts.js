@@ -1,7 +1,7 @@
 // Constants shared by the bake stages and the packed schema. Anything the firmware also
 // knows is noted; test/bake/render-real.test.js checks them against the firmware headers.
 
-export const BLOB_VERSION = 2;        // the packed blob's version (layout files have their own, see FILE_VERSION). Firmware: LAYOUT_BLOB_VERSION
+export const BLOB_VERSION = 3;       // the packed blob's version (layout files have their own, see FILE_VERSION). Firmware: LAYOUT_BLOB_VERSION
 export const FILE_VERSION = 1;        // the user-level layout file format (docs/layout-format.md)
 
 // The key grid (firmware: key_geometry.h). Keys are rects in units of one cell (1U), placed and
@@ -55,3 +55,11 @@ export const LONG_PRESS_MAX = 10000;
 
 // The longest script source, in bytes. Keep in step with LAYOUT_MAX_SCRIPT in firmware/main/layout_blob.h.
 export const MAX_SCRIPT_BYTES = 16384;
+
+// The most control timings (pad keys) an activity's `controls` table holds. Firmware: LAYOUT_MAX_CONTROLS.
+export const MAX_CONTROLS = 32;
+
+// Auto repeat (a key's or pad control's `repeat`): the period and initial delay range (ms). The
+// minimum is about two frames of the device's ~49 fps tick, which schedules the repeats.
+export const REPEAT_MIN_MS = 40;
+export const REPEAT_MAX_MS = LONG_PRESS_MAX;

@@ -8,7 +8,7 @@ import { makeContext } from "../context.mjs";
 import { activityMeta } from "../devices.mjs";
 import { key, grid, sevenChKey, muteKey } from "../keys.mjs";
 import { icon, COLORS } from "../look.mjs";
-import { volumeBindings, padPage } from "../pad.mjs";
+import { volumeBindings, padPage, ARROW_REPEAT } from "../pad.mjs";
 import { targets } from "../../targets.mjs";
 import { assertSlots, layoutWith } from "../../test/slots.mjs";
 import { cleanLayout } from "../../test/resolve.mjs";
@@ -21,8 +21,10 @@ for (const [name, target] of Object.entries(targets))
 
     test(`${name}: atv meta, the pad page and one page`, () => {
         const a = atv(ctx);
-        const { pages, bindings, ...meta } = a;
+        const { pages, bindings, pad, ...meta } = a;
         assert.deepEqual(meta, activityMeta(ctx, "atv"));
+        assert.deepEqual(pad, { key2: { repeat: ARROW_REPEAT }, key4: { repeat: ARROW_REPEAT },
+                                key5: { repeat: ARROW_REPEAT }, key6: { repeat: ARROW_REPEAT } });
         assert.equal(pages.length, 2);
     });
 
@@ -67,11 +69,13 @@ for (const [name, target] of Object.entries(targets))
     const k = n => ctx.ops.atvKey(n);
     const hold = n => ctx.ops.atvKey(n, "hold");
 
-    test(`${name}: atv pad page: cross menu/hold, tick select/hold, arrows on tap`, () => {
+    test(`${name}: atv pad page: cross menu/hold, tick select/hold, arrows on tap with the arrow repeat`, () => {
+        const repeat = ARROW_REPEAT;
         const page = atv(ctx).pages[0].keys;
         assert.deepEqual(page, grid(padPage(ctx, {
             key1: { tap: k("menu"), long: hold("menu") }, key3: { tap: k("select"), long: hold("select") },
-            key2: { tap: k("up") }, key4: { tap: k("left") }, key5: { tap: k("down") }, key6: { tap: k("right") },
+            key2: { tap: k("up"), repeat }, key4: { tap: k("left"), repeat }, key5: { tap: k("down"), repeat },
+            key6: { tap: k("right"), repeat },
         })));
         assert.deepEqual([page[1].tap, page[1].long, page[3].tap, page[3].long],
                          [k("menu"), hold("menu"), k("select"), hold("select")]);

@@ -20,26 +20,6 @@
                 "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;sdkconfig.release",
                 "SDKCONFIG": "./build/release/sdkconfig"
             }
-        },
-        {
-            "name": "debug-usbbig",
-            "displayName": "Debug, big USB transfers",
-            "description": "debug plus sdkconfig.usbbig (4 KB OUT transfers, 16 KB RX FIFO): an experiment",
-            "binaryDir": "build/debug-usbbig",
-            "cacheVariables": {
-                "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;sdkconfig.usbbig",
-                "SDKCONFIG": "./build/debug-usbbig/sdkconfig"
-            }
-        },
-        {
-            "name": "release-usbbig",
-            "displayName": "Release, big USB transfers",
-            "description": "release plus sdkconfig.usbbig (4 KB OUT transfers, 16 KB RX FIFO): an experiment",
-            "binaryDir": "build/release-usbbig",
-            "cacheVariables": {
-                "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;sdkconfig.release;sdkconfig.usbbig",
-                "SDKCONFIG": "./build/release-usbbig/sdkconfig"
-            }
         }
     ]
 }

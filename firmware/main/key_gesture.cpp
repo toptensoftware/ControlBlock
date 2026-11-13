@@ -6,6 +6,7 @@ static const char EV_PRESS[]   = "press";
 static const char EV_RELEASE[] = "release";
 static const char EV_TAP[]     = "tap";
 static const char EV_LONG[]    = "long";
+static const char NO_PARAM[]   = "";
 
 void TouchControlName(uint16_t id, char *buf)
 {
@@ -48,10 +49,22 @@ bool GestureBank::LongDue(const Slot &s, uint32_t now_ms) const
 void GestureBank::FireLong(Slot &s)
 {
     s.long_fired = true;
-    m_host.trigger(s.control, EV_LONG, m_host.ctx);
+    m_host.trigger(s.control, EV_LONG, NO_PARAM, m_host.ctx);
 }
 
-void GestureBank::Press(const char *control, uint32_t now_ms, uint32_t long_ms)
+// The press (and its tap unless deferred), or a repeat of them: the one place
+// the repeat param is made
+void GestureBank::FirePressTap(Slot &s)
+{
+    char param[GESTURE_PARAM_MAX] = "";
+    if (s.repeat_ms)
+        snprintf(param, sizeof(param), "repeat=%u", (unsigned)s.repeat_n);
+    m_host.trigger(s.control, EV_PRESS, param, m_host.ctx);
+    if (!s.defer_tap)
+        m_host.trigger(s.control, EV_TAP, param, m_host.ctx);
+}
+
+void GestureBank::Press(const char *control, uint32_t now_ms, const GestureTiming &timing)
 {
     if (Find(control))
         return;
@@ -66,12 +79,31 @@ void GestureBank::Press(const char *control, uint32_t now_ms, uint32_t long_ms)
     s.used = true;
     strncpy(s.control, control, GESTURE_NAME_MAX - 1);
     s.down_ms   = now_ms;
-    s.long_ms   = long_ms ? long_ms : m_long_ms;
-    s.defer_tap = m_host.has_binding(s.control, EV_LONG, m_host.ctx);
+    s.long_ms   = timing.long_ms ? timing.long_ms : m_long_ms;
+    s.repeat_ms = timing.repeat_ms;
+    if (s.repeat_ms) {
+        // Repeating: never `long`, so the tap is never deferred
+        s.repeat_delay_ms = timing.repeat_delay_ms ? timing.repeat_delay_ms : timing.repeat_ms;
+        s.not_before_ms   = timing.not_before_ms;
+    } else {
+        s.defer_tap = m_host.has_binding(s.control, EV_LONG, m_host.ctx);
+    }
+    FirePressTap(s);
+}
 
-    m_host.trigger(s.control, EV_PRESS, m_host.ctx);
-    if (!s.defer_tap)
-        m_host.trigger(s.control, EV_TAP, m_host.ctx);
+// Unsigned elapsed time: right across the clock wrapping
+void GestureBank::TickRepeat(Slot &s, uint32_t now_ms)
+{
+    uint32_t held = now_ms - s.down_ms;
+    if (held < s.repeat_delay_ms || held < s.not_before_ms)
+        return;
+    uint32_t n = 1 + (held - s.repeat_delay_ms) / s.repeat_ms;
+    if (n <= s.repeat_n)
+        return;
+    if (m_host.busy && m_host.busy(m_host.ctx))
+        return;         // skipped; the next one fired still counts the time
+    s.repeat_n = n;
+    FirePressTap(s);
 }
 
 void GestureBank::End(const char *control, uint32_t now_ms, bool tap)
@@ -82,9 +114,9 @@ void GestureBank::End(const char *control, uint32_t now_ms, bool tap)
     // A tick may not have come since the threshold passed
     if (tap && LongDue(*s, now_ms))
         FireLong(*s);
-    m_host.trigger(s->control, EV_RELEASE, m_host.ctx);
+    m_host.trigger(s->control, EV_RELEASE, NO_PARAM, m_host.ctx);
     if (tap && s->defer_tap && !s->long_fired)
-        m_host.trigger(s->control, EV_TAP, m_host.ctx);
+        m_host.trigger(s->control, EV_TAP, NO_PARAM, m_host.ctx);
     s->used = false;
 }
 
@@ -93,7 +125,12 @@ void GestureBank::Cancel(const char *control, uint32_t now_ms)  { End(control, n
 
 void GestureBank::Tick(uint32_t now_ms)
 {
-    for (Slot &s : m_slot)
-        if (s.used && LongDue(s, now_ms))
+    for (Slot &s : m_slot) {
+        if (!s.used)
+            continue;
+        if (s.repeat_ms)
+            TickRepeat(s, now_ms);
+        else if (LongDue(s, now_ms))
             FireLong(s);
+    }
 }

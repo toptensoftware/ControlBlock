@@ -184,7 +184,7 @@ Images are the only large traffic: ~3–8 KB per 1U opaque image (more for big o
 - **Until it finishes**, a new image isn't live and a replaced one still shows its old pixels.
 - **`RESET_STREAM`** and **`RESET`** abandon any upload in progress.
 
-**Streaming.** `PUT_IMAGE` data isn't buffered. After the 12-byte prefix, the protocol copies it from the USB read buffer (512 B at a time) straight into the image's own allocation.
+**Streaming.** `PUT_IMAGE` data isn't buffered. After the 12-byte prefix, the protocol copies it from the USB read buffer (one 4 KB receive transfer at a time) straight into the image's own allocation.
 
 **PSRAM writes during an upload.** The bounce fill rule is that nothing may write PSRAM heavily while fills run ([CLAUDE.md](../CLAUDE.md#bounce-fill-rules)). An upload writes at most ~1 MB/s, about 500 B per fill period, far less than the compositor's ~5 KB per gap. The check reads PSRAM too, in bursts of one image. This should be safe, but it needs measuring:
 - **Done:** chunks are copied straight into PSRAM by the protocol task (core 0). `RUN_STRESS` has two "image replaces" cases (at rest and mid-swipe): two icons replaced per tick (~1 MB/s), with every key in view using the icon, so the compositor redraws while the uploads write.
