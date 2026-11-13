@@ -84,6 +84,32 @@ inline bool NetFailureIsExternal(NetResult result, uint16_t status)
     return result != NetResult::Ok || status >= 400;
 }
 
+// A kept-alive connection, idle since its last request, is fit to reuse: a non-blocking
+// peek of its socket returned peek_ret, with would_block set when it failed for want of
+// data. 0 is the server's FIN, bytes are stray, other errors a reset: reconnect instead.
+inline bool NetIdleSocketAlive(int peek_ret, bool would_block)
+{
+    return peek_ret < 0 && would_block;
+}
+
+// Where an http request failed
+enum class NetHttpStage : uint8_t
+{
+    Connect,    // DNS or connect
+    Send,       // writing the request
+    Reply,      // the connection broke (reset or FIN) before the response headers
+    Timeout,    // no reply in time
+    Other,
+};
+
+// Send again once on a fresh connection: a reused keep-alive connection the server had
+// already closed fails at the send or before any reply, so the server never read the
+// request. Timeouts are never retried (the server may have acted on it).
+inline bool NetHttpRetryFresh(bool reused, NetHttpStage stage)
+{
+    return reused && (stage == NetHttpStage::Send || stage == NetHttpStage::Reply);
+}
+
 // The response cap: clip *len, say whether anything was cut.
 inline bool NetClipResponse(uint32_t *len)
 {

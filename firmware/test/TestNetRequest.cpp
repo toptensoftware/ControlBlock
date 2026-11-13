@@ -137,3 +137,22 @@ Fact("Net Failure Is External For Timeouts, Connect Failures And Http Errors")
     Assert(!NetFailureIsExternal(NetResult::Ok, 399));
     Assert(!NetFailureIsExternal(NetResult::Ok, 0));          // udp / wol
 }
+
+Fact("Net Idle Socket Is Alive Only When A Peek Would Block")
+{
+    Assert(NetIdleSocketAlive(-1, true));                      // nothing to read: still open
+    Assert(!NetIdleSocketAlive(0, false));                     // FIN: the server closed it
+    Assert(!NetIdleSocketAlive(1, false));                     // stray bytes on an idle connection
+    Assert(!NetIdleSocketAlive(-1, false));                    // reset or other error
+}
+
+Fact("Net Http Retries Fresh Only When A Reused Connection Died Before A Reply")
+{
+    Assert(NetHttpRetryFresh(true, NetHttpStage::Send));       // write into a dead socket
+    Assert(NetHttpRetryFresh(true, NetHttpStage::Reply));      // reset or FIN before the headers
+    Assert(!NetHttpRetryFresh(false, NetHttpStage::Send));     // a fresh connection's failure is real
+    Assert(!NetHttpRetryFresh(false, NetHttpStage::Reply));
+    Assert(!NetHttpRetryFresh(true, NetHttpStage::Connect));
+    Assert(!NetHttpRetryFresh(true, NetHttpStage::Timeout));   // the server may have acted on it
+    Assert(!NetHttpRetryFresh(true, NetHttpStage::Other));
+}

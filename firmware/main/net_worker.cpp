@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -124,6 +125,39 @@ namespace
         }
     }
 
+    // The client holds an open kept-alive connection the server hasn't closed while it sat
+    // idle (a receiver closes idle ones, and on power changes; written into, the request is
+    // lost). One that has gone is closed here, so the next perform connects afresh.
+    bool keep_alive_usable()
+    {
+        int fd = esp_http_client_get_socket(s_client);
+        if (fd < 0)
+            return false;
+        uint8_t byte;
+        errno = 0;
+        int ret = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (NetIdleSocketAlive(ret, ret < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)))
+            return true;
+        ESP_LOGI(TAG, "kept-alive connection closed by the server, reconnecting");
+        esp_http_client_close(s_client);
+        return false;
+    }
+
+    NetHttpStage http_stage(esp_err_t err)
+    {
+        switch (err) {
+            case ESP_ERR_HTTP_CONNECT:           return NetHttpStage::Connect;
+            case ESP_ERR_HTTP_WRITE_DATA:        return NetHttpStage::Send;
+            case ESP_ERR_HTTP_FETCH_HEADER:                 // a read error before the headers (a timeout is EAGAIN)
+            case ESP_ERR_HTTP_CONNECTION_CLOSED: return NetHttpStage::Reply;
+            case ESP_ERR_TIMEOUT:
+            case ESP_ERR_HTTP_EAGAIN:
+            case ESP_ERR_HTTP_READ_TIMEOUT:
+            case ESP_ERR_HTTP_CONNECTING:        return NetHttpStage::Timeout;
+            default:                             return NetHttpStage::Other;
+        }
+    }
+
     // The request's headers (and the post's Content-Type) onto the client, replacing the last request's.
     // Clearing also drops the client's own Host and User-Agent, so they go back first (the op's
     // headers may override them). With no headers at all the client sends nothing, not even the
@@ -190,9 +224,19 @@ namespace
         // The post field persists between requests: always set it (cleared for a get)
         esp_http_client_set_post_field(s_client, post ? (const char *)r.body : nullptr, post ? (int)r.body_len : 0);
 
+        s_capture = r.wait;
+        bool reused = keep_alive_usable();
         s_body_len = 0;
-        s_capture  = r.wait;
         esp_err_t err = esp_http_client_perform(s_client);
+        NetHttpStage stage = http_stage(err);
+        if (err != ESP_OK && NetHttpRetryFresh(reused, stage)) {
+            ESP_LOGI(TAG, "http %s %s: %s on a reused connection, retrying on a new one", post ? "POST" : "GET",
+                     r.url, esp_err_to_name(err));
+            esp_http_client_close(s_client);
+            s_body_len = 0;
+            err   = esp_http_client_perform(s_client);
+            stage = http_stage(err);
+        }
         if (err == ESP_OK) {
             o.result   = NetResult::Ok;
             o.status   = (uint16_t)esp_http_client_get_status_code(s_client);
@@ -200,8 +244,7 @@ namespace
             return o;
         }
 
-        if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_HTTP_EAGAIN || err == ESP_ERR_HTTP_READ_TIMEOUT ||
-            err == ESP_ERR_HTTP_CONNECTING || err == ESP_ERR_HTTP_WRITE_DATA)
+        if (stage == NetHttpStage::Timeout || stage == NetHttpStage::Send)
             o.result = NetResult::Timeout;
         ESP_LOGW(TAG, "http %s %s: %s", post ? "POST" : "GET", r.url, esp_err_to_name(err));
         drop_client();                          // start clean next time
