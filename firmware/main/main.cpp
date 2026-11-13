@@ -388,7 +388,6 @@ static void comp_add_stats(comp_stats_t *acc)
 // up with this, it keeps up with them.
 
 #define STRESS_SCRIPT_BUSY_US  18000
-#define STRESS_SCRIPT_STACK    12288       // as the op task's (standalone_task.cpp)
 #define STRESS_SCRIPT_PRIO     3
 
 static ScriptHost        s_stress_script;
@@ -430,8 +429,7 @@ static void stress_script(bool on)
 {
     if (on && !s_script_task) {
         s_stress_script.Init(standalone_script_platform(), nullptr);
-        xTaskCreatePinnedToCore(script_churn_task, "stress_lua", STRESS_SCRIPT_STACK, nullptr,
-                                STRESS_SCRIPT_PRIO, &s_script_task, 0);
+        standalone_create_script_task(script_churn_task, "stress_lua", STRESS_SCRIPT_PRIO, &s_script_task);   // as the op task
     }
     s_script_on = on;
     if (on && s_script_task)

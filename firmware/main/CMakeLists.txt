@@ -110,6 +110,9 @@ idf_component_register(
         nvs_flash
 )
 
+# Our Lua settings (main/lua_user.h, included by lua.h), as in the host tests
+target_compile_definitions(${COMPONENT_LIB} PRIVATE "LUA_USER_H=\"lua_user.h\"")
+
 if(CB_RUN_STRESS)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE RUN_STRESS=1)
 endif()

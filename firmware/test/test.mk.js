@@ -62,6 +62,7 @@ export default async function ()
         ],
         define: [
             "_CRT_SECURE_NO_WARNINGS",
+            'LUA_USER_H="lua_user.h"',     // our Lua settings (main/lua_user.h), as on the device
         ],
         gcc_cpp_args: [
             "-Wno-unused-variable",

@@ -8,11 +8,18 @@
 // through usb_hid_send); the rest only log for now.
 
 #include <stdint.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_err.h"
 #include "script_host.h"
 
 // The Lua heap (PSRAM) and log for a ScriptHost: the op task's, and the stress run's
 ScriptPlatform standalone_script_platform(void);
+
+// A task that runs Lua (the op task, the stress run's churn): on core 0, its stack
+// (SCRIPT_TASK_STACK) in PSRAM, sized for Lua's C nesting limit (lua_user.h). Such a
+// task must never run with the cache off (no flash writes from it).
+BaseType_t standalone_create_script_task(TaskFunction_t fn, const char *name, UBaseType_t prio, TaskHandle_t *out);
 
 // Arm from the loaded layout (layout_blob(): relocated, NULL if none) and
 // start the op task. Standalone to begin with.

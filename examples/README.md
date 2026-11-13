@@ -14,7 +14,7 @@ root. Nothing here needs an `npm install`: the scripts import the library by rel
 | `bake-check.mjs`, `layouts.test.mjs` | Test helper and tests: every layout here (and urem2) bakes and its keys pass the device's checks (ids, rects, opaque images of the key's size). `node --test "examples/**/*.test.mjs"` |
 | `net-test.json` | Standalone layout for the net ops (`httpGet`, `httpPost`, `udpPacket`, `sendWol`), against the test server. |
 | `activity-test.mjs` | Standalone layout for activity switching and devices; every hook announces itself to the test server. |
-| `script-test.mjs` | Standalone layout for the Lua `script` op (checklist in `wip/wip-lua-hardware-checks.md`); its Scripts activity also has two auto-repeat keys (`wip/complete-auto-repeat.md`). |
+| `script-test.mjs` | Standalone layout for the Lua `script` op (checklist in `wip/complete-lua-hardware-checks.md`); its Scripts activity also has two auto-repeat keys (`wip/complete-auto-repeat.md`). |
 | `test-common.mjs` | Shared by `activity-test.mjs` and `script-test.mjs`: the test server's address, ops that announce themselves to it, flat key faces. |
 | `test-server/test-server.mjs` | Test server for the layouts above: HTTP on :8000, UDP on :9 (WoL) and :9999. Node built-ins only. `node examples/test-server/test-server.mjs`; its tests: `node --test examples/test-server/test-server.test.mjs` |
 | `test-server/takeover.mjs` | Takes control of the device, holds it, then releases it. `node examples/test-server/takeover.mjs [seconds]` (default 3) |

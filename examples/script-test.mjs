@@ -1,4 +1,4 @@
-// Hardware test layout for the Lua `script` op (wip/wip-lua-hardware-checks.md has the
+// Hardware test layout for the Lua `script` op (wip/complete-lua-hardware-checks.md has the
 // checklist). Scripts log through ESP_LOGI("lua") and talk to examples/test-server/test-server.mjs.
 // After each run of the op queue the device logs a "scripts:" line with the heap peak and the
 // op task's free stack. Bake and upload from the repo root:
@@ -67,9 +67,11 @@ const layout = {
             key("Lua stack\n2000", "#6c757d", `
                 local function g(n) if n == 0 then return 0 end return 1 + g(n - 1) end
                 log('Lua recursion', g(2000))`),
+            // 10 KB strings: the 256 KB cap is reached in ~25 rounds, well inside the 100 ms slice
+            // (100-byte strings took ~1,700 rounds and hit the slice first on the device)
             key("Heap\ncap", "#6c757d", `
                 local t = {}
-                for i = 1, 100000 do t[i] = string.rep('y', 100) .. i end
+                for i = 1, 100000 do t[i] = string.rep('y', 10000) .. i end
                 log('heap: not capped (bad)')`),
             key("Type\nHi!", "#e9c46a", `
                 hid.key('shift+h') hid.key('i') hid.key{ keys = 'shift+1' }
@@ -77,7 +79,7 @@ const layout = {
             key("Switch\nScripts", "#2a9d8f", `
                 log('bad name:', switchActivity('Nope'))
                 log('switch:', switchActivity('Scripts'))
-                log('after the switch call (logged before the switch commits)')`),
+                log('after the switch call (the switch committed and its ops ran first)')`),
         ],
     },
 

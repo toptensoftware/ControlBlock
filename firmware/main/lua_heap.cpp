@@ -1,5 +1,7 @@
 #include "lua_heap.h"
 
+#include <string.h>
+
 void *LuaHeapAlloc(void *ud, void *ptr, size_t osize, size_t nsize)
 {
     LuaHeap *h = (LuaHeap *)ud;
@@ -17,7 +19,19 @@ void *LuaHeapAlloc(void *ud, void *ptr, size_t osize, size_t nsize)
         h->refused++;
         return nullptr;
     }
-    void *p = h->realloc(ptr, nsize, h->ctx);
+    // A growing block is never resized by the platform: the device's heap copies a moved
+    // block inside its critical section, which holds off the display's interrupts (a big
+    // copy shifted the picture for good). Allocate, copy and free here instead.
+    void *p;
+    if (ptr && nsize > osize) {
+        p = h->realloc(nullptr, nsize, h->ctx);
+        if (p) {
+            memcpy(p, ptr, osize);
+            h->realloc(ptr, 0, h->ctx);
+        }
+    } else {
+        p = h->realloc(ptr, nsize, h->ctx);
+    }
     if (!p) {
         h->refused++;
         return nullptr;

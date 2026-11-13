@@ -1,6 +1,6 @@
 # Lua hardware check setup
 
-Status: Implement (setup done; waiting for the user's hardware run. Kept as wip so the checklist can be ticked)
+Status: Complete (checklists A and B passed on the hardware, 2026-11-13)
 
 ## Description
 Set up the hardware checks for the Lua `script` op (job `wip/complete-lua-scripts.md`, CLAUDE.md Open Items), for the
@@ -144,24 +144,25 @@ Before you start: `node examples/test-server/test-server.mjs` on the PC (10.1.1.
 
 **B. Script layout:** normal build flashed, then `node cli/cli.js upload examples/script-test.mjs` from the repo root.
 Home keys, by row:
-- [ ] Row 1, `GET reply`: `lua: get: 200 ok`. `GET 404`: `404: 404 not found` (the server shows `X-Test: lua`).
-- [ ] `GET big`: `big: 200 16384`.
-- [ ] `Mute toggle`: the server's mute flips each tap; the log shows the old and new state.
-- [ ] `GET hang`: after ~10 s `hang: nil timeout`. Tap it again, and within the 10 s run `node examples/test-server/takeover.mjs 3`:
+- [x] Row 1, `GET reply`: `lua: get: 200 ok`. `GET 404`: `404: 404 not found` (the server shows `X-Test: lua`).
+- [x] `GET big`: `big: 200 16384`.
+- [x] `Mute toggle`: the server's mute flips each tap; the log shows the old and new state.
+- [x] `GET hang`: after ~10 s `hang: nil timeout`. Tap it again, and within the 10 s run `node examples/test-server/takeover.mjs 3`:
   no `hang:` line, no crash, and after the release `GET reply` still works.
-- [ ] Row 2, `Latency op+script`: the server's two `latency:` lines are close together (the gap is the script's
+- [x] Row 2, `Latency op+script`: the server's two `latency:` lines are close together (the gap is the script's
   cost; tap twice, since the first run includes the compile). Note the touch-to-packet feel.
-- [ ] `UDP x6`: `burst 1..6` in order, then 4 bytes `de ad be ef`.
-- [ ] `Busy 10 s`: during it, tap `Ping (op)` and swipe. The ping arrives only after `busy: done` (the queue is busy),
+- [x] `UDP x6`: `burst 1..6` in order, then 4 bytes `de ad be ef`.
+- [x] `Busy 10 s`: during it, tap `Ping (op)` and swipe. The ping arrives only after `busy: done` (the queue is busy),
   but taps and swipes should still feel responsive: the lock is held at most 80 ms at a time. Note any lag.
-- [ ] `Too long (150 ms)`: `script: ... script ran too long without waiting`, no `(bad)` line.
-- [ ] Row 3, `C stack deep`: `C recursion stopped at depth N` (Lua's C limit, ~200), no crash. Then the `scripts:`
-  line's `op stack N bytes free`: well above 0 (the worst case; 12 KB stack).
-- [ ] `Lua stack 2000`: `Lua recursion 2000`.
-- [ ] `Heap cap`: `script: not enough memory`, `allocs refused` > 0 in the `scripts:` line, no `(bad)` line, and the
+- [x] `Too long (150 ms)`: `script: ... script ran too long without waiting`, no `(bad)` line.
+- [x] Row 3, `C stack deep`: `C recursion stopped at depth N` (N a little under 64, `lua_user.h`), no crash. Then
+  the `scripts:` line's `op stack N bytes free`: well above 0 (96 KB PSRAM stack; a pcall level ~560 B).
+- [x] `Lua stack 2000`: `Lua recursion 2000` (or `not enough memory` at the heap cap), and **the picture doesn't
+  shift** (it did before the `LuaHeapAlloc` fix).
+- [x] `Heap cap`: `script: not enough memory`, `allocs refused` > 0 in the `scripts:` line, no `(bad)` line, and the
   next script still runs.
-- [ ] `Type Hi!` (focus a text box first): types `Hi!`.
-- [ ] `Switch Scripts`: `bad name: nil unknown activity`, `switch: true`, the `after` line, then
+- [x] `Type Hi!` (focus a text box first): types `Hi!`.
+- [x] `Switch Scripts`: `bad name: nil unknown activity`, `switch: true`, the `after` line, then
   `activity: none -> Scripts` and `Scripts didActivate` (a UDP line on the test server: the hooks are plain ops
   since a script's switch that would run a script is refused). On its page: `GET reply` works, `None (script)`
   goes back (`Scripts willDeactivate` on the test server, `activity: Scripts -> none`).
@@ -180,3 +181,55 @@ Home keys, by row:
 - Scripts run from a layout on the hardware: urem2's Yamaha toggles (mute, 7ch Stereo: `yamaha-toggle.lua`, a waited
   `http.get` then a set) work against the real receiver. Checklist B above (`script-test.mjs`) not yet run: stack depth,
   `http.get` timeout/abandon, latency and the rest stay unticked.
+
+## Progress (2026-11-13), checklist B
+- `GET hang` abandon: passes (no `hang:` line after the takeover, the worker timed the request out at 10 s, `late`
+  counted it); `GET reply` works after the release. The `scripts:` line after a takeover printed zeros (the
+  re-arm had cleared the counts): now only logged when the count grew (`standalone_task.cpp`).
+- `Too long` and later keys seemed to log nothing: the serial monitor had stalled; on exit it dumped the held
+  lines, `script ran too long` among them. Not a firmware fault.
+- `C stack deep` **crashes and reboots**: Lua's default `LUAI_MAXCCALLS` (200) is far past the op task's 12 KB stack.
+  Measured with `-fstack-usage`: a `pcall` level costs ~560 B of C stack, a `string.gsub` callback level ~1.25 KB
+  (`str_gsub` alone 880 B: its luaL_Buffer); `str_format` 640 B; a parser level ~150 B. Base use of a run ~3.2 KB.
+  The limit also bounds parser nesting, and a `..` chain nests one level per operator (right associative), so a
+  small limit makes ordinary scripts fail to compile. The user chose a PSRAM stack. Done: `main/lua_user.h`
+  (`LUAI_MAXCCALLS` 64, reached through `LUA_USER_H` from `main/CMakeLists.txt` and `test/test.mk.js`; 40 broke a
+  28-piece `..` chain), and the op task and the stress `stress_lua` task are made by
+  `standalone_create_script_task` (core 0, 96 KB stack in PSRAM, `xTaskCreatePinnedToCoreWithCaps`;
+  `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` is on by default). That frees 24 KB of internal RAM (both 12 KB stacks).
+  The op task must not write flash or NVS (it doesn't). Tests: `Script C Recursion Stops At The C Nesting Limit`,
+  `Script With A Long Concat Chain And Nested Blocks Compiles`. Gotcha: mk doesn't rebuild on a `define` change
+  (and `mk clean` didn't clean): use `mk --rebuild`. To check on the hardware: `C stack deep`, and a release
+  `RUN_STRESS` (the Lua cases now run with a PSRAM stack: watch `start late max` and `missed`).
+- On the hardware after the fixes: `C recursion stopped at depth 63`, no reboot; `Lua recursion 2000`.
+  No `scripts:` line followed either: `s_logged_runs` was updated on every pass of the op task, so a script that started
+  in an earlier pass of the busy spell was already counted when the queue went idle (it only ever printed after a
+  re-arm). Fixed: the count is remembered only when the line is logged, and reset when a re-arm zeroes it.
+- `Too long`: `script ran too long without waiting` (passes, once the monitor caught up). `Heap cap` logged the same,
+  not `not enough memory`: its 100-byte strings needed ~1,700 rounds to reach 256 KB, over 100 ms on the device. The
+  key now adds 10 KB strings (cap in ~25 rounds); re-upload `examples/script-test.mjs` and tap it again.
+- Release build, after all the fixes: `C recursion stopped at depth 63` then `op stack 76956 bytes free` (of 98304:
+  ~21 KB used at 63 pcall levels, ~290 B a level in release against the ~560 B debug estimate); `Lua recursion 2000`
+  (heap peak 162 KB); `Heap cap`: `script: not enough memory`, 1 alloc refused, heap peak 249 KB. The `scripts:` line
+  now prints after each run. A release gsub level is likely ~0.7-1 KB, so 64 levels fit the 96 KB stack with room.
+  No picture shift after `Lua stack 2000`: the `LuaHeapAlloc` fix holds.
+- `Switch Scripts`: `bad name: nil unknown activity`, `activity: none -> Scripts`, `switch: true`, the after line,
+  the didActivate UDP; `None (script)`: `activity: Scripts -> none`, `none: true`, the willDeactivate UDP. The after
+  line's text said "logged before the switch commits", but a script's `switchActivity()` parks it until the switch's
+  ops have run (as designed), so it comes after: text corrected in `examples/script-test.mjs`. `GET reply` on the
+  Scripts page works. **Checklist B complete** (2026-11-13).
+- Release `RUN_STRESS` after the fixes (PSRAM Lua stack, allocate-copy-free realloc): 0 over, 0 missed, 0 late in
+  every case. Lua cases: `start late max` 16-18 us (was up to 139 us: the big reallocs no longer copy with
+  interrupts off), end max 263 / 383 / 411 us (`lua + keys, mid, flush` the worst, 67% of the budget; was 394-423),
+  0 script errors, heap peak 80 KB. `chunk max 140/140 us` on `lua + keys, mid, flush`: a chunk took the whole
+  `COMP_CHUNK_WORST_US` (131 us last time) but `gap end max` 521/550 and 0 late; raise it to 150 if late gaps
+  appear. Internal RAM 190 KB free (largest 144 KB) after the stress run; not comparable with the earlier 194 KB
+  (the 8 KB USB RX FIFO etc. came since; the op task isn't running during a stress run).
+- CLAUDE.md updated (approved 2026-11-13): the realloc rule under the bounce fill rules, `lua_user.h` and the PSRAM
+  script task stack, `mk --rebuild`, the Lua checklist results, the lasting shift's cause, and the Lua fill-start item.
+- `Lua stack 2000` **shifts the display for good** (the lasting shift, CLAUDE.md Open Items): growing the Lua stack
+  reallocs a big PSRAM block, and IDF's `multi_heap_realloc` runs `tlsf_realloc` (malloc + memcpy + free) inside
+  the heap's critical section, interrupts off on core 0 for the whole copy, so bounce EOF interrupts were lost.
+  Fixed: `LuaHeapAlloc` now grows a block by allocate, copy, free (the copy runs with interrupts on); test
+  `TestLuaHeap.cpp`. To check on the hardware: `Lua stack 2000` no longer shifts the picture. Other big PSRAM
+  reallocs (SimpleLib containers in PSRAM?) would do the same.

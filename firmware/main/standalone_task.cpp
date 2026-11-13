@@ -17,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"     // xTaskCreatePinnedToCoreWithCaps
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -35,7 +36,10 @@ static const char *TAG = "standalone";
 // Core 0, away from the swipe task's core; below the protocol task (4)
 #define OP_TASK_CORE    0
 #define OP_TASK_PRIO    3
-#define OP_TASK_STACK   12288       // internal RAM: Lua's C recursion (script_host.h) and the executors
+// PSRAM. Lua's C nesting (lua_user.h LUAI_MAXCCALLS 64) at worst ~1.3 KB a level (string.gsub
+// callbacks, measured with -fstack-usage) is ~83 KB, plus ~4 KB for a run and the executors.
+// The default limit overflowed the old 12 KB internal stack and rebooted the device.
+#define SCRIPT_TASK_STACK (96 * 1024)
 #define OP_BUSY_POLL_MS 5           // while a delay holds the queue
 // At least one tick: at 100 Hz, pdMS_TO_TICKS(5) is 0, and a zero wait spins the op
 // task through a whole delay (starving IDLE0 until the task watchdog fires)
@@ -173,14 +177,17 @@ static void op_task(void *)
             ESP_LOGE(TAG, "op failed: %s (%lu so far)", why ? why : "?", (unsigned long)errors);
         }
         s_logged_errors = errors;               // (takeover and release start the count again from 0)
+        if (runs < s_logged_runs)
+            s_logged_runs = runs;               // a re-arm closed the host: its counts start again from 0
         if (!busy && s_was_busy) {
             ESP_LOGI(TAG, "op queue empty (busy %lu ms)", (unsigned long)(now - s_busy_since_ms));
-            if (runs != s_logged_runs) {
-                // The Lua checks: heap use and the op task's stack headroom (the high-water mark is
-                // in bytes on ESP-IDF, the least ever free)
+            if (runs > s_logged_runs) {
+                // Scripts ran since the last line. The Lua checks: heap use and the op task's stack
+                // headroom (the high-water mark is in bytes on ESP-IDF, the least ever free).
                 ESP_LOGI(TAG, "scripts: %lu runs, %lu errors, heap peak %u KB, %u allocs refused, op stack %u bytes free",
                          (unsigned long)runs, (unsigned long)script_errors, (unsigned)(heap_peak / 1024),
                          heap_refused, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+                s_logged_runs = runs;
             }
         }
         s_diag.busy = busy;
@@ -188,7 +195,6 @@ static void op_task(void *)
         s_diag.script_runs = runs;
         s_diag.script_errors = script_errors;
         s_diag.script_heap_peak = (uint32_t)heap_peak;
-        s_logged_runs = runs;                   // (a re-arm closes the host and starts it again from 0)
         s_was_busy = busy;
         // Busy: an op started (the next may follow at once) or a delay is running
         wait = !busy ? portMAX_DELAY : code ? 0 : OP_BUSY_POLL_TICKS;
@@ -221,9 +227,15 @@ esp_err_t standalone_init(const uint8_t *blob)
         h.activity = s_activity.Host();
     }
     s_sa.Init(h, root);
-    if (xTaskCreatePinnedToCore(op_task, "ops", OP_TASK_STACK, nullptr, OP_TASK_PRIO, &s_op_task, OP_TASK_CORE) != pdPASS)
+    if (standalone_create_script_task(op_task, "ops", OP_TASK_PRIO, &s_op_task) != pdPASS)
         return ESP_FAIL;
     return ESP_OK;
+}
+
+BaseType_t standalone_create_script_task(TaskFunction_t fn, const char *name, UBaseType_t prio, TaskHandle_t *out)
+{
+    return xTaskCreatePinnedToCoreWithCaps(fn, name, SCRIPT_TASK_STACK, nullptr, prio, out, OP_TASK_CORE,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 }
 
 void standalone_key(uint16_t id, int action, uint32_t time_ms)

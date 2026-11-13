@@ -8,6 +8,7 @@
 #include "Core.h"
 #include "script_env.h"
 #include "stress_script.h"
+#include "lua_user.h"
 
 using namespace SimpleLib;
 using namespace layout_env;
@@ -129,6 +130,44 @@ Fact("Script That Never Yields Is Stopped By The Instruction Budget")
     Assert(r.Logged("too long"));
     r.auto_tick = 0;
     Assert(r.Run("log('after')") == OpStatus::Done);
+}
+
+// The op task's C stack (standalone_task.cpp) is sized for Lua's C nesting limit (lua_user.h):
+// a pcall level costs ~560 B on the device, a string.gsub callback level ~1.25 KB. The
+// default limit (200) overflowed the stack and rebooted the device.
+Fact("Script C Recursion Stops At The C Nesting Limit")
+{
+    Rig r;
+    Assert(r.Run(
+        "local depth = 0\n"
+        "local function f(n) depth = n pcall(f, n + 1) end\n"
+        "f(1)\n"
+        "log('depth', depth)") == OpStatus::Done);
+    Assert(strncmp(r.log, "depth\t", 6) == 0);
+    int depth = atoi(r.log + 6);
+    Assert(depth > LUAI_MAXCCALLS - 10 && depth < LUAI_MAXCCALLS);
+    Assert(LUAI_MAXCCALLS <= 64);                           // what the op task's stack is sized for
+
+    Assert(r.Run(                                           // the same through string.gsub callbacks
+        "local depth = 0\n"
+        "local function g(n) depth = n string.gsub('x', 'x', function() g(n + 1) end) end\n"
+        "pcall(g, 1)\n"
+        "log('depth', depth)") == OpStatus::Done);
+    Assert(atoi(r.log + 6) < LUAI_MAXCCALLS);
+}
+
+// The limit also bounds parser nesting, and each `..` of a chain nests (right associative):
+// it must stay roomy enough for ordinary scripts
+Fact("Script With A Long Concat Chain And Nested Blocks Compiles")
+{
+    Rig r;
+    Assert(r.Run(
+        "local a, b = 1, 2\n"
+        "for i = 1, 1 do if a then if b then while true do\n"
+        "  log('a' .. a .. 'b' .. b .. 'c' .. a .. 'd' .. b .. 'e' .. a .. 'f' .. b .. 'g' .. a .. 'h' .. b ..\n"
+        "      'i' .. a .. 'j' .. b .. 'k' .. a .. 'l' .. b .. 'm' .. a .. 'n' .. (b * (a + (b - (a * 2)))))\n"
+        "  break end end end end") == OpStatus::Done);
+    Assert(r.Logged("a1b2c1d2e1f2g1h2i1j2k1l2m1n2"));
 }
 
 Fact("Script Wall Timeout Cancels A Run That Waits Too Long")
