@@ -16,3 +16,6 @@
 [submodule "PacketEncoder"]
 	path = PacketEncoder
 	url = git@github.com:toptensoftware/PacketEncoder
+[submodule "urem2/atvdaemon"]
+	path = urem2/atvdaemon
+	url = https://github.com/toptensoftware/atv-daemon.git

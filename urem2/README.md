@@ -30,7 +30,7 @@ layout/                The layout as modules:
 scripts/               Lua: yamaha-toggle.lua (mute and 7ch Stereo), volume.lua (encoder)
 icons/                 Netflix, Prime Video and YouTube SVGs (copied from urem)
 test-server/           Fake devices for the hardware test (logs what each one received)
-atvdaemon/             The Apple TV daemon (Python, pyatv), runs on the NAS
+atvdaemon/             The Apple TV daemon (Python, pyatv), runs on the NAS (submodule: toptensoftware/atv-daemon)
 test/                  Test helpers (resolve, slot checks, a wasmoon Lua harness)
 ```
 
@@ -81,7 +81,8 @@ machines on 4500, the IPsec NAT-T port, so the test target moves it).
 `atvdaemon/` is urem's daemon (UDP text commands on 7777: `key <name>`, `app <bundle>`, `ping`, `disconnect`; see its
 README), moved from the Pi to the NAS (`cool.lan`, `10.1.1.2`). One change: `key` and `app` now retry the connection
 for up to ~20 s before answering `error:`, because urem waited for the connection (`ping`) before sending and
-ControlBlock can't read UDP replies. **Not yet tested on the NAS.**
+ControlBlock can't read UDP replies. It runs in Docker on the NAS (`compose.yaml`, host networking; settings from
+`ATVD_*` environment variables) and `atvbench.py` times round trips; see its README. **Not yet tested on the NAS.**
 
 ## Key map
 
