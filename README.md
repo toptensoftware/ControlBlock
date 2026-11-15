@@ -8,7 +8,7 @@ on an inexpensive ESP32-S3 touch panel.
 * Thr user inteface is a a grid of touch keys.
 * Swipe to switch betweeb multiple pages of keys.
 * Keys can send key presses like a USB leyboard or
-  make http rewuests, send UDP requests, run Lua 
+  make http requests, send UDP requests, run Lua 
   scripts and more.  
 * Standalone mode works independently of PC
 * Hosted mode allows PC to control whats on scrren
