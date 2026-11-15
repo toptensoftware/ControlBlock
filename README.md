@@ -1,6 +1,6 @@
 # ControlBlock
 
-*"It's a block... for cobtrolling things"*
+*"It's a block... for controlling things"*
 
 ControlBlock is a flexible control surface built 
 on an inexpensive ESP32-S3 touch panel. 
