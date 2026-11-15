@@ -9,9 +9,10 @@ import {
     encodeWifiSet, decodeWifiCredentials, decodeWifiStatus,
     ClockSource, TIME_VALID_FROM_MS, CLOCK_FIELD_MAX_BYTES, encodeTimeSet, decodeTime, encodeClockSet,
     DEVICE_NAME_MAX_BYTES, encodeNameSet, decodeName,
-    KEY_EVENT_SIZE, keySlot, keyPixelSize,
+    KEY_EVENT_SIZE, keySlot, keyPixelSize, layoutBlobVersion, BPAK_SIGNATURE, BPAK_HEADER_SIZE,
 } from "../src/protocol.js";
-import { infoPayload } from "./FakeDevice.js";
+import { BLOB_VERSION } from "../src/bake/consts.js";
+import { infoPayload, layoutBlobOf } from "./FakeDevice.js";
 
 test("a message survives being split anywhere", () => {
     const a = encodeMessage(Msg.PING, 7, Uint8Array.of(1, 2, 3));
@@ -141,6 +142,33 @@ test("get info decodes every field", () => {
     assert.equal(info.maxImageWidth, 720);
     assert.equal(info.maxImageHeight, 432);
     assert.equal(info.maxKeys, 32);
+    // appended later in v2: the layout blob version the firmware loads
+    assert.equal(info.layoutBlobVersion, BLOB_VERSION);
+});
+
+test("get info from older firmware has no layout blob version", () => {
+    const info = decodeInfo(infoPayload({ blobVersion: null }));
+    assert.equal(info.layoutBlobVersion, undefined);
+    assert.equal(info.maxKeys, 32);                         // the fields before it are all there
+    assert.equal(decodeInfo(infoPayload({ blobVersion: 7 })).layoutBlobVersion, 7);
+});
+
+test("a layout blob's version is the root's first field, after the BPAK header", () => {
+    assert.equal(BPAK_HEADER_SIZE, 32);
+    assert.equal(BPAK_SIGNATURE, 0x4B415042);               // "BPAK"
+    assert.equal(layoutBlobVersion(layoutBlobOf(100)), BLOB_VERSION);
+    assert.equal(layoutBlobVersion(layoutBlobOf(100, { version: 9 })), 9);
+    const v = layoutBlobOf(100, { version: 0x01020304 });
+    assert.deepEqual([...v.subarray(0, 4)], [0x42, 0x50, 0x41, 0x4B]);
+    assert.deepEqual([...v.subarray(32, 36)], [4, 3, 2, 1]);  // little-endian
+    // not a layout blob: no version
+    assert.equal(layoutBlobVersion(new Uint8Array(100)), undefined);
+    assert.equal(layoutBlobVersion(layoutBlobOf(100).subarray(0, 35)), undefined);     // too short for the version
+    assert.equal(layoutBlobVersion(new Uint8Array(0)), undefined);
+    // a view into a bigger buffer, at an odd offset
+    const big = new Uint8Array(103);
+    big.set(layoutBlobOf(100, { version: 5 }), 3);
+    assert.equal(layoutBlobVersion(big.subarray(3)), 5);
 });
 
 test("query results are a bitmap", () => {

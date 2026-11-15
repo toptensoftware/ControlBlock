@@ -379,6 +379,7 @@ Fact("Protocol Get Info")
     Assert(m.U16At(i) == 36);                                 i += 2;     // quarter unit
     Assert(m.U16At(i) == 720 && m.U16At(i + 2) == 432);       i += 4;     // max image size
     Assert(m.U8At(i) == 32);                                  i += 1;     // max keys per page
+    Assert(m.U16At(i) == LAYOUT_BLOB_VERSION);                i += 2;     // layout blob version
     Assert(m.len == i);
 }
 
@@ -1132,7 +1133,7 @@ Fact("Protocol Get Info Reports The Stored Layout")
     uint8_t scratch[512];
     Assert(f.layout_store.Begin(5000, CrcOf(blob)) == LayoutStoreResult::Ok);
     Assert(f.layout_store.Data(0, blob.b.GetBuffer(), 5000) == LayoutStoreResult::Ok);
-    const int V2_FIELDS = 15;                            // after the layout fields (Get Info)
+    const int V2_FIELDS = 17;                            // after the layout fields (Get Info): v2's 15, the blob version's 2
     Msg during = f.Request(MSG_GET_INFO);                   // an upload under way stores nothing yet
     int at = during.len - V2_FIELDS - 12;
     Assert(during.U32At(at + 4) == 0 && during.U32At(at + 8) == 0);

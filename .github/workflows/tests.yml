@@ -1,0 +1,47 @@
+# Every test suite that runs without hardware. Called by ci.yml (push, PR) and release.yml (tag).
+name: Tests
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: Node and Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/prepare
+        with:
+          # rle565: the encoder is a workspace; binpack: the bake and its own tests; atvdaemon: Python tests
+          submodules: rle565 binpack urem2/atvdaemon
+      - name: Install
+        run: npm ci
+      - name: Node tests (host, cli, binpack, scripts, urem2, examples)
+        run: npm test
+      - name: CLI package smoke test (npm pack, install, npx)
+        env:
+          CB_SMOKE: "1"
+        run: node --test scripts/test/cli-package.test.mjs
+      - name: Python tests (atvdaemon)
+        working-directory: urem2/atvdaemon
+        run: python3 -m unittest
+
+  unit-tests:
+    name: Firmware host unit tests (MSVC x86)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare
+        with:
+          submodules: SimpleLib lua rle565
+      # mk finds MSVC itself (vswhere + vcvarsall for the platform in test.mk.js: x86)
+      - name: Install mk
+        run: npm install -g toptensoftware/mk.js
+      - name: mk run
+        working-directory: firmware/test
+        run: mk run

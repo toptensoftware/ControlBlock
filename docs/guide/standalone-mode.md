@@ -9,7 +9,10 @@ PC with wake-on-LAN, or run a small Lua script. Keys are grouped into **activiti
 with its own pages and the equipment it needs switched on.
 
 This guide assumes the device is flashed and connected, the tools are installed, and (for network actions) Wi-Fi
-is set up: see [Getting started](./getting-started.md). Commands run from the repo root.
+is set up: see [Getting started](./getting-started.md). `controlblock` below stands for however you run the CLI
+(`npx github:toptensoftware/ControlBlock#cli`, an installed `controlblock`, or `node cli/cli.js` in a clone of the
+repo; see [Installing the tools](./getting-started.md#installing-the-tools)). The examples in `examples/` and the
+test server need a clone of the repo; run those commands from its root.
 
 The full reference for the layout file (every property, every op, the Lua API, the validation rules) is
 [`docs/layout-format.md`](../layout-format.md). This guide explains how the pieces fit and walks through
@@ -45,7 +48,7 @@ automatically; you only need to choose ids yourself in special cases (see [Key i
 
 ### 1. Write the layout
 
-Save this as `my-layout.json` (anywhere; the examples below put it in the repo root):
+Save this as `my-layout.json` in any folder, and run the commands below from that folder:
 
 ```json
 {
@@ -78,7 +81,7 @@ Save this as `my-layout.json` (anywhere; the examples below put it in the repo r
 ### 2. Preview it
 
 ```sh
-node cli/cli.js render my-layout.json
+controlblock render my-layout.json
 ```
 
 This draws each page as the device would show it, as PNG files in `my-layout-pages/` (here just
@@ -87,7 +90,7 @@ This draws each page as the device would show it, as PNG files in `my-layout-pag
 ### 3. Bake and upload it
 
 ```sh
-node cli/cli.js upload my-layout.json
+controlblock upload my-layout.json
 ```
 
 `upload` bakes the layout and sends it to the device, which saves it, restarts and comes back with your Home
@@ -102,7 +105,7 @@ device restarted and verified: 32756 bytes, crc 0x<crc>
 
 Open a text editor on the PC and tap **Copy** and **Paste**: the ControlBlock types them like a keyboard.
 
-To bake without uploading (to check for errors, or to keep the blob), use `node cli/cli.js bake my-layout.json`,
+To bake without uploading (to check for errors, or to keep the blob), use `controlblock bake my-layout.json`,
 which writes `my-layout.bin`; `upload` also takes a `.bin`. Uploading a layout the device already has sends
 nothing (add `--force` to send it anyway). See [`cli/README.md`](../../cli/README.md) for every option.
 
@@ -599,7 +602,7 @@ export default {
 };
 ```
 
-`node cli/cli.js render guide-example.mjs` draws its four pages (Home, Watch's two, Music's one).
+`controlblock render guide-example.mjs` draws its four pages (Home, Watch's two, Music's one).
 
 ## More examples
 
@@ -640,8 +643,9 @@ The device shows an empty Home (no keys) when it has no usable layout:
 
 - **Nothing uploaded yet.** Upload one.
 - **After a firmware update.** When an update changes the baked layout format, the device can't read a layout
-  baked for the old firmware and ignores it. Bake and upload the layout again with the tools from the same version
-  of the repo as the firmware.
+  baked for the old firmware and ignores it. Bake and upload the layout again with the CLI release that matches
+  the firmware (`npx github:toptensoftware/ControlBlock#cli-v<version>`; `controlblock info` shows the firmware's
+  version). The CLI refuses to upload a blob the firmware can't load.
 - **The layout is too big for the device.** The bake doesn't yet check everything the device does (for example
   the total number of devices or a very large layout), so a layout can bake fine and still be refused when the
   device loads it. Make it smaller (fewer pages or activities, fewer distinct key pictures).
@@ -680,7 +684,7 @@ CB_TEST_SERVER=192.168.1.20 CB_TEST_SERVER_NAME=mypc node cli/cli.js upload exam
 
 ### Other problems
 
-- **A key does nothing on the network:** check Wi-Fi (`node cli/cli.js wifi status`) and the log; a failed
+- **A key does nothing on the network:** check Wi-Fi (`controlblock wifi status`) and the log; a failed
   request shows the error icon in the status bar.
 - **Taps are slow after a switch:** a `delay` in a hook or `turnOn` holds the queue; touches run after it.
 - **The CLI can't open the device:** another app has it open (see

@@ -1,0 +1,21 @@
+{
+  "name": "controlblock-repo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ControlBlock development workspace: the product version and every Node package in the repo",
+  "license": "MIT",
+  "author": "Topten Software",
+  "type": "module",
+  "workspaces": [
+    "host",
+    "cli",
+    "tools/test-icons",
+    "rle565/encoder"
+  ],
+  "scripts": {
+    "test": "npm test -w host -w cli && npm test --prefix binpack && node --test \"scripts/**/*.test.mjs\" \"urem2/**/*.test.mjs\" \"examples/**/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

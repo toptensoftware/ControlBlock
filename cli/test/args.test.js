@@ -51,6 +51,15 @@ test("args: no command, or an unknown one", () => {
     usage(["--serial", "X"], /unknown command --serial/);
 });
 
+test("args: --version, and info with --serial", () => {
+    assert.deepEqual(parseArgs(["--version"]), { command: "version" });
+    usage(["--version", "x"], /--version takes no arguments/);
+    assert.deepEqual(parseArgs(["info"]), { command: "info", serial: undefined });
+    assert.deepEqual(parseArgs(["info", "--serial", "S1"]), { command: "info", serial: "S1" });
+    usage(["info", "x"], /info takes no arguments/);
+    usage(["info", "--force"], /unknown option --force/);
+});
+
 test("args: -- ends the options", () => {
     assert.equal(parseArgs(["bake", "--", "-odd.json"]).input, "-odd.json");
 });

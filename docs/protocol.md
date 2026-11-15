@@ -174,6 +174,7 @@ Any data specific to that response follows these two fields.
 | u16 | max_image_w | Largest image accepted: the grid, 720 |
 | u16 | max_image_h | 432 |
 | u8 | max_keys | Keys per page: 32 |
+| u16 | layout_blob_version | The standalone layout blob version this firmware loads: 3. A blob of another version is refused at boot (empty Home), so hosts check it before uploading. Appended within v2: older v2 firmware doesn't send it (treat as unknown) |
 
 `layout_size` and `layout_crc` let a host skip an upload when the device already has the same layout. They describe what was committed; the CRC is not re-checked against the flash for each `GET_INFO`.
 
@@ -659,7 +660,7 @@ Sent when the state or the address changes (not on every retry), so a host can s
 
 ## Typical session
 
-Uploading a standalone layout instead: `RESET_STREAM`, `GET_INFO` (skip the rest if `layout_size` and `layout_crc` already match), `LAYOUT_BEGIN`, pipelined `LAYOUT_DATA`, `LAYOUT_COMMIT`, then wait for the device to restart.
+Uploading a standalone layout instead: `RESET_STREAM`, `GET_INFO` (stop if `layout_blob_version` is reported and differs from the blob's root `version`; skip the rest if `layout_size` and `layout_crc` already match), `LAYOUT_BEGIN`, pipelined `LAYOUT_DATA`, `LAYOUT_COMMIT`, then wait for the device to restart.
 
 And for a host-controlled session:
 
@@ -677,7 +678,7 @@ And for a host-controlled session:
 
 ## Version history
 
-- **v2** (2026-11): keys are rects in quarter units on a grid of 144 px cells (`key_w`/`key_h` went from 128 to 144; `grid_*`, `quarter`, `max_image_*` and `max_keys` appended to `GET_INFO`), each with a u16 id and one fully opaque image per state, the size of the key (was four 128×128 images with alpha: background and foreground, normal and pressed). `SET_KEYS` edits keys by id (`REMOVE` replaced `EMPTY`); `KEY` events carry the id (12 bytes, was 8: page and slot); `PUT_IMAGE` refuses images that aren't opaque. A v1 host gets `BAD_ARG`/`BAD_LENGTH` from `SET_KEYS` and should check `protocol_version` first.
+- **v2** (2026-11): keys are rects in quarter units on a grid of 144 px cells (`key_w`/`key_h` went from 128 to 144; `grid_*`, `quarter`, `max_image_*` and `max_keys` appended to `GET_INFO`), each with a u16 id and one fully opaque image per state, the size of the key (was four 128×128 images with alpha: background and foreground, normal and pressed). `SET_KEYS` edits keys by id (`REMOVE` replaced `EMPTY`); `KEY` events carry the id (12 bytes, was 8: page and slot); `PUT_IMAGE` refuses images that aren't opaque. A v1 host gets `BAD_ARG`/`BAD_LENGTH` from `SET_KEYS` and should check `protocol_version` first. Later (2026-11-15, still v2, since payloads can grow): `layout_blob_version` appended to `GET_INFO`.
 - **v1:** the first version.
 
 ## Open questions

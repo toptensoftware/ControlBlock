@@ -2,8 +2,8 @@
 
 Scripts and layouts for trying ControlBlock on the hardware: the layouts used for hardware testing
 during development, the host library demos and a small test server. Run everything from the repo
-root. Nothing here needs an `npm install`: the scripts import the library by relative path
-(`../host/index.js`), so install the library once (`npm install` in `host/`).
+root. Nothing here needs an `npm install` of its own: the scripts import the library by relative path
+(`../host/index.js`), so `npm install` once in the repo root is enough.
 
 | File | What it is |
 | --- | --- |

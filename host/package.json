@@ -14,6 +14,10 @@
     },
     "./package.json": "./package.json"
   },
+  "imports": {
+    "#binpack": "./src/bake/binpack.js",
+    "#rle565": "rle565"
+  },
   "engines": {
     "node": ">=24"
   },
@@ -22,7 +26,7 @@
   },
   "dependencies": {
     "@toptensoftware/button-face": "git+https://github.com/toptensoftware/button-face.git",
-    "rle565": "file:../rle565/encoder",
+    "rle565": "^1.0.0",
     "sharp": "^0.34.5",
     "usb": "^3.2.1",
     "wasmoon": "^1.16.0"

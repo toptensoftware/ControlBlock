@@ -5,12 +5,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { unpack } from "../../binpack/index.js";
-import { ROOT_TYPE, crc32, WifiState, ClockSource } from "../../host/index.js";
-import { FakeDevice, fakeOpener } from "../../host/test/FakeDevice.js";
+import { ROOT_TYPE, crc32, WifiState, ClockSource, PROTOCOL_VERSION, BLOB_VERSION, Msg, Status } from "../../host/index.js";
+import { FakeDevice, fakeOpener, layoutBlobOf } from "../../host/test/FakeDevice.js";
 import { exampleDir } from "../../host/test/bake/fixtures.js";
 import { main } from "../cli.js";
+import { cliVersion } from "../version.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPath = path.join(here, "../cli.js");
@@ -63,6 +64,71 @@ test("cli: usage on no args, exit 2", () => {
     assert.match(r.stderr, /usage/i);
 });
 
+test("cli: --version prints the product version", () => {
+    const r = spawnSync(process.execPath, [cliPath, "--version"], { encoding: "utf8", timeout: 30000 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, `${cliVersion()}\n`);
+    assert.equal(r.stderr, "");
+});
+
+// Commands that don't bake or render must not load the image stack (sharp, button-face's native
+// canvas, wasmoon): lazy-child.mjs runs them under a hook that refuses those modules.
+test("cli: --version, info, wifi, time, name and upload <.bin> don't load the image stack", () => {
+    const r = spawnSync(process.execPath, ["--import", pathToFileURL(path.join(here, "block-image-stack.mjs")).href, path.join(here, "lazy-child.mjs")],
+                        { encoding: "utf8", timeout: 60000 });
+    assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+    const results = JSON.parse(r.stdout);
+    for (const { argv, code, err } of results.commands)
+        assert.equal(code, 0, `${argv.join(" ")}: ${err.join("\n")}`);
+    assert.deepEqual(results.commands.map(c => c.argv[0]), ["--version", "info", "wifi", "time", "name", "upload"]);
+    assert.match(results.blocked, /blocked: (sharp|@toptensoftware\/button-face|wasmoon|#rle565)/);   // the hook works
+});
+
+// --- info ---
+
+test("cli: info prints the device's versions, name and grid, standalone", async () => {
+    const dev = new FakeDevice({ name: {}, firmwareVersion: cliVersion() });
+    const opened = [];
+    const r = await run(["info", "--serial", "S4"], { open: fakeOpener(dev, { opened }) });
+    assert.equal(r.code, 0, r.err.join("\n"));
+    assert.equal(opened[0].serial, "S4");
+    assert.equal(dev.hosted, false);                            // no takeover
+    assert.deepEqual(r.out, [
+        `cli: ${cliVersion()}`,
+        "device: SERIAL1",
+        `firmware: ${cliVersion()}`,
+        `protocol: ${PROTOCOL_VERSION}`,
+        `layout blob version: ${BLOB_VERSION}`,
+        "name: controlblock-a1b2c3 (default)",
+        "grid: 5x3 cells of 144 px, 720x432 at (40, 44)",
+    ]);
+    assert.deepEqual(r.err, []);
+});
+
+test("cli: info warns (exit 0) when the firmware is older than the CLI", async () => {
+    const dev = new FakeDevice({ name: {}, firmwareVersion: "0.0.1-dev+abc1234.dirty", blobVersion: null });
+    const r = await run(["info"], { open: fakeOpener(dev) });
+    assert.equal(r.code, 0);
+    assert.ok(r.out.includes("firmware: 0.0.1-dev+abc1234.dirty"));
+    assert.ok(r.out.includes("layout blob version: unknown"));      // firmware from before the field
+    assert.deepEqual(r.err, [`warning: the device's firmware 0.0.1-dev+abc1234.dirty is older than this CLI (${cliVersion()}): update the firmware`]);
+
+    // A git hash (firmware from before versioning): a note, still exit 0
+    const old = new FakeDevice({ name: {}, firmwareVersion: "75ac767-dirty" });
+    const o = await run(["info"], { open: fakeOpener(old) });
+    assert.equal(o.code, 0);
+    assert.match(o.err[0], /^note: the device's firmware version "75ac767-dirty" isn't a release version/);
+});
+
+test("cli: info shows an unknown name when the device doesn't know NAME_GET", async () => {
+    // firmware from before the device name answers UNKNOWN_TYPE
+    const handler = msg => msg.type === Msg.NAME_GET ? { status: Status.UNKNOWN_TYPE, data: new Uint8Array(0) } : undefined;
+    const dev = new FakeDevice({ firmwareVersion: cliVersion(), handler });
+    const r = await run(["info"], { open: fakeOpener(dev) });
+    assert.equal(r.code, 0, r.err.join("\n"));
+    assert.ok(r.out.some(l => /^name: unknown/.test(l)), r.out.join("\n"));
+});
+
 test("cli: bake writes <layout name>.bin next to the layout by default", { timeout: 120000 }, async () => {
     const { dir, file, cleanup } = exampleDir({ name: "living-room.json" });
     try {
@@ -78,7 +144,7 @@ test("cli: bake writes <layout name>.bin next to the layout by default", { timeo
 test("cli: upload sends a baked .bin as it is and verifies it", async () => {
     const { dir, cleanup } = exampleDir();
     try {
-        const blob = new Uint8Array(3000).map((_, i) => (i * 2654435761) >>> 24);
+        const blob = layoutBlobOf(3000);
         const file = path.join(dir, "baked.bin");
         fs.writeFileSync(file, blob);
         const dev = new FakeDevice({ maxPayload: 1000, layout: { restartMs: 30 } });
@@ -89,6 +155,13 @@ test("cli: upload sends a baked .bin as it is and verifies it", async () => {
         assert.equal(dev.layout.stored.crc, crc32(blob));
         assert.equal(opened[0].serial, "SERIAL1");
         assert.match(r.out.at(-1), /verified/);
+
+        // A device whose firmware loads another blob version refuses it: exit 1, nothing sent
+        const other = new FakeDevice({ layout: { restartMs: 30 }, blobVersion: 99 });
+        const bad = await run(["upload", file], { open: fakeOpener(other), reconnect: fast });
+        assert.equal(bad.code, 1);
+        assert.match(bad.err.at(-1), /^error: .*loads version 99/);
+        assert.equal(other.layout.stored, null);
     } finally {
         cleanup();
     }

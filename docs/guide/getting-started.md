@@ -13,8 +13,9 @@ Windows is the tested host OS. The tools are Node.js and should work on Linux an
   ([product page](https://www.waveshare.com/esp32-s3-touch-lcd-4.3.htm)): an ESP32-S3 with 16 MB flash and 8 MB
   PSRAM, and an 800x480 touch screen.
 - A USB-C cable (two are handy, see below).
-- On your PC: [Node.js](https://nodejs.org/) 24 or later and [git](https://git-scm.com/) (the host library
-  installs one of its dependencies from GitHub).
+- To flash the firmware: **Chrome or Edge** on a desktop computer (the web flasher), or Espressif's `esptool`.
+- On your PC: [Node.js](https://nodejs.org/) 24 or later and [git](https://git-scm.com/) for the command line tool
+  (npx fetches it from GitHub, and one of its dependencies comes from GitHub too).
 - To build the firmware yourself: ESP-IDF v6.0 (see [Option B](#option-b-build-from-source)).
 
 ## The two USB ports
@@ -23,8 +24,8 @@ The board has two USB-C ports, and ControlBlock uses them for different things:
 
 | Port | Used for |
 |---|---|
-| **Native USB** (the ESP32-S3's own USB) | The ControlBlock device itself: the PC talks to it here (the CLI, the host library), and it appears as a USB keyboard for standalone `hidKey` actions. |
-| **UART** (CH343P USB-serial chip) | Flashing the firmware and reading its log. |
+| **Native USB** (the ESP32-S3's own USB) | The ControlBlock device itself: the PC talks to it here (the CLI, the host library), and it appears as a USB keyboard for standalone `hidKey` actions. Also for flashing a release in download mode (BOOT + RESET): the web flasher uses it. |
+| **UART** (CH343P USB-serial chip) | Flashing a firmware you built, and reading its log. |
 
 **Power the board from the native USB port** (on its own, or together with the UART port). The UART port alone
 doesn't supply enough power for Wi-Fi to work reliably: it may connect but then lose nearly all traffic.
@@ -36,8 +37,34 @@ logs.
 
 ### Option A: prebuilt release
 
-> **Coming soon.** Prebuilt firmware images and flashing instructions will be added here by the release work.
-> Until then, build from source (Option B).
+Every release is on the [GitHub Releases page](https://github.com/toptensoftware/ControlBlock/releases), and the
+latest one is on the **web flasher**: <https://toptensoftware.github.io/ControlBlock/>.
+
+**With the web flasher** (Chrome or Edge; nothing to install):
+
+1. Plug the board into your computer by its **native USB port** (no driver needed).
+2. Put the board in download mode: **hold BOOT**, press and release **RESET**, then release BOOT.
+3. Open the [web flasher](https://toptensoftware.github.io/ControlBlock/), click **Install** and pick the board's
+   port.
+4. Leave **"Erase device" unticked** to keep your Wi-Fi settings and stored layout. Ticking it wipes everything:
+   only for a fresh start.
+5. When it's done, press **RESET**. The firmware starts and the port the flasher used goes away; that's normal
+   (the firmware uses the native port for itself).
+
+**With esptool** (if the web flasher can't be used): get Espressif's standalone
+[`esptool`](https://github.com/espressif/esptool/releases) executable (no Python needed) or `pip install esptool`,
+and download the release's files from the Releases page. Put the board in download mode as above, then write the
+three parts (replace `COM5` with the board's port, and `0.1.0` with the release's version):
+
+```sh
+esptool --chip esp32s3 -p COM5 write-flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 controlblock-0.1.0.bin
+```
+
+That keeps your settings and stored layout. The release also has `controlblock-<version>-full.bin`, the same three
+parts merged into one image for a fresh install (`write-flash 0x0 controlblock-<version>-full.bin`): its padding
+**wipes the Wi-Fi, name and clock settings**, though the stored layout survives.
+
+Press RESET when esptool has finished.
 
 ### Option B: build from source
 
@@ -80,8 +107,8 @@ logs.
 If flashing over the UART port doesn't work, you can flash over the native port instead: hold the **BOOT**
 button, press and release **RESET**, then release BOOT, and flash to the port that appears.
 
-**Updating the firmware later** is the same `idf.py ... flash` command. Your stored layout and Wi-Fi settings
-survive it. If a firmware update changes the layout format, the device ignores the old layout and shows an
+**Updating the firmware later** is the same as the first time: the web flasher (with "Erase device" unticked),
+the three-part esptool command, or `idf.py ... flash`. Your stored layout and Wi-Fi settings survive it. If a firmware update changes the layout format, the device ignores the old layout and shows an
 empty Home until you bake and upload it again (see the [standalone guide](./standalone-mode.md)).
 
 ## Connecting to your PC
@@ -112,20 +139,29 @@ try again.
 
 ## Installing the tools
 
-The command line tool (CLI) and the host library are in the repo. Install the library's dependencies once:
+The command line tool (CLI) sets up Wi-Fi, the clock and the name, and bakes and uploads layouts. It needs
+Node.js 24 or later and git. The simplest way to run it is with npx, straight from GitHub, nothing to install
+first:
 
 ```sh
-cd host
-npm install
+npx github:toptensoftware/ControlBlock#cli            # prints the usage
 ```
 
-The CLI needs nothing more. Run it from the repo root:
+`#cli` is the latest release's CLI. To pin one release (for scripts, or to match your firmware), name its tag:
 
 ```sh
-node cli/cli.js            # prints the usage
+npx github:toptensoftware/ControlBlock#cli-v0.1.0 --version
 ```
 
-Optionally, `npm link` in `cli/` puts it on your path as `controlblock`. Every command is described in
+The first run downloads the CLI and its dependencies (some tens of MB: image and USB libraries); later runs use
+npm's cache. Two other ways to run it:
+
+- **Installed:** `npm install -g github:toptensoftware/ControlBlock#cli` puts it on your path as `controlblock`.
+- **From a clone of the repo** (for development): `npm install` once in the repo root, then `node cli/cli.js`
+  from the repo root.
+
+The rest of the guides write **`controlblock`** for whichever you use: read `controlblock info` as
+`npx github:toptensoftware/ControlBlock#cli info` if you use npx. Every command is described in
 [`cli/README.md`](../../cli/README.md).
 
 ## First boot
@@ -134,6 +170,16 @@ Power the board from the native USB port. The device boots into **standalone mod
 board has no layout stored, so Home is empty and the screen stays mostly black (no keys, and no clock until
 Wi-Fi is set up). That's expected. You give it keys either by uploading a layout ([standalone guide](./standalone-mode.md)) or by
 driving it from an app ([hosted guide](./hosted-mode.md)).
+
+To check that the CLI finds the board, and which firmware it runs:
+
+```sh
+controlblock info          # firmware, protocol and layout blob versions, name, key grid
+controlblock --version     # the CLI's own version
+```
+
+`info` warns if the firmware is older than the CLI: flash the matching release (or run the CLI release that
+matches your firmware, `#cli-v<version>`).
 
 The backlight is always on for now. Turning it off is disabled in the firmware while a hardware problem with
 switching it on is investigated, so a request to turn it off leaves the screen lit (see
@@ -146,8 +192,8 @@ wake-on-LAN), for setting the clock automatically, and for the diagnostics page.
 networks.
 
 ```sh
-node cli/cli.js wifi set MyNetwork "my password"    # store the network and connect
-node cli/cli.js wifi status                         # e.g. CONNECTED, 192.168.1.5, -52 dBm, ...
+controlblock wifi set MyNetwork "my password"    # store the network and connect
+controlblock wifi status                         # e.g. CONNECTED, 192.168.1.5, -52 dBm, ...
 ```
 
 The device keeps one network, survives reboots and firmware updates, and reconnects by itself. `wifi get`,
@@ -160,11 +206,11 @@ The status bar can show a clock. With Wi-Fi, the device sets its clock by NTP. T
 TZ string, for example for Sydney:
 
 ```sh
-node cli/cli.js time zone AEST-10AEDT,M10.1.0,M4.1.0/3
+controlblock time zone AEST-10AEDT,M10.1.0,M4.1.0/3
 ```
 
 Without Wi-Fi, the board has no battery-backed clock, so the time is lost at power-off. Set it from your PC with
-`node cli/cli.js time` after each power-up. More time zone examples and the NTP server option are in
+`controlblock time` after each power-up. More time zone examples and the NTP server option are in
 [`cli/README.md`](../../cli/README.md#time-action---serial-s).
 
 ## Device name
@@ -173,8 +219,8 @@ The device's network name is `controlblock-` plus the last three bytes of its MA
 `controlblock-a1b2c3`. It's used for mDNS (`<name>.local`) and as its DHCP hostname. To change it:
 
 ```sh
-node cli/cli.js name                 # show the current name
-node cli/cli.js name set den-panel   # now den-panel.local
+controlblock name                 # show the current name
+controlblock name set den-panel   # now den-panel.local
 ```
 
 ## Diagnostics page

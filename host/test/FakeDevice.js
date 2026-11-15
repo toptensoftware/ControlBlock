@@ -7,7 +7,9 @@ import { ControlBlock } from "../src/ControlBlock.js";
 import {
     MessageParser, encodeMessage, Writer, Reader, Flags, Msg, Status, InfoFlags, PROTOCOL_VERSION, USB_PACKET_SIZE, crc32,
     ClockSource, TIME_VALID_FROM_MS, KEYDEF_SIZE, KEY_EVENT_SIZE, KeyFlags, PUT_IMAGE_PREFIX, STATUS_TEXT_MAX_BYTES,
+    BPAK_SIGNATURE, BPAK_HEADER_SIZE,
 } from "../src/protocol.js";
+import { BLOB_VERSION } from "../src/bake/consts.js";
 
 // The firmware's constants (key_geometry.h, screen_layout.h, key_layout.h); a test checks them
 // against the headers. The library itself never assumes these: it reads GET_INFO.
@@ -22,20 +24,34 @@ export const DEVICE = Object.freeze({
 const GRID_QW = DEVICE.cols * 4, GRID_QH = DEVICE.rows * 4;     // the grid in quarter units
 const IMAGE_CAPACITY = 5000000;
 
-export function infoPayload({ maxPayload = 8192, pageCount = 1, currentPage = 0, imageUsed = 0, imageCount = 0, backlight = true, wifiCredentials = false, hosted = false, timeSet = false, layout } = {})
+// A stand-in layout blob of `size` bytes (at least 36): a BPAK header with the root's `version`
+// (as the bake writes it), then pseudo-random bytes. uploadLayout only reads the version.
+export function layoutBlobOf(size, { seed = 1, version = BLOB_VERSION } = {})
+{
+    const blob = new Uint8Array(size).map((_, i) => ((i + seed) * 2654435761) >>> 24);
+    const view = new DataView(blob.buffer);
+    view.setUint32(0, BPAK_SIGNATURE, true);
+    view.setUint32(BPAK_HEADER_SIZE, version, true);
+    return blob;
+}
+
+// GET_INFO's payload. blobVersion: null leaves the field out, like firmware from before it.
+export function infoPayload({ maxPayload = 8192, pageCount = 1, currentPage = 0, imageUsed = 0, imageCount = 0, backlight = true, wifiCredentials = false, hosted = false, timeSet = false, layout, blobVersion = BLOB_VERSION, firmwareVersion = "1.0" } = {})
 {
     const w = new Writer(128);
     const flags = (backlight ? InfoFlags.BACKLIGHT : 0) | (wifiCredentials ? InfoFlags.WIFI_CREDENTIALS : 0) | (hosted ? InfoFlags.HOSTED : 0) | (timeSet ? InfoFlags.TIME_SET : 0);
     w.u16(PROTOCOL_VERSION).u16(flags).u32(maxPayload).u32(IMAGE_CAPACITY).u32(imageUsed).u32(imageCount).u32(IMAGE_CAPACITY - imageUsed);
     w.u16(DEVICE.screenWidth).u16(DEVICE.screenHeight).u8(DEVICE.cols).u8(DEVICE.rows).u8(DEVICE.maxPages).u8(pageCount);
     w.u16(DEVICE.cell).u16(DEVICE.cell).u16(DEVICE.icon).u16(DEVICE.icon).u8(currentPage);
-    for (const s of ["1.0", "SERIAL1"]) {
+    for (const s of [firmwareVersion, "SERIAL1"]) {
         const b = new TextEncoder().encode(s);
         w.u8(b.length).raw(b);
     }
     w.u32(layout?.capacity ?? 0).u32(layout?.size ?? 0).u32(layout?.crc ?? 0);
     w.u16(DEVICE.gridX).u16(DEVICE.gridY).u16(DEVICE.gridWidth).u16(DEVICE.gridHeight).u16(DEVICE.quarter);
     w.u16(DEVICE.gridWidth).u16(DEVICE.gridHeight).u8(DEVICE.maxKeys);
+    if (blobVersion != null)
+        w.u16(blobVersion);
     return w.done();
 }
 
@@ -78,6 +94,8 @@ export class FakeDevice
     //   standalone, requests that edit the screen get NOT_HOSTED; TAKE_CONTROL clears `model` ("home"
     //   standalone, "empty" hosted) and RELEASE_CONTROL puts Home back and the backlight on.
     //   controlStatus: if not OK, TAKE_CONTROL and RELEASE_CONTROL answer with it and change nothing.
+    // blobVersion: GET_INFO's layout_blob_version (default the bake's BLOB_VERSION); null leaves it out.
+    // firmwareVersion: GET_INFO's fw_version (default "1.0").
     // clock: emulate the clock messages (docs/protocol.md, Clock): { offset, source, tz, server }.
     //   offset: device time minus Date.now() in ms, null while the time isn't known (the default).
     // name: emulate NAME_SET/NAME_GET (docs/protocol.md, Device name): { name } stored, null (the default) for none.
@@ -88,8 +106,10 @@ export class FakeDevice
     //   KEY event for a key, as a touch would.
     // handler(msg): if given, asked first about every screen request (and any other type the fake
     //   doesn't know): a { status, data } answers, null stays silent, undefined leaves it to the model.
-    constructor({ maxPayload = 8192, handler, backlight = true, layout, wifi, clock, name, hosted = false, controlStatus = Status.OK } = {})
+    constructor({ maxPayload = 8192, handler, backlight = true, layout, wifi, clock, name, hosted = false, controlStatus = Status.OK, blobVersion = BLOB_VERSION, firmwareVersion = "1.0" } = {})
     {
+        this.blobVersion = blobVersion;     // GET_INFO's layout_blob_version; null: not reported (older firmware)
+        this.firmwareVersion = firmwareVersion;
         this.clock = clock ? { offset: null, source: 0, tz: "UTC0", server: "pool.ntp.org", ...clock } : null;
         this.name = name ? { name: null, ...name } : null;
         this.hosted = hosted;
@@ -176,6 +196,7 @@ export class FakeDevice
                     timeSet: this.clock?.offset != null, pageCount: this.pageCount, currentPage: this.currentPage,
                     imageCount: this.images.size, imageUsed: [...this.images.values()].reduce((n, e) => n + e.size, 0),
                     layout: this.layout && { capacity: this.layout.capacity, size: this.layout.stored?.size ?? 0, crc: this.layout.stored?.crc ?? 0 },
+                    blobVersion: this.blobVersion, firmwareVersion: this.firmwareVersion,
                 }) }
                 : this.wifi && msg.type >= Msg.WIFI_SET && msg.type <= Msg.WIFI_STATUS
                     ? this._wifi(msg)

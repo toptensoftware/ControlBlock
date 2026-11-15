@@ -1,18 +1,46 @@
 # ControlBlock command line
 
-Bakes, renders (page mockups) and uploads standalone-mode layouts, and sets up the device's Wi-Fi and clock. It is a thin
-wrapper: argument parsing and output only. Everything it does is the library's
-(`../host`: `bakeFile`, `previewFile`, `uploadBlob`, `ControlBlock`), imported by relative path, so there
-is nothing to install here beyond `npm install` in `host/`.
+Bakes, renders (page mockups) and uploads standalone-mode layouts, sets up the device's Wi-Fi and clock, and shows
+what the device is.
 
-Run it from the repo root:
+## Running it
+
+Needs Node.js 24 or later and git. Run a release straight from GitHub with npx (nothing to install first; the first
+run downloads it and its dependencies, some tens of MB, into npm's cache):
+
+```sh
+npx github:toptensoftware/ControlBlock#cli <command> ...         # the latest release
+npx github:toptensoftware/ControlBlock#cli-v0.1.0 <command> ...  # one release, pinned
+npx github:toptensoftware/ControlBlock#cli                       # prints the usage
+```
+
+Or install it, which puts it on the path as `controlblock`:
+
+```sh
+npm install -g github:toptensoftware/ControlBlock#cli
+controlblock info
+```
+
+The `cli` branch holds a self-contained package that the release workflow builds from `main`
+(`scripts/build-cli-package.mjs`) for every release, tagged `cli-v<version>`. In a clone of the repo, run the
+working copy instead, from the repo root after `npm install` there:
 
 ```sh
 node cli/cli.js <command> ...
-node cli/cli.js                      # prints the usage
 ```
 
-Optionally `npm link` in `cli/` puts it on the path as `controlblock`.
+The examples below use `node cli/cli.js` and the repo's example layouts; with npx, put
+`npx github:toptensoftware/ControlBlock#cli` in its place.
+
+## How it's built
+
+It is a thin wrapper: argument parsing and output only. Everything it does is the library's (`../host`:
+`bakeFile`, `previewFile`, `uploadBlob`, `ControlBlock`), imported by relative path, so there is nothing to install
+here beyond the root `npm install`.
+
+Only `bake`, `render` and `upload` of a layout load the image stack (sharp, button-face, wasmoon; `cli.js`
+imports `../host/index.js` for them when they run). The other commands, and `upload` of a `.bin`, import just
+the device API (`../host/browser.js`, `../host/src/bake/upload.js`), so they start quickly. A test checks it.
 
 ## Commands
 
@@ -104,6 +132,32 @@ The device's name on the network: its mDNS name (`<name>.local`) and DHCP hostna
 | `get` (or no action) | show the name, e.g. `name: controlblock-a1b2c3 (default)` |
 | `set <name>` / `set --default` | store a name (`a-z 0-9 -`, up to 32, not starting or ending with `-`; capitals are lowercased), or put back the default `controlblock-` + the MAC's last three bytes |
 
+### `info [--serial S]`
+
+What the device is (GET_INFO and the device name; works while standalone):
+
+```
+cli: 0.1.0
+device: 3C84279E1D50
+firmware: 0.1.0
+protocol: 2
+layout blob version: 3
+name: controlblock-a1b2c3 (default)
+grid: 5x3 cells of 144 px, 720x432 at (40, 44)
+```
+
+- `firmware` is the firmware's version: `0.1.0` for a release, `0.1.0-dev+<commit>[.dirty]` for any other build
+  (firmware from before versioning shows a git hash).
+- `layout blob version` is the blob version the firmware loads (`unknown` from firmware that doesn't report it);
+  `upload` refuses a blob of another version.
+- If the firmware's major.minor is older than the CLI's, it prints a warning to stderr (still exit 0); if the firmware
+  version isn't a release version (a git hash), a note that it can't be compared. Only `protocol` must match: the
+  CLI refuses a device with another protocol version.
+
+### `--version`
+
+Prints the CLI's version (the product version, shared with the firmware and the library), e.g. `0.1.0`.
+
 ### Options
 
 - `--serial S`: the device to use, by serial number (default: the first one found).
@@ -132,12 +186,16 @@ node cli/cli.js time zone AEST-10AEDT,M10.1.0,M4.1.0/3             # Sydney
 node cli/cli.js time                                                # set the clock from this PC
 node cli/cli.js time get
 node cli/cli.js name set den-tv                                     # den-tv.local
+node cli/cli.js info
+node cli/cli.js --version
 ```
 
 ## Tests
 
-`npm test` in `cli/` (no device: the upload, wifi, time and name commands run against the library's
+`npm test` in `cli/`, or the root `npm test` for every Node suite (no device: the upload, wifi, time, name and info commands run against the library's
 `FakeDevice`; the bake and render run the real renderer). `cli.js` exports
 `main(argv, { open, reconnect, stdout, stderr })`, which resolves the exit code, and only
 runs itself when executed directly. `args.js` (`parseArgs`, `USAGE`, `UsageError`) is the
-pure argument parser.
+pure argument parser; `version.js` (`cliVersion`, `parseVersion`, `firmwareVersionNote`) reads the CLI's version
+and compares the firmware's with it. The lazy-loading test runs `test/lazy-child.mjs` under
+`node --import test/block-image-stack.mjs`, a resolve hook that refuses the image stack to the library and the CLI.

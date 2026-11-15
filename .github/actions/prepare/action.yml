@@ -1,0 +1,34 @@
+name: Prepare
+description: >
+  After actions/checkout: lets git work on the checkout (also as root in a container), sends GitHub
+  ssh URLs over https (the root package-lock.json records button-face as git+ssh; runners have no ssh
+  keys), initialises the listed submodules and sets up Node 24.
+inputs:
+  submodules:
+    description: Space-separated submodule paths to initialise (none if empty)
+    required: false
+    default: ""
+  node:
+    description: Set up Node 24 ("true" or "false")
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Git settings and submodules
+      shell: bash
+      env:
+        SUBMODULES: ${{ inputs.submodules }}
+      run: |
+        git config --global --add safe.directory '*'
+        git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        git config --global --add url."https://github.com/".insteadOf "git@github.com:"
+        if [ -n "$SUBMODULES" ]; then
+          # Word splitting on purpose: one path per word
+          git submodule update --init $SUBMODULES
+        fi
+    - name: Node 24
+      if: inputs.node == 'true'
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24

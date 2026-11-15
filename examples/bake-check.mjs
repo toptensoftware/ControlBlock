@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { bakeFile, KEY_COLS, KEY_ROWS, KEY_QUARTER, MAX_KEYS_PER_PAGE, MAX_KEY_ID } from "../host/index.js";
-import { unpackRle } from "../host/node_modules/rle565/unpack.js";
+import { unpackRle } from "rle565/unpack.js";
 
 const GRID_QW = KEY_COLS * 4, GRID_QH = KEY_ROWS * 4;    // the grid in quarter units
 export const IMAGE_STATES = ["normal", "pressed"];

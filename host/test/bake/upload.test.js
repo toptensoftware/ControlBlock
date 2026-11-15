@@ -3,10 +3,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Msg, crc32 } from "../../src/protocol.js";
-import { FakeDevice, fakeOpener } from "../FakeDevice.js";
+import { FakeDevice, fakeOpener, layoutBlobOf } from "../FakeDevice.js";
 import { uploadBlob } from "../../src/bake/upload.js";
+import { BLOB_VERSION } from "../../src/bake/consts.js";
 
-const blobOf = (size, seed = 3) => new Uint8Array(size).map((_, i) => ((i + seed) * 2654435761) >>> 24);
+const blobOf = (size, seed = 3) => layoutBlobOf(size, { seed });
 
 const opener = (dev, opened) => fakeOpener(dev, { opened });
 
@@ -47,6 +48,13 @@ test("a blob the device already has is not sent again, unless forced", async () 
     const forced = await uploadBlob(blob, { open: opener(dev), log, force: true, reconnect: fast });
     assert.equal(forced.uploaded, true);
     assert.ok(dev.requests.some(m => m.type === Msg.LAYOUT_BEGIN));
+});
+
+test("a blob the device's firmware can't load is refused before anything is sent", async () => {
+    const dev = new FakeDevice({ layout: { restartMs: 40 }, blobVersion: BLOB_VERSION + 1 });
+    await assert.rejects(uploadBlob(blobOf(500), { open: opener(dev), log: logger(), reconnect: fast }),
+                         /blob version .*loads version/);
+    assert.ok(!dev.requests.some(m => m.type === Msg.LAYOUT_BEGIN));
 });
 
 test("a device that comes back without the layout is an error", async () => {

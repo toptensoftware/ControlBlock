@@ -8,7 +8,7 @@
 // icon/label) centred in the 144 cell: FACE_MARGIN px of black each side.
 
 import sharp from "sharp";
-import { packRle } from "rle565";
+import { packRle } from "#rle565";
 import { render } from "@toptensoftware/button-face/node";
 import { crc32 } from "./protocol.js";
 // Black round a face in a key image (each side): a 1U cell of 144 holds a 128 face. Defined with

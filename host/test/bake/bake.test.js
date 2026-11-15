@@ -2,7 +2,7 @@
 // Lua checker and a fake renderer (the cli's own tests, with the real renderer, are in cli/test).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { unpack } from "../../../binpack/index.js";
+import { unpack } from "#binpack";
 import { bake, BakeError } from "../../src/bake/bake.js";
 import { createLuaChecker } from "../../src/bake/lua.js";
 import { ROOT_TYPE } from "../../src/bake/pack.js";

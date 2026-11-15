@@ -2,7 +2,7 @@
 // registers them. No field mappers: stage 1 already produced exactly this shape.
 // `formatTypes()` (see pack.js headerText) generates the C header the firmware loader uses.
 
-import { registerEnum, registerType } from "../../../binpack/index.js";
+import { registerEnum, registerType } from "#binpack";
 import { OP, HID_MODE } from "./consts.js";
 
 export const ROOT_TYPE = "layoutRoot";

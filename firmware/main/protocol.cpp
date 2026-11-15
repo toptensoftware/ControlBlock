@@ -473,6 +473,9 @@ void Protocol::OnGetInfo()
     w.U16(KEY_GRID_W);
     w.U16(KEY_GRID_H);
     w.U8(COMP_MAX_KEYS);
+    // Appended (still v2): the layout blob version this firmware loads, so a
+    // host can refuse to upload a blob the device would reject at boot
+    w.U16(LAYOUT_BLOB_VERSION);
     Respond(ST_OK, out, w.len);
 }
 

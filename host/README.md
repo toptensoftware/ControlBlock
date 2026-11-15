@@ -10,14 +10,16 @@ The JavaScript library for everything a PC does with a ControlBlock:
 
 ## Install
 
-Needs Node.js 24 or later and git (button-face comes from GitHub). Not on npm yet: from this folder,
+Needs Node.js 24 or later and git (button-face comes from GitHub). In an app, install a release from GitHub (not
+the npm registry) and import `@toptensoftware/controlblock`:
 
 ```sh
-npm install
-npm test                    # library and bake tests, no device needed
+npm install github:toptensoftware/ControlBlock#cli            # or #cli-v0.1.0 to pin a release
 ```
 
-and import it by path. Setting up the device and the PC (USB driver, udev rule) is in [Getting started](../docs/guide/getting-started.md).
+In a clone of the repo: `npm install` once in the repo root (npm workspaces), then import by path; `npm test` here
+runs the library and bake tests (no device needed). Setting up the device and the PC (USB driver, udev rule) is in
+[Getting started](../docs/guide/getting-started.md).
 
 | Entry | Has |
 |---|---|
@@ -54,4 +56,4 @@ On a device, from this folder: `node ../examples/demo.js` (pages, a 2U key, half
 | `src/bake/` | the bake: `resolve.js` (stage 1), `render.js` (stage 2), `pack.js`/`schema.js` (stage 3, BPAK through binpack), `bake.js` (all three), `files.js` (`loadLayoutFile`, `bakeFile`), `upload.js` (`uploadBlob`), `headers.js` (the firmware headers `tools/codegen` writes) |
 | `test/` | device API tests against `test/FakeDevice.js` (a fake WebUSB device); `test/bake/` the bake tests |
 
-binpack is imported by relative path (`../../../binpack/`), not installed, so edits to it apply at once. The rle565 encoder is a `file:` dependency, copied in by `npm install` (`install-links=true`): after changing it, bump its version, delete its folder under `node_modules` and `npm install` again. button-face (`@toptensoftware/button-face`) comes from GitHub (`git+https://github.com/toptensoftware/button-face.git`), pinned to a commit by `package-lock.json`: `npm install git+https://github.com/toptensoftware/button-face.git` picks up a newer one.
+binpack and the rle565 encoder are imported through this package's `imports` map: `#binpack` (`src/bake/binpack.js`, a one-line shim over the `binpack/` submodule, which isn't a workspace because its repo has its `node_modules` checked in) and `#rle565` (the `rle565/encoder` workspace, linked, not copied). Edits to either apply at once. The release's package (`scripts/build-cli-package.mjs`, the `cli` branch) points both at vendored copies. button-face (`@toptensoftware/button-face`) comes from GitHub (`git+https://github.com/toptensoftware/button-face.git`), pinned to a commit by the root `package-lock.json`: `npm install git+https://github.com/toptensoftware/button-face.git -w host -w tools/test-icons` in the repo root picks up a newer one.

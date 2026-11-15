@@ -1,7 +1,7 @@
 // Stage 3: schema, binpack, BPAK file.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pack, unpack } from "../../../binpack/index.js";
+import { pack, unpack } from "#binpack";
 import { buildCombinedBuffer } from "../../../binpack/cli.js";
 import { ok, fakeRenderer } from "./helpers.js";
 import { renderImages } from "../../src/bake/render.js";

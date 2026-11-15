@@ -28,6 +28,11 @@ export const USAGE = `usage: node cli/cli.js <command> ...
       the device's network name (<name>.local, DHCP hostname): get (the default)
       shows it; set stores one (a-z 0-9 -, up to 32); --default puts back
       controlblock-xxxxxx
+  info [--serial S]
+      the device's firmware, protocol and layout blob versions, name and key grid;
+      warns if the firmware is older than this command line
+  --version
+      this command line's version
   --serial S picks the device by serial number (default: the first one found)`;
 
 export class UsageError extends Error
@@ -187,7 +192,25 @@ const parseName = actionCommand("name", {
     set: setting("name set", "a name"),
 }, { scanOptions: DEFAULT_FLAG, defaultAction: "get" });
 
-const COMMANDS = { bake: parseBake, upload: parseUpload, render: parseRender, wifi: parseWifi, time: parseTime, name: parseName };
+// --version: the CLI's own version
+function parseVersion(argv)
+{
+    if (argv.length)
+        throw new UsageError("--version takes no arguments");
+    return { command: "version" };
+}
+
+// info [--serial S]: the device's versions, name and grid
+function parseInfo(argv)
+{
+    const { opts, pos } = scan(argv, { values: SERIAL });
+    if (pos.length)
+        throw new UsageError("info takes no arguments");
+    return { command: "info", serial: opts.serial };
+}
+
+const COMMANDS = { bake: parseBake, upload: parseUpload, render: parseRender, wifi: parseWifi, time: parseTime, name: parseName,
+                   info: parseInfo, "--version": parseVersion };
 
 export function parseArgs(argv)
 {

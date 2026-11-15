@@ -1,0 +1,68 @@
+# Builds the firmware (release preset, ESP-IDF v6.0) and uploads the build as the "firmware" artifact:
+# the three parts, the merged image (controlblock-full.bin: FULL_IMAGE in scripts/release.mjs),
+# flasher_args.json, the ELF, sdkconfig and project_description.json, under their build-folder paths
+# (flasher_args.json's paths stay valid after a download). Called by ci.yml and release.yml.
+name: Firmware
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Firmware version (-DCB_VERSION); empty = from the root package.json and git (<ver>-dev+<hash>)
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Firmware (release)
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.0
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # tags, for firmware/version.cmake
+      - uses: ./.github/actions/prepare
+        with:
+          submodules: rle565 SimpleLib lua
+          node: "false"
+      - name: Version logic test
+        run: |
+          . "$IDF_PATH/export.sh" > /dev/null
+          cmake -P firmware/test/version_test.cmake
+      - name: Build
+        working-directory: firmware
+        env:
+          FW_VERSION: ${{ inputs.version }}
+        run: |
+          . "$IDF_PATH/export.sh" > /dev/null
+          define=()
+          if [ -n "$FW_VERSION" ]; then define=("-DCB_VERSION=$FW_VERSION"); fi
+          idf.py --preset release "${define[@]}" build
+          # Separate call without -D: no new cache entries, so no reconfigure (CB_VERSION is one-shot)
+          idf.py --preset release merge-bin -o controlblock-full.bin
+          grep '"project_version"' build/release/project_description.json
+          if [ -n "$FW_VERSION" ] && ! grep -q "\"project_version\": \"$FW_VERSION\"" build/release/project_description.json; then
+            echo "::error::firmware version isn't $FW_VERSION"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          if-no-files-found: error
+          path: |
+            firmware/build/release/bootloader/bootloader.bin
+            firmware/build/release/partition_table/partition-table.bin
+            firmware/build/release/controlblock.bin
+            firmware/build/release/controlblock-full.bin
+            firmware/build/release/controlblock.elf
+            firmware/build/release/flasher_args.json
+            firmware/build/release/flash_args
+            firmware/build/release/sdkconfig
+            firmware/build/release/project_description.json

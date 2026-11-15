@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ControlBlock Flasher</title>
+<meta name="description" content="Install the ControlBlock firmware on a Waveshare ESP32-S3-Touch-LCD-4.3 from the browser.">
+<!-- ESP Web Tools (Apache-2.0, https://github.com/esphome/esp-web-tools), pinned -->
+<script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
+<style>
+:root {
+    color-scheme: light dark;
+    --bg: #f7f7f8;
+    --fg: #1d1d20;
+    --muted: #5d5d66;
+    --card: #ffffff;
+    --border: #dcdce2;
+    --accent: #1f6feb;
+    --accent-fg: #ffffff;
+    --code-bg: #eeeef2;
+    --warn-bg: #fff4e0;
+    --warn-border: #e8b04a;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #16161a;
+        --fg: #e8e8ec;
+        --muted: #a0a0aa;
+        --card: #1f1f25;
+        --border: #34343d;
+        --accent: #4c8dff;
+        --accent-fg: #0b0b0e;
+        --code-bg: #2a2a31;
+        --warn-bg: #2e2516;
+        --warn-border: #8a6420;
+    }
+}
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 680px; margin: 0 auto; padding: 32px 16px 48px; }
+h1 { font-size: 1.7rem; margin: 0 0 4px; }
+h2 { font-size: 1.15rem; margin: 32px 0 8px; }
+.sub { color: var(--muted); margin: 0 0 24px; }
+.card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+}
+.install { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.version { color: var(--muted); }
+esp-web-install-button {
+    --esp-tools-button-color: var(--accent);
+    --esp-tools-button-text-color: var(--accent-fg);
+    --esp-tools-button-border-radius: 8px;
+}
+.notice {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    border-radius: 8px;
+    padding: 10px 14px;
+}
+ol { padding-left: 1.4em; }
+li { margin: 6px 0; }
+code, pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 0.9em; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre {
+    background: var(--code-bg);
+    padding: 12px 14px;
+    border-radius: 8px;
+    overflow-x: auto;
+    white-space: pre;
+}
+pre code { background: none; padding: 0; }
+a { color: var(--accent); }
+.small { color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<main>
+    <h1>ControlBlock Flasher</h1>
+    <p class="sub">Install the ControlBlock firmware on a Waveshare ESP32-S3-Touch-LCD-4.3, straight from the browser.</p>
+
+    <div class="card install">
+        <esp-web-install-button manifest="manifest.json">
+            <span slot="unsupported" class="notice">This browser can't flash devices: use Chrome or Edge on a desktop computer.</span>
+            <span slot="not-allowed" class="notice">Flashing needs a secure (HTTPS) page.</span>
+        </esp-web-install-button>
+        <span class="version" id="version">Firmware version: loading...</span>
+    </div>
+
+    <h2>Steps</h2>
+    <ol>
+        <li>Use <strong>Chrome or Edge</strong> on a desktop computer (Windows, macOS or Linux). Other browsers can't reach serial ports.</li>
+        <li>Plug the board into the computer by its <strong>native USB port</strong> (labelled <code>USB</code>, not <code>UART</code>). No driver is needed.</li>
+        <li>Put the board in download mode: <strong>hold BOOT</strong>, press and release <strong>RESET</strong>, then release BOOT.</li>
+        <li>Click <strong>Install</strong> above and pick the board's port.</li>
+        <li>Leave <strong>"Erase device" unticked</strong> to keep the Wi-Fi settings and the stored layout. Ticking it wipes both (a fresh install).</li>
+        <li>When it's done, press <strong>RESET</strong> on the board. The firmware starts and the port goes away: that's normal (the firmware uses the native port for itself).</li>
+    </ol>
+
+    <h2>Then set it up</h2>
+    <p>With <a href="https://nodejs.org/">Node.js 24</a> and <a href="https://git-scm.com/">git</a> installed, check the board from a terminal:</p>
+    <pre><code>npx github:toptensoftware/ControlBlock#cli info</code></pre>
+    <p>The same command sets up Wi-Fi and uploads layouts: see the
+        <a href="https://github.com/toptensoftware/ControlBlock#readme">ControlBlock README</a>.</p>
+
+    <h2>Without this page</h2>
+    <p>Download the bins from the <a href="https://github.com/toptensoftware/ControlBlock/releases/latest">GitHub Releases page</a>
+        and flash them with Espressif's <a href="https://github.com/espressif/esptool/releases">esptool</a> (download mode as above;
+        replace <code>COM5</code> with the board's port):</p>
+    <pre><code id="esptool">esptool --chip esp32s3 -p COM5 write-flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 controlblock-&lt;version&gt;.bin</code></pre>
+    <p class="small">These three parts keep the settings and the layout. The release's single <code>-full.bin</code> image is a fresh install: it wipes the Wi-Fi settings.</p>
+</main>
+<script>
+// Show the version from the manifest, and fill it into the esptool command
+fetch("manifest.json")
+    .then(r => r.ok ? r.json() : Promise.reject(new Error(r.status)))
+    .then(m => {
+        document.getElementById("version").textContent = `Firmware version: ${m.version}`;
+        const app = m.builds?.[0]?.parts?.find(p => p.offset === 0x10000)?.path;
+        if (app) {
+            const cmd = document.getElementById("esptool");
+            cmd.textContent = cmd.textContent.replace("controlblock-<version>.bin", app);
+        }
+    })
+    .catch(() => { document.getElementById("version").textContent = "Firmware version: unknown"; });
+</script>
+</body>
+</html>

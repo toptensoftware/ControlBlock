@@ -456,7 +456,25 @@ export function decodeInfo(data)
     info.maxImageWidth     = r.u16();
     info.maxImageHeight    = r.u16();
     info.maxKeys           = r.u8();
+    // Appended later in v2: the layout blob version the firmware loads (undefined from older firmware)
+    info.layoutBlobVersion = r.has(2) ? r.u16() : undefined;     // (u16(undefined) would give the default 0)
     return info;
+}
+
+// A standalone layout blob (from src/bake) is a BPAK blob: a BPAK_HEADER_SIZE header starting with
+// BPAK_SIGNATURE, then the root, whose first field is the u32 blob version (firmware layout_blob.h).
+export const BPAK_SIGNATURE   = 0x4B415042;      // "BPAK" as bytes 42 50 41 4B
+export const BPAK_HEADER_SIZE = 32;
+
+// The blob's version, or undefined if it isn't a layout blob
+export function layoutBlobVersion(blob)
+{
+    if (blob.length < BPAK_HEADER_SIZE + 4)
+        return undefined;
+    const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+    if (view.getUint32(0, true) !== BPAK_SIGNATURE)
+        return undefined;
+    return view.getUint32(BPAK_HEADER_SIZE, true);
 }
 
 // WIFI_GET response data: { ssid, password, ssidBytes } (all empty if none are stored)

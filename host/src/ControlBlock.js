@@ -20,7 +20,7 @@ import {
     PUT_IMAGE_PREFIX, LAYOUT_DATA_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
     encodeWifiSet, decodeWifiCredentials, decodeWifiStatus, WifiState, encodeTimeSet, decodeTime, encodeClockSet, encodeNameSet, decodeName,
     encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeLayoutBegin, encodeLayoutData, crc32,
-    decodeInfo, decodeQuery, decodeEvent, statusName, HEARTBEAT_INTERVAL_MS,
+    decodeInfo, decodeQuery, decodeEvent, statusName, HEARTBEAT_INTERVAL_MS, layoutBlobVersion,
 } from "./protocol.js";
 
 const READ_SIZE        = 4096;      // a multiple of the 64-byte packet size
@@ -362,11 +362,22 @@ export class ControlBlock extends Emitter
     // flash. Skipped (resolves { uploaded: false }) if the device already has
     // exactly this blob, unless `force`. onProgress(sent, total) after each
     // chunk. The device restarts when it's done: the connection ends, and
-    // reconnect() finds it again.
+    // reconnect() finds it again. A blob of another version than the firmware
+    // loads (GET_INFO's layoutBlobVersion) is refused before anything is sent,
+    // even with `force`; firmware that doesn't report it isn't checked.
     async uploadLayout(blob, { force = false, onProgress } = {})
     {
         if (!blob.length)
             throw new Error("Empty layout");
+        const want = this.info?.layoutBlobVersion;
+        if (want !== undefined) {
+            const have = layoutBlobVersion(blob);
+            if (have === undefined)
+                throw new Error(`Not a layout blob (no BPAK header); the device loads layout blob version ${want}`);
+            if (have !== want)
+                throw new Error(`Layout blob version ${have}, but the device's firmware loads version ${want}: `
+                    + (have > want ? "update the firmware" : "re-bake the layout with a matching version of the tools"));
+        }
         const size = blob.length, crc = crc32(blob);
         const capacity = this.info?.layoutCapacity;
         if (capacity && size > capacity)

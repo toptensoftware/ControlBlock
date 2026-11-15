@@ -1,0 +1,133 @@
+# A release, on a tag v<x.y.z> pushed after scripts/bump-version.mjs. The tag must match the root
+# package.json version. Runs the tests and the firmware build (shared with ci.yml), then publishes the web
+# flasher to GitHub Pages and the CLI package to the `cli` branch (tag cli-v<x.y.z>), and last the GitHub
+# Release with the firmware and its notes (.github/release-notes.md).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write     # the Release, the cli branch and its tag
+  pages: write        # the flasher site
+  id-token: write     # actions/deploy-pages
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Check the tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare
+      - id: check
+        run: |
+          version=$(node scripts/release.mjs check-tag "$GITHUB_REF_NAME")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  tests:
+    needs: version
+    uses: ./.github/workflows/tests.yml
+
+  firmware:
+    needs: version
+    uses: ./.github/workflows/firmware.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  pages:
+    name: Web flasher (GitHub Pages)
+    needs: [version, tests, firmware]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: build
+      - name: Build the site
+        run: node scripts/make-flasher-manifest.mjs "$VERSION" build/flasher_args.json site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  cli:
+    name: CLI package (cli branch)
+    needs: [version, tests, firmware]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/prepare
+        with:
+          submodules: binpack rle565     # vendored into the package
+      - name: Build, commit, tag and push
+        run: |
+          tag="cli-v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "$tag already exists: nothing to do"
+            exit 0
+          fi
+          dir="$RUNNER_TEMP/cli-package"
+          if git ls-remote --exit-code --heads origin cli > /dev/null; then
+            git fetch origin cli
+            git worktree add -B cli "$dir" FETCH_HEAD
+          else
+            echo "No cli branch yet: starting it orphaned"
+            git worktree add --orphan -b cli "$dir"
+          fi
+          node scripts/build-cli-package.mjs "$dir" --clean
+          cd "$dir"
+          git add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "CLI package $VERSION (from ${GITHUB_SHA::7})"
+          git tag "$tag"
+          git push origin cli "refs/tags/$tag"
+
+  release:
+    name: GitHub Release
+    needs: [version, firmware, pages, cli]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: build
+      - name: Assets and notes
+        run: |
+          node scripts/release.mjs assets "$VERSION" build/flasher_args.json assets
+          (cd build && zip -9 "../assets/controlblock-$VERSION-elf.zip" controlblock.elf)
+          node scripts/release.mjs notes "$VERSION" "$GITHUB_REPOSITORY" build/flasher_args.json notes.md
+          ls -l assets
+      - name: Create (or update) the Release
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" assets/* --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" assets/* --verify-tag \
+              --title "ControlBlock $VERSION" --notes-file notes.md
+          fi

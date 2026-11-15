@@ -37,6 +37,18 @@ The ESP-IDF managed components (`espressif/*`) are fetched by the ESP-IDF compon
 | [button-face](https://github.com/toptensoftware/button-face) (npm dependency of `host/` and `tools/test-icons/`) | key face, icon and label rendering | MIT | Copyright (c) 2026 Topten Software |
 | [Material Symbols](https://github.com/google/material-design-icons) | many of button-face's built-in `#name` icons are derived from them; layouts can also name `@name` symbols, which the bake downloads. Either way the icons end up in baked layouts (and in `firmware/assets/test_keys.bin`, stress builds only) | [Apache-2.0](https://github.com/google/material-design-icons/blob/master/LICENSE) | Google LLC |
 | [binpack](https://github.com/toptensoftware/binpack) (`binpack/` submodule) | layout blob packing | [MIT](binpack/LICENSE) | Topten Software |
+| [rle565](https://github.com/toptensoftware/rle565) encoder (`rle565/encoder/`) | encoding key images | [MIT](rle565/LICENSE) | Copyright (c) 2026 Topten Software |
+
+The CLI and library package on the `cli` branch (built by `scripts/build-cli-package.mjs`) includes copies of
+binpack and the rle565 encoder under `vendor/`, each with its licence file.
+
+## On the web flasher page
+
+| Component | Used for | Licence | Copyright |
+|---|---|---|---|
+| [ESP Web Tools](https://github.com/esphome/esp-web-tools) 10.4.0 (with the [esptool-js](https://github.com/espressif/esptool-js) it bundles) | flashing from the browser (`flasher/index.html`, published on GitHub Pages) | [Apache-2.0](https://github.com/esphome/esp-web-tools/blob/main/LICENSE) | the ESP Web Tools authors (ESPHome); esptool-js: Espressif Systems (Shanghai) Co., Ltd. |
+
+The page loads it from a CDN (unpkg) when it opens; this repository and its releases don't include it.
 | [PacketEncoder](https://github.com/toptensoftware/PacketEncoder) (`PacketEncoder/` submodule) | macro pad wire format (`pad/`, `tools/pad-sim/`) | [MIT](PacketEncoder/LICENSE) | Copyright (c) 2026 Topten Software |
 | [atv-daemon](https://github.com/toptensoftware/atv-daemon) (`urem2/atvdaemon/` submodule) | Apple TV bridge for the urem2 layout; uses [pyatv](https://github.com/postlund/pyatv) (MIT) | no licence file upstream; by the same author as ControlBlock | Topten Software |
 

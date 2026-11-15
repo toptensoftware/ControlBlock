@@ -7,19 +7,31 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ControlBlock, BakeError, WifiState, ClockSource, bakeFile, previewFile, encodePng, formatEntries, uploadBlob } from "../host/index.js";
+// The device API only (no images): every command that doesn't bake or render needs no more,
+// and starts without loading sharp, button-face or wasmoon (a test checks it)
+import { ControlBlock, WifiState, ClockSource } from "../host/browser.js";
+import { uploadBlob } from "../host/src/bake/upload.js";
 import { parseArgs, UsageError } from "./args.js";
+import { cliVersion, firmwareVersionNote } from "./version.js";
+
+// The whole library, with the image stack and the bake: loaded by the commands that bake or render
+let bakeLib = null;
+async function loadBakeLib()
+{
+    bakeLib ??= await import("../host/index.js");
+    return bakeLib;
+}
 
 function printWarnings(warnings, io)
 {
     if (warnings.length)
-        io.stderr(`warnings:\n${formatEntries(warnings)}`);
+        io.stderr(`warnings:\n${bakeLib.formatEntries(warnings)}`);
 }
 
 // Bake a layout file; prints its warnings. Resolves the blob.
 async function bakeLayout(input, io)
 {
-    const { blob, warnings } = await bakeFile(input);
+    const { blob, warnings } = await (await loadBakeLib()).bakeFile(input);
     printWarnings(warnings, io);
     return blob;
 }
@@ -64,6 +76,7 @@ const COMMANDS = {
 
     async render(a, io)
     {
+        const { previewFile, encodePng } = await loadBakeLib();
         const { pages, warnings } = await previewFile(a.input, { state: a.state, page: a.page, grid: a.grid });
         printWarnings(warnings, io);
         fs.mkdirSync(a.out, { recursive: true });
@@ -79,6 +92,13 @@ const COMMANDS = {
     wifi: (a, io) => runAction(WIFI, a, io),
     time: (a, io) => runAction(TIME, a, io),
     name: (a, io) => runAction(NAME, a, io),
+    info: (a, io) => runAction(INFO, { ...a, action: "show" }, io),
+
+    version(a, io)
+    {
+        io.stdout(cliVersion());
+        return 0;
+    },
 };
 
 // Opens the device, runs the command's action from `actions` and closes it again;
@@ -197,6 +217,33 @@ const NAME = {
     },
 };
 
+// info: what the device is (GET_INFO, read on open, and the name). Standalone is fine. A firmware
+// older than the CLI only warns: protocol_version is the hard check (ControlBlock.open).
+const INFO = {
+    async show(cb, a, io)
+    {
+        const i = cb.info;
+        io.stdout(`cli: ${cliVersion()}`);
+        io.stdout(`device: ${i.serial}`);
+        io.stdout(`firmware: ${i.firmwareVersion}`);
+        io.stdout(`protocol: ${i.protocolVersion}`);
+        io.stdout(`layout blob version: ${i.layoutBlobVersion ?? "unknown"}`);
+        try
+        {
+            await showName(cb, io);
+        }
+        catch (err)
+        {
+            io.stdout(`name: unknown (${err.message})`);
+        }
+        io.stdout(`grid: ${i.cols}x${i.rows} cells of ${i.keyWidth} px, ${i.gridWidth}x${i.gridHeight} at (${i.gridX}, ${i.gridY})`);
+        const note = firmwareVersionNote(i.firmwareVersion);
+        if (note)
+            io.stderr(note);
+        return 0;
+    },
+};
+
 // Runs a command line; resolves the exit code. `open(options)` opens a device (default
 // ControlBlock.open) and `reconnect` ({ timeoutMs, intervalMs }) tunes the wait for a
 // restart: tests inject a fake device. `stdout(line)` and `stderr(line)` take the output.
@@ -221,7 +268,8 @@ export async function main(argv, { open = o => ControlBlock.open(o), reconnect, 
     }
     catch (err)
     {
-        stderr(err instanceof BakeError ? err.message : `error: ${err.message}`);
+        // (only a command that loaded the bake can throw a BakeError)
+        stderr(bakeLib && err instanceof bakeLib.BakeError ? err.message : `error: ${err.message}`);
         return 1;
     }
 }

@@ -1,2 +1,5 @@
 # Throwaway scripts (see "Preventing Permission Prompts" in CLAUDE.md)
 scratch/
+
+# npm workspaces (root package.json)
+node_modules/

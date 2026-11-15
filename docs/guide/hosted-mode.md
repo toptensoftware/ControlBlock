@@ -9,35 +9,36 @@ and for browsers (WebUSB). It speaks the device's USB protocol, renders key imag
 standalone layout. Apps in other languages can speak the protocol directly (see
 [Other languages](#other-languages)).
 
-This guide assumes the device is flashed and connected and the library's dependencies are installed: see
-[Getting started](./getting-started.md). Code runs from the repo root unless a path says otherwise.
+This guide assumes the device is flashed and connected: see [Getting started](./getting-started.md).
 
 ## Installing
 
-The library isn't published on npm yet. Install its dependencies once:
+The library isn't on the npm registry; it's installed from GitHub, from the same `cli` branch the CLI runs from
+(each release's library and CLI, built by the release workflow). In your app's folder:
 
 ```sh
-cd host
-npm install
+npm install github:toptensoftware/ControlBlock#cli            # the latest release
+npm install github:toptensoftware/ControlBlock#cli-v0.1.0      # or pin one release
 ```
 
-That needs Node.js 24 or later and git (one dependency, button-face, comes from GitHub). It fetches native
-packages too (`usb`, `sharp`, and the Skia canvas button-face draws with).
-
-Then import it by path, as [`examples/`](../../examples/README.md) and the CLI do:
+That needs Node.js 24 or later and git (npm fetches the package, and one of its dependencies, button-face, from
+GitHub). It fetches native packages too (`usb`, `sharp`, and the Skia canvas button-face draws with). Then import
+it by name:
 
 ```js
-import { ControlBlock } from "./host/index.js";       // Node: everything
-import { ControlBlock } from "./host/browser.js";     // browsers: the device API only
+import { ControlBlock } from "@toptensoftware/controlblock";
 ```
 
-To use it from a project elsewhere, `npm install <path to the repo>/host` there adds it as a dependency named
-`@toptensoftware/controlblock`.
+In Node that is everything (`host/index.js`); a browser bundler that honours the `browser` export condition gets
+the device API only (`host/browser.js`). In a clone of the repo (after `npm install` in the repo root),
+[`examples/`](../../examples/README.md) and the CLI import the files by path instead (`./host/index.js`,
+`./host/browser.js`), and so do the examples in this guide: in your own app, import
+`@toptensoftware/controlblock` where they say `./host/index.js`.
 
 | Entry | What it has |
 |---|---|
-| `host/index.js` (Node) | The device API, the key image helpers and the layout bake |
-| `host/browser.js` (browsers, and Node) | The device API only: `ControlBlock`, `ControlBlockError`, the protocol constants (`Msg`, `Status`, `KeyAction`, `PageCause`, `WifiState`, `ClockSource`, `USB_VID`, `USB_PID`, ...) and `crc32`. It imports nothing Node-only |
+| `host/index.js` (Node; the package's default) | The device API, the key image helpers and the layout bake |
+| `host/browser.js` (the package's `browser` entry; also works in Node) | The device API only: `ControlBlock`, `ControlBlockError`, the protocol constants (`Msg`, `Status`, `KeyAction`, `PageCause`, `WifiState`, `ClockSource`, `USB_VID`, `USB_PID`, ...) and `crc32`. It imports nothing Node-only |
 
 The image helpers and the bake need Node (they use sharp, the file system and button-face's Node renderer).
 
@@ -231,6 +232,7 @@ Don't hard-code these: `cb.info` has them, and the helpers read it.
 | `serial`, `firmwareVersion`, `protocolVersion` | The device |
 | `hosted`, `backlight`, `wifiCredentials`, `timeSet` | State flags |
 | `layoutCapacity`, `layoutSize`, `layoutCrc` | The stored standalone layout |
+| `layoutBlobVersion` | The layout blob version the firmware loads (3); `undefined` from firmware that doesn't report it |
 
 `info` is read when you connect. `await cb.getInfo()` reads it again (for the image memory figures, say).
 
@@ -558,6 +560,10 @@ if (result.uploaded)
 
 - `uploadLayout` resolves `{ uploaded, size, crc }`; `uploaded` is false (and nothing is sent) if the device
   already has this layout, unless `{ force: true }`.
+- `uploadLayout` (and so `uploadBlob`) refuses a blob of another version than the firmware loads
+  (`info.layoutBlobVersion`) before sending anything, even with `force`: the device would refuse it at boot and
+  show an empty Home. Update the firmware or re-bake with matching tools. Firmware that doesn't report the version
+  isn't checked.
 - When the upload is done, the device **restarts**: the connection closes, and `reconnect()` waits for the same
   device to come back and resolves to a new `ControlBlock`. It comes back standalone, running the new layout:
   take control again if you want the screen.
@@ -583,7 +589,7 @@ Key images are in the rle565 format, made with the [rle565](https://github.com/t
 - **The backlight stays on** for now (see [Backlight](#backlight)).
 - **No long or double press helpers:** your app times them from key events.
 - **Image helpers and the bake are Node only**; the browser entry has the device API only.
-- **Not on npm yet:** use the library from the repo.
+- **Not on the npm registry:** install it from GitHub (`github:toptensoftware/ControlBlock#cli`), which needs git.
 - **One app at a time** can use the device.
 - **Nothing is kept across a power cycle:** keys and images are in the device's memory only; your app sends them
   again when it connects.

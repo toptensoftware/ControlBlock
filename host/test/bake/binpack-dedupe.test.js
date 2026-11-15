@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pack, unpack, registerType } from "../../../binpack/index.js";
+import { pack, unpack, registerType } from "#binpack";
 
 registerType({
     name: "dedupeKey",

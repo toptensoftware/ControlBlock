@@ -1,6 +1,6 @@
 // Stage 3: pack the rendered tree with binpack, and wrap it in the BPAK file format.
 
-import { pack, formatTypes } from "../../../binpack/index.js";
+import { pack, formatTypes } from "#binpack";
 import { ROOT_TYPE } from "./schema.js";
 import { allKeys, IMAGES } from "./tree.js";
 import { childPath } from "./diag.js";

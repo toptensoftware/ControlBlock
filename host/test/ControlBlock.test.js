@@ -7,9 +7,11 @@ import { fileURLToPath } from "node:url";
 import {
     Msg, Status, Reader, encodeIds, crc32, HEARTBEAT_INTERVAL_MS, WifiState, encodeWifiSet, encodeTimeSet, ClockSource,
     PROTOCOL_VERSION, KEYDEF_SIZE, KEY_EVENT_SIZE, KeyAction, encodeKeys, keySlot, keyPixelSize, encodePutImage, PUT_IMAGE_PREFIX,
+    BPAK_SIGNATURE, BPAK_HEADER_SIZE,
 } from "../src/protocol.js";
 import { keyImage, encodeImage } from "../src/images.js";
-import { FakeDevice, DEVICE } from "./FakeDevice.js";
+import { FakeDevice, DEVICE, layoutBlobOf } from "./FakeDevice.js";
+import { BLOB_VERSION } from "../src/bake/consts.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -366,6 +368,11 @@ test("FakeDevice's geometry and wire sizes match the firmware's headers", () => 
     assert.equal(KEYDEF_SIZE, define(proto, "PROTO_KEYDEF_SIZE"));
     assert.equal(KEY_EVENT_SIZE, define(proto, "PROTO_KEY_EVENT_SIZE"));
     assert.deepEqual([DEVICE.gridX, DEVICE.gridY, DEVICE.gridWidth, DEVICE.gridHeight], [40, 44, 720, 432]);
+    // the layout blob header uploadLayout reads the version from (layout_blob.h)
+    const blob = header("layout_blob.h");
+    assert.equal(BPAK_HEADER_SIZE, define(blob, "BPAK_HEADER_SIZE"));
+    assert.match(blob, new RegExp(`#define\\s+BPAK_SIGNATURE\\s+0x${BPAK_SIGNATURE.toString(16)}u`, "i"));
+    assert.match(header("layout_types.gen.h"), /struct layoutRoot\s*\{\s*\/\*\s*0 \*\/\s*uint32_t version;/);   // the root's first field
 });
 
 test("connect reads the v2 geometry", async () => {
@@ -568,10 +575,7 @@ test("key events carry the key's id and the page", async () => {
 
 // --- Standalone layout upload (docs/protocol.md "Layout upload") ---
 
-function blobOf(size, seed = 1)
-{
-    return new Uint8Array(size).map((_, i) => ((i + seed) * 2654435761) >>> 24);
-}
+const blobOf = (size, seed = 1) => layoutBlobOf(size, { seed });
 
 test("uploadLayout sends begin, ordered chunks and commit, then the device restarts", async () => {
     const { dev, cb } = await connected({ maxPayload: 100, layout: {} });
@@ -631,6 +635,41 @@ test("uploadLayout refuses what can't be right before sending anything", async (
     await assert.rejects(cb.uploadLayout(blobOf(1001)), /1000/);
     assert.ok(!dev.requests.some(m => m.type === Msg.LAYOUT_BEGIN));
     await cb.close();
+});
+
+test("uploadLayout refuses a blob of another version than the device loads, sending nothing", async () => {
+    const { dev, cb } = await connected({ layout: {} });
+    try {
+        assert.equal(cb.info.layoutBlobVersion, BLOB_VERSION);
+        await assert.rejects(cb.uploadLayout(layoutBlobOf(500, { version: BLOB_VERSION + 1 })),
+                             new RegExp(`version ${BLOB_VERSION + 1}.*loads version ${BLOB_VERSION}.*update the firmware`));
+        await assert.rejects(cb.uploadLayout(layoutBlobOf(500, { version: BLOB_VERSION - 1 })),
+                             new RegExp(`version ${BLOB_VERSION - 1}.*loads version ${BLOB_VERSION}.*re-bake`));
+        await assert.rejects(cb.uploadLayout(new Uint8Array(500)), /not a layout blob/i);
+        // even with force, and even when the device already has it (it refused it at boot)
+        const old = layoutBlobOf(300, { version: BLOB_VERSION - 1 });
+        dev.layout.stored = { size: 300, crc: crc32(old) };
+        await assert.rejects(cb.uploadLayout(old, { force: true }), /version/);
+        await assert.rejects(cb.uploadLayout(old), /version/);
+        assert.ok(!dev.requests.some(m => m.type >= Msg.LAYOUT_BEGIN && m.type <= Msg.LAYOUT_COMMIT));
+
+        const r = await cb.uploadLayout(layoutBlobOf(500));  // the matching version goes
+        assert.equal(r.uploaded, true);
+    } finally {
+        await cb.close();
+    }
+});
+
+test("uploadLayout doesn't check the version with firmware that doesn't report it", async () => {
+    const { dev, cb } = await connected({ layout: {}, blobVersion: null });
+    try {
+        assert.equal(cb.info.layoutBlobVersion, undefined);
+        const any = new Uint8Array(200).fill(7);             // not even a BPAK blob
+        assert.equal((await cb.uploadLayout(any)).uploaded, true);
+        assert.deepEqual([...dev.layout.stored.bytes], [...any]);
+    } finally {
+        await cb.close();                                    // a failure mustn't leave the read loop running
+    }
 });
 
 test("uploadLayout reports a begin the device refuses and sends no data", async () => {
