@@ -13,6 +13,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { buildCliPackage, importSpecifiers, PACKAGE_NAME } from "../build-cli-package.mjs";
 import { productVersion } from "../bump-version.mjs";
+import { layoutBlobVersion } from "../../host/src/protocol.js";
+import { BLOB_VERSION } from "../../host/src/bake/consts.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const RUN_TIMEOUT_MS = 60_000;
@@ -177,11 +179,14 @@ test("building into a non-empty directory is refused; --clean keeps only .git", 
 // Needs the network (npm registry, GitHub for button-face) and git: CI runs it.
 test("smoke: npm installs the packed package; npx controlblock --version and bake", { skip: process.env.CB_SMOKE !== "1" && "set CB_SMOKE=1" }, () => {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), "cb-cli-smoke-"));
-    // npm and npx are .cmd scripts on Windows: run through the shell, as one quoted command line
+    // npm and npx are .cmd scripts on Windows: run through the shell, as one quoted command line.
+    // stdin closed (nothing may prompt); stderr streamed so a CI log shows how far it got.
     const run = (cmd, args) => {
         const line = [cmd, ...args.map(a => `"${a}"`)].join(" ");
-        const r = spawnSync(line, { cwd: work, encoding: "utf8", shell: true, timeout: 600_000 });
-        assert.equal(r.status, 0, `${cmd} ${args.join(" ")}\n${r.stdout}\n${r.stderr}`);
+        console.error(`# smoke: ${line}`);
+        const r = spawnSync(line, { cwd: work, encoding: "utf8", shell: true, timeout: 600_000,
+            stdio: ["ignore", "pipe", "inherit"] });
+        assert.equal(r.status, 0, `${line} (status ${r.status}, signal ${r.signal})\n${r.stdout}`);
         return r.stdout;
     };
     try {
@@ -192,8 +197,12 @@ test("smoke: npm installs the packed package; npx controlblock --version and bak
         assert.equal(run("npx", ["controlblock", "--version"]).trim(), productVersion(repoRoot));
         const layout = path.join(repoRoot, "firmware/test/data/sample_layout.json");
         run("npx", ["controlblock", "bake", layout, "-o", path.join(work, "out.bin")]);
-        assert.deepEqual(fs.readFileSync(path.join(work, "out.bin")),
-            fs.readFileSync(path.join(repoRoot, "firmware/test/data/sample_layout.bin")));
+        const blob = fs.readFileSync(path.join(work, "out.bin"));
+        // Labels are drawn with the system's fonts, so only a Windows bake matches the sample (baked on Windows)
+        if (process.platform === "win32")
+            assert.deepEqual(blob, fs.readFileSync(path.join(repoRoot, "firmware/test/data/sample_layout.bin")));
+        else
+            assert.equal(layoutBlobVersion(blob), BLOB_VERSION);
     } finally {
         fs.rmSync(work, { recursive: true, force: true });
     }

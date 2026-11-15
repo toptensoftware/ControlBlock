@@ -48,7 +48,8 @@ jobs:
           # Separate call without -D: no new cache entries, so no reconfigure (CB_VERSION is one-shot)
           idf.py --preset release merge-bin -o controlblock-full.bin
           grep '"project_version"' build/release/project_description.json
-          if [ -n "$FW_VERSION" ] && ! grep -q "\"project_version\": \"$FW_VERSION\"" build/release/project_description.json; then
+          # IDF pads the JSON ("project_version":    "x"): allow any spaces
+          if [ -n "$FW_VERSION" ] && ! grep -Eq "\"project_version\": *\"$FW_VERSION\"" build/release/project_description.json; then
             echo "::error::firmware version isn't $FW_VERSION"
             exit 1
           fi
