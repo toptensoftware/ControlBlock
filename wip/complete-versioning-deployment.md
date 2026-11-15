@@ -1,6 +1,6 @@
 # Versioning and deployment
 
-Status: Implement
+Status: Complete
 
 ## Description
 Get ControlBlock ready to ship releases, starting with v0.1:
@@ -791,6 +791,28 @@ their own independent semver: they're separate repos with other users.
 7. ~~ESP-IDF pin?~~ **Answered: `v6.0`.**
 8. ~~Add `layout_blob_version` to GET_INFO?~~ **Answered: yes, in this job.**
 
+### First runs on GitHub (step 11, 2026-11-15)
+- Committed as `e5e9103`, tagged `v0.1.0`, pushed. Both runs failed (nothing was published: every
+  publishing job was skipped):
+  - **Firmware version check:** the version was right (`0.1.0`) but IDF pads the JSON
+    (`"project_version":    "0.1.0"`); the grep wanted one space. Fixed with `grep -E ': *'`.
+  - **CLI smoke test:** "The runner has received a shutdown signal" 15-20 s into the step, in both runs
+    (different machines). It didn't reproduce in WSL Ubuntu (Node 24.11, npm 11.6). The smoke test's commands
+    now run with stdin closed (`stdio: ["ignore", "pipe", "inherit"]`) and log each command; after that it
+    passed in CI (3.5 s). Likely cause: something reading the inherited stdin. Not confirmed.
+  - The WSL repro also showed **a Linux bake differs from the Windows-baked sample** (labels use the system's
+    fonts), so the smoke test compares bytes only on Windows and otherwise checks the blob's BPAK header and
+    `BLOB_VERSION`.
+- Fixes in `50f88bf`; CI green on it (all three jobs). `v0.1.0` moved to `50f88bf` (user's OK) and pushed again.
+- **Release run green** (every job). The Release has all six assets. Pages serves the flasher and `manifest.json`
+  (three parts at 0, 0x8000, 0x10000). The `cli` branch and `cli-v0.1.0` exist.
+  `npx -y github:toptensoftware/ControlBlock#cli-v0.1.0 --version` prints `0.1.0` from an empty folder in WSL
+  Ubuntu. npm warns "skipping integrity check for git dependency ssh://...button-face" (harmless: npm shows git
+  deps by their ssh form).
+- **User checks (2026-11-15): passed.** Flashing from the Pages flasher over native USB (settings and layout kept),
+  `controlblock info` showing `0.1.0`, npx on Windows, and the flasher page's port labels. Not checked on the
+  hardware: refusing a blob with the wrong version (the user has no old blob; covered by host and CLI tests).
+
 ## Flagged assumptions
 - Step 1: binpack isn't a workspace; `#binpack` goes through a shim (`host/src/bake/binpack.js`) so npm never
   deletes the binpack repo's checked-in `node_modules`. Cleaner alternative needing a binpack commit: drop its
@@ -948,7 +970,7 @@ install/prepare/build scripts** (they would trigger npm's git-dep preparation).
   THIRD-PARTY-NOTICES if the flasher page ships anything (ESP Web Tools is Apache-2.0, loaded from a CDN).
   Propose (don't apply) CLAUDE.md updates: the versioning scheme, the bump script, workspaces, CI, release, the
   `cli` branch.
-- [ ] 11. **User checks (manual, on the hardware and GitHub).** The user makes the repo public, sets Pages
+- [x] 11. **User checks (manual, on the hardware and GitHub).** The user makes the repo public, sets Pages
   to "GitHub Actions", bumps/tags `v0.1.0` and pushes. Then: CI is green, the Release has its assets, the web
   flasher flashes a board over native USB (settings and layout kept), `fw_version` = `0.1.0` in `cli info`,
   `npx github:toptensoftware/ControlBlock#cli --version` works on a clean machine, and uploading a blob with
