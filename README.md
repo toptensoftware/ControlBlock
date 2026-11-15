@@ -1,27 +1,20 @@
 # ControlBlock
 
-A control surface built on an inexpensive ESP32-S3 touch panel: a grid of touch keys, swiped
-between pages, that type keystrokes, send HTTP and UDP requests, wake PCs and run Lua scripts on their own, or that
-an app on your PC drives over USB.
+*"It's a block... for cobtrolling things"*
 
-![A page of keys: 1U, wide, tall, 2x2, half and quarter keys and a group](docs/guide/images/key-shapes.png)
+ControlBlock is a flexible control surface built 
+on an inexpensive ESP32-S3 touch panel. 
 
-*A page mockup from `node cli/cli.js render examples/key-shapes.mjs`.*
-
-## Features
-
-- **Touch keys on a 5x3 grid** of 144 px cells: 1U keys, spans (wide, tall, 2x2), half and quarter keys, and
-  groups (one picture, several keys). Up to 32 keys a page, several pages, swiped left and right.
-- **Two modes:**
-  - **Standalone** (the default): a layout stored on the device runs by itself. Keys act on tap, press, release,
-    long press and auto repeat; activities (sets of pages) switch on and off the equipment they need.
-  - **Hosted:** an app on your PC decides what every key shows and handles the touches.
-- **Actions:** USB HID keyboard keys and chords, HTTP GET/POST, UDP packets, wake-on-LAN, delays, activity
-  switches, and Lua 5.4 scripts.
-- **Wi-Fi** with a network clock in the status bar, a device name on mDNS (`<name>.local`) and a diagnostics page.
-- **Host library** for Node.js and browsers (WebUSB), and a **command line tool** to bake, preview and upload
-  layouts and set up Wi-Fi, the clock and the name.
-- **No driver on Windows** (WinUSB); a udev rule on Linux.
+* Thr user inteface is a a grid of touch keys.
+* Swipe to seirch betweeb Multiple pages of keys.
+* Keys can send key presses like a USB leyboard or
+  make http rewuests, send UDP requests, run Lua 
+  scripts and more.  
+* Standalone mode works independently of PC
+* Hosted mode allows PC to control whats on scrren
+  and handle key presses. 
+* Wifi and USB connectivity. 
+* Built-im status bar and clock
 
 ## Hardware
 
