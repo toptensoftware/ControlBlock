@@ -5,16 +5,16 @@
 ControlBlock is a flexible control surface built 
 on an inexpensive ESP32-S3 touch panel. 
 
-* Thr user inteface is a a grid of touch keys.
-* Swipe to switch betweeb multiple pages of keys.
-* Keys can send key presses like a USB leyboard or
-  make http requests, send UDP requests, run Lua 
-  scripts and more.  
-* Standalone mode works independently of PC
-* Hosted mode allows PC to control whats on scrren
-  and handle key presses. 
-* Wifi and USB connectivity. 
-* Built-im status bar and clock
+* The user interface is a grid of touch keys.
+* Swipe to switch between multiple pages of keys.
+* Keys can send key presses like a USB keyboard or
+  make HTTP requests, send UDP packets, run Lua
+  scripts and more.
+* Standalone mode works independently of a PC.
+* Hosted mode allows a PC to control what's on screen
+  and handle key presses.
+* Wi-Fi and USB connectivity.
+* Built-in status bar and clock.
 
 ## Hardware
 
