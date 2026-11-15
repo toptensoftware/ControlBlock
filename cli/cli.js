@@ -226,6 +226,8 @@ export async function main(argv, { open = o => ControlBlock.open(o), reconnect, 
     }
 }
 
-// Run when executed (not when imported by the tests)
+// Run when executed (not when imported by the tests). Sets exitCode and lets Node exit by
+// itself: process.exit() while fetch's keep-alive sockets are open (button-face downloading a
+// Material Symbol) trips a libuv assertion on Windows (Node 24: "UV_HANDLE_CLOSING", exit 127).
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url))
-    process.exit(await main(process.argv.slice(2)));
+    process.exitCode = await main(process.argv.slice(2));

@@ -2,6 +2,8 @@
   "name": "pad-sim",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "author": "Topten Software",
   "description": "Macro pad tooling: dump the C3 pad link, or play a simulated pad onto a serial port",
   "type": "module",
   "engines": {

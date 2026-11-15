@@ -26,7 +26,7 @@ test("the whole tree packs and unpacks to the same values", async () => {
             displayName: "Alpha", devices: ["tv"],
             hooks: { didActivate: { op: "delay", ms: 10 } },
             pages: [{ keys: [{ icon: "#b", longPressMs: 900, tap: { op: "script", lua: "return param" } }] }],
-            bindings: [{ control: "macro1", event: "tap", do: [{ op: "hidKey", keys: "ctrl+c" }, { op: "udpPacket", host: "10.0.0.1", port: 9, data: "hi" }] },
+            bindings: [{ control: "key1", event: "tap", do: [{ op: "hidKey", keys: "ctrl+c" }, { op: "udpPacket", host: "10.0.0.1", port: 9, data: "hi" }] },
                        { control: "key2", event: "tap", do: { op: "delay", ms: 5 } }, { control: "key5", event: "long", do: { op: "delay", ms: 6 } }],
             pad: { key5: { longPressMs: 1200 }, key2: { repeat: 120 } },
         } },
@@ -69,7 +69,7 @@ test("the whole tree packs and unpacks to the same values", async () => {
     assert.equal(a.pages[0].keys[0].id, 16);
     assert.equal(a.bindings[0].control, "touch[16]");
     assert.equal(a.bindings[0].ops[0].source, "return param");
-    assert.equal(a.bindings[1].control, "macro1");
+    assert.equal(a.bindings[1].control, "key1");
     assert.equal(a.bindings[1].ops[0].op, OP.hid_key);
     assert.equal(a.bindings[1].ops[0].modifiers, 1);
     assert.equal(a.bindings[1].ops[0].key, 0x06);

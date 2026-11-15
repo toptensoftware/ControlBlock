@@ -145,10 +145,11 @@ test("group members inherit the group's look but not its label or icon", () => {
     const [a] = ok(home([{ w: 2, label: "Vol", icon: "#x", iconColor: "red", labelColor: "blue", keys: [{ icon: "#add" }, { x: 1, label: "-" }] }])).home.keys;
     const fgs = a.normal.layers.filter(l => l.layer === "fg").map(l => l.def);
     assert.equal(fgs.length, 2);                                   // the group's, then the key's
-    assert.equal(fgs[0].text, "Vol");
-    assert.equal(fgs[1].svgFile, "#add");
-    assert.equal(fgs[1].svgForeColor, "red");                      // inherited from the group
-    assert.equal(fgs[1].text, undefined);                          // the group's label isn't the key's
+    const ofType = (def, type) => def.layers.find(l => l.type === type);
+    assert.equal(ofType(fgs[0], "text").text, "Vol");
+    assert.equal(ofType(fgs[1], "svg").src, "#add");
+    assert.deepEqual(ofType(fgs[1], "svg").colors, { "#848484": "red" });   // inherited from the group
+    assert.equal(ofType(fgs[1], "text"), undefined);                         // the group's label isn't the key's
 });
 
 test("the key placement example (for docs/layout-format.md) resolves", () => {

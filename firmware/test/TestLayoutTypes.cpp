@@ -67,12 +67,12 @@ Fact("LayoutTypes Read The Relocated Sample Through The Structs")
     Assert(strcmp(root->activities[0].displayName, "Watch TV") == 0);
     Assert(root->activities[0].pages_count == 2 && root->activities[0].pages[0].keys_count == 1);
     Assert(root->activities[0].pages[0].keys[0].id == 16 && root->activities[0].pages[1].keys[0].id == 31);
-    // touch[16] tap (the script), macro1 tap (a hidKey) and key1 press (a script)
+    // touch[16] tap (the script), key2 tap (a hidKey) and key1 press (a script)
     Assert(root->activities[0].bindings_count == 3);
-    bool macro = false;
+    bool key2 = false;
     for (uint32_t i = 0; i < root->activities[0].bindings_count; i++)
-        macro = macro || strcmp(root->activities[0].bindings[i].control, "macro1") == 0;
-    Assert(macro);
+        key2 = key2 || strcmp(root->activities[0].bindings[i].control, "key2") == 0;
+    Assert(key2);
     Assert(root->devices_count == 2 && strcmp(root->devices[0].name, "tv") == 0);
 
     // Watch's control timing for the pad's key1: `repeat: { initialDelay: 300, period: 100 }`

@@ -29,7 +29,9 @@ test("cli: bakes a layout file with real images to a .bin", { timeout: 120000 },
     const { dir, file, cleanup } = exampleDir();
     try {
         const out = path.join(dir, "out.bin");
-        execFileSync(process.execPath, [cliPath, "bake", file, "-o", out], { cwd: dir, encoding: "utf8" });
+        // the process must end by itself (the CLI sets process.exitCode, never process.exit():
+        // see cli.js); the timeout turns a hang into a failure
+        execFileSync(process.execPath, [cliPath, "bake", file, "-o", out], { cwd: dir, encoding: "utf8", timeout: 100000 });
         const blob = fs.readFileSync(out);
         assert.equal(blob.readUInt32LE(0), 0x4B415042);
         assert.equal(blob.length % 4, 0);

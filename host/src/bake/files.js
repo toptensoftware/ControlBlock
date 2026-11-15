@@ -17,7 +17,7 @@ export async function loadLayoutFile(file)
 }
 
 // -> { blob, tree, warnings }; throws a BakeError listing every problem.
-// `renderer` defaults to the Node renderer (node-buttonImage + rle565).
+// `renderer` defaults to the Node renderer (button-face + rle565).
 export async function bakeFile(file, { renderer = createRenderer() } = {})
 {
     return bake(await loadLayoutFile(file), await hostFor(file), renderer);

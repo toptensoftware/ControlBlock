@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "description": "Host library for ControlBlock: talks to the device over USB (vendor bulk, mode 1)",
+  "license": "MIT",
+  "author": "Topten Software",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -13,13 +15,13 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
-    "@toptensoftware/node-buttonImage": "file:../node-buttonImage",
+    "@toptensoftware/button-face": "git+https://github.com/toptensoftware/button-face.git",
     "rle565": "file:../rle565/encoder",
     "sharp": "^0.34.5",
     "usb": "^3.2.1",

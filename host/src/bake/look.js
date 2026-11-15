@@ -1,8 +1,8 @@
 // Look properties: validation, inheritance, the four layer definitions per key (face and
 // icon/label, normal and pressed) and the key's two image specs built from them. A layer
-// definition is a plain node-buttonImage settings object; stage 2 renders each image spec (its
-// layers composed over black at the key's pixel size). See docs/layout-format.md "Button
-// definition" and "Inheritance and defaults".
+// definition is a button-face definition ({ virtualSize?, layers: [...] }, drawn on a transparent
+// background); stage 2 renders each image spec (its layers composed over black at the key's pixel
+// size). See docs/layout-format.md "Button definition" and "Inheritance and defaults".
 
 import { FACE_SIZE, FACE_MARGIN, LONG_PRESS_MIN, LONG_PRESS_MAX } from "./consts.js";
 import { childPath } from "./diag.js";
@@ -14,6 +14,8 @@ const isObject = v => v !== null && typeof v === "object" && !Array.isArray(v);
 
 const color = t.string({ nonEmpty: true });
 const xy = t.object({ x: t.number(), y: t.number() });
+// > 0: button-face rejects a zero or negative scale and line spacing
+const positive = (v, p, d) => t.number()(v, p, d) && (v > 0 || (d.error(p, "must be greater than 0"), false));
 const numbers = (...counts) => (v, p, d) =>
     Array.isArray(v) && counts.includes(v.length) && v.every(n => typeof n === "number")
         ? true : (d.error(p, `expected a number or an array of ${counts.join(" or ")} numbers`), false);
@@ -27,10 +29,23 @@ const face = (v, p, d) =>
     : (d.error(p, `expected ${FACE_NAMES.join(", ")} or an object`), false);
 
 const LAYERS = ["normalBg", "normalFg", "pressedBg", "pressedFg"];
+// A button-face definition, checked only for its shape ({ layers: [{ type, ... }] }): button-face
+// validates the rest when it renders
+const definition = (v, p, d) => {
+    if (!Array.isArray(v.layers))
+        return d.error(Object.hasOwn(v, "layers") ? childPath(p, "layers") : p,
+            "expected a button-face definition: { virtualSize?, layers: [{ type, ... }] }"), false;
+    let good = true;
+    v.layers.forEach((l, i) => {
+        if (!isObject(l) || typeof l.type !== "string")
+            good = (d.error(childPath(childPath(p, "layers"), i), "expected a layer object with a type"), false);
+    });
+    return good;
+};
 const layer = (v, p, d) =>
     typeof v === "string" ? (v.toLowerCase().endsWith(".svg") ? true : (d.error(p, "only .svg files are supported for now"), false))
-    : isObject(v) ? true
-    : (d.error(p, "expected an .svg path, a settings object or null"), false);
+    : isObject(v) ? definition(v, p, d)
+    : (d.error(p, "expected an .svg path, a button-face definition or null"), false);
 const image = t.object(Object.fromEntries(LAYERS.map(n => [n, t.nullable(layer)])));
 
 // Every look property may be null: that clears an inherited value
@@ -38,9 +53,9 @@ const nullable = spec => Object.fromEntries(Object.entries(spec).map(([k, c]) =>
 
 const LOOK = nullable({
     face, color,
-    icon: t.string({ nonEmpty: true }), iconColor: color, iconScale: t.number({ min: 0 }), iconOffset: xy, iconText: t.string(),
+    icon: t.string({ nonEmpty: true }), iconColor: color, iconScale: positive, iconOffset: xy, iconText: t.string(),
     labelColor: color, labelAlign: t.oneOf("left", "center", "right"), labelVAlign: t.oneOf("top", "center", "bottom"),
-    font: t.string({ nonEmpty: true }), labelPadding: padding, labelOffset: xy, labelLineSpacing: t.number({ min: 0 }),
+    font: t.string({ nonEmpty: true }), labelPadding: padding, labelOffset: xy, labelLineSpacing: positive,
 });
 const LABEL = nullable({ label: t.string() });
 const PRESSED = t.object({ ...LOOK, ...LABEL });
@@ -108,7 +123,8 @@ export function inheritLook(chain, own)
 // ------------------------------------------------------------ images
 const DEFAULT_FACE_COLOR = "#2b2f38";
 const FACE_PADDING = 4, FACE_RADIUS = 14;
-const VIRTUAL_SIZE = 72;      // node-buttonImage's default virtual size, for a FACE_SIZE square
+const VIRTUAL_SIZE = 72;      // button-face's default virtual size, for a FACE_SIZE square
+const ICON_GREY = "#848484";  // what button-face's built-in icons are drawn in: mapped to the icon's colour
 
 // The face area of a key (or group) `width` x `height` px whose image starts `left`, `top` px into
 // it: the rect less FACE_MARGIN of black each side, in the image's coordinates
@@ -136,64 +152,89 @@ function faceDef(look, overlay, size)
     const f = isObject(look.face) ? look.face : {};
     const base = look.color ?? DEFAULT_FACE_COLOR;
     return {
-        backColor: "transparent",
-        svgCode: faceSvg({
-            top: f.top ?? base,
-            bottom: f.bottom ?? base,
-            border: f.border,
-            radius: shape === "square" ? 0 : f.radius ?? FACE_RADIUS,
-            padding: f.padding ?? FACE_PADDING,
-            shade: f.top === undefined && f.bottom === undefined,   // a plain colour gets a gentle top-to-bottom shade
-            overlay,
-        }, size),
+        layers: [{
+            type: "svg",
+            svg: faceSvg({
+                top: f.top ?? base,
+                bottom: f.bottom ?? base,
+                border: f.border,
+                radius: shape === "square" ? 0 : f.radius ?? FACE_RADIUS,
+                padding: f.padding ?? FACE_PADDING,
+                shade: f.top === undefined && f.bottom === undefined,   // a plain colour gets a gentle top-to-bottom shade
+                overlay,
+            }, size),
+        }],
     };
 }
 
-// Icon plus label on a transparent background, drawn `size` px. Virtual pixels stay the same
-// size as on a 1U key's FACE_SIZE face, so text and offsets don't stretch on wider or shorter keys
-// (node-buttonImage sizes the icon from the height).
+// Icon (an svg layer) plus label (a text layer over it) on a transparent background, drawn
+// `size` px. Virtual pixels stay the same size as on a 1U key's FACE_SIZE face, so text and
+// offsets don't stretch on wider or shorter keys (button-face sizes the icon from the height).
 function foregroundDef(look, rc, size)
 {
     if (look.icon === undefined && look.label === undefined)
         return null;
     const hasIcon = look.icon !== undefined, hasLabel = look.label !== undefined;
-    const def = { backColor: "transparent" };
+    const def = {};
     if (size.width !== FACE_SIZE || size.height !== FACE_SIZE)
         def.virtualSize = { width: VIRTUAL_SIZE * size.width / FACE_SIZE, height: VIRTUAL_SIZE * size.height / FACE_SIZE };
+    def.layers = [];
     if (hasIcon)
     {
-        def.svgFile = look.icon.startsWith("#") ? look.icon : rc.host.resolvePath(look.icon);
-        def.svgForeColor = look.iconColor ?? "white";
-        if (look.iconScale !== undefined) def.svgScale = look.iconScale;
-        if (look.iconText !== undefined) def.svgText = look.iconText;
-        def.svgTranslate = { x: look.iconOffset?.x ?? 0, y: look.iconOffset?.y ?? (hasLabel ? -7 : 0) };
+        const svg = {
+            type: "svg",
+            src: look.icon.startsWith("#") ? look.icon : rc.host.resolvePath(look.icon),
+            colors: { [ICON_GREY]: look.iconColor ?? "white" },
+        };
+        if (look.iconScale !== undefined) svg.scale = look.iconScale;
+        if (look.iconText !== undefined) svg.text = look.iconText;
+        svg.translate = { x: look.iconOffset?.x ?? 0, y: look.iconOffset?.y ?? (hasLabel ? -7 : 0) };
+        def.layers.push(svg);
     }
     if (hasLabel)
     {
-        def.text = look.label;
-        def.textColor = look.labelColor ?? "white";
-        def.textAlign = look.labelAlign ?? "center";
-        def.textVAlign = look.labelVAlign ?? (hasIcon ? "bottom" : "center");
-        def.font = look.font ?? (hasIcon ? "bold 11px sans-serif" : "bold 15px sans-serif");
-        def.textPadding = look.labelPadding ?? [9, 4];
-        def.textTranslate = { x: look.labelOffset?.x ?? 0, y: look.labelOffset?.y ?? 0 };
-        if (look.labelLineSpacing !== undefined) def.textLineSpacing = look.labelLineSpacing;
+        const text = {
+            type: "text",
+            text: look.label,
+            color: look.labelColor ?? "white",
+            align: look.labelAlign ?? "center",
+            valign: look.labelVAlign ?? (hasIcon ? "bottom" : "center"),
+            font: look.font ?? (hasIcon ? "bold 11px sans-serif" : "bold 15px sans-serif"),
+            padding: look.labelPadding ?? [9, 4],
+            translate: { x: look.labelOffset?.x ?? 0, y: look.labelOffset?.y ?? 0 },
+        };
+        if (look.labelLineSpacing !== undefined) text.lineSpacing = look.labelLineSpacing;
+        def.layers.push(text);
     }
     return def;
 }
 
-// An `image` override replaces the layer outright: an .svg path or a settings object
+// A file path the layout gives (not a #built-in or @material icon) -> resolved against the
+// layout's folder; reports a missing file at `path`
+function resolveFile(src, rc, path)
+{
+    const file = rc.host.resolvePath(src);
+    if (!rc.host.exists(file))
+        rc.diag.error(path, `file not found: ${src}`);
+    return file;
+}
+const isFileSrc = src => typeof src === "string" && !src.startsWith("#") && !src.startsWith("@");
+
+// An `image` override replaces the layer outright: an .svg path (one svg layer) or a button-face
+// definition, its svg layers' file `src`s resolved (a copy: the layout's object is left alone)
 function overrideLayer(value, rc, path)
 {
-    const def = { backColor: "transparent", ...(typeof value === "string" ? { svgFile: value } : value) };
-    if (typeof def.svgFile === "string" && !def.svgFile.startsWith("#"))
-    {
-        const file = rc.host.resolvePath(def.svgFile);
-        if (!rc.host.exists(file))
-            rc.diag.error(childPath(path, "svgFile"), `file not found: ${def.svgFile}`);
-        def.svgFile = file;
-    }
-    return def;
+    if (typeof value === "string")
+        return { layers: [{ type: "svg", src: resolveFile(value, rc, path) }] };
+    if (!Array.isArray(value.layers))
+        return null;    // already reported by the `image` validator
+    const layersPath = childPath(path, "layers");
+    return {
+        ...value,
+        layers: value.layers.map((l, i) => isObject(l) && l.type === "svg" && isFileSrc(l.src)
+            ? { ...l, src: resolveFile(l.src, rc, childPath(childPath(layersPath, i), "src")) }
+            : l),
+    };
 }
 
 function checkIcon(look, rc, path)
@@ -207,8 +248,8 @@ function checkIcon(look, rc, path)
         if (rc.host.hasIcon && !rc.host.hasIcon(icon.slice(1)))
             rc.diag.error(childPath(path, "icon"), `unknown built-in icon ${icon}`);
     }
-    else if (!rc.host.exists(rc.host.resolvePath(icon)))
-        rc.diag.error(childPath(path, "icon"), `file not found: ${icon}`);
+    else
+        resolveFile(icon, rc, childPath(path, "icon"));
 }
 
 // A resolved look -> { normalBg, normalFg, pressedBg, pressedFg }, each a layer definition (drawn

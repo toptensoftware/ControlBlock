@@ -36,9 +36,8 @@ export const example = () => ({
                 { icon: "#arrow-left", action: { use: "back" }, long: { op: "switchActivity", activity: "Listen" } },
             ] }],
             bindings: [
-                { control: "macro1", event: "tap", do: { use: "mute" } },
-                { control: "volEnc", event: "turnLeft", do: { op: "script", file: "scripts/vol.lua" } },
-                { control: "volEnc", event: "turnRight", do: { op: "script", file: "scripts/vol.lua" } },
+                { control: "key1", event: "tap", do: { use: "mute" } },
+                { control: "enc1", event: "turn", do: { op: "script", file: "scripts/vol.lua" } },
             ],
         },
         Listen: {

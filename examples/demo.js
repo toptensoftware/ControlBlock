@@ -1,6 +1,6 @@
 // Device demo (protocol v2): connects, takes control, renders each key's normal and pressed
 // images (a face, an icon and a label composed over black at the key's size, with
-// node-buttonImage) and defines two pages. Then, to show off the keys and the image store:
+// button-face) and defines two pages. Then, to show off the keys and the image store:
 //   - page 2 has a 2U key and two half-height keys stacked in one slot (Vol + / Vol -)
 //   - page 2's first key flips between two stored images every 2 s (no upload)
 //   - page 1's last key is a clock, replaced in place every second (same ID)
@@ -46,18 +46,22 @@ function faceSvg(width, height, [top, bottom, border])
     </svg>`;
 }
 
-// An icon with its label baked in (node-buttonImage settings), on a transparent background
-function iconDef(svgFile, label, color)
+// An icon with its label baked in (a button-face definition), on a transparent background
+function iconDef(icon, label, color)
 {
     return {
-        backColor: "transparent",
-        ...(svgFile ? { svgFile: "#" + svgFile, svgForeColor: color, svgTranslate: { y: -7 } } : {}),
-        text: label,
-        textColor: "white",
-        textAlign: "center",
-        textVAlign: svgFile ? "bottom" : "center",
-        font: svgFile ? "bold 11px sans-serif" : "bold 15px sans-serif",
-        textPadding: [9, 4],
+        layers: [
+            ...(icon ? [{ type: "svg", src: "#" + icon, colors: { "#848484": color }, translate: { x: 0, y: -7 } }] : []),
+            {
+                type: "text",
+                text: label,
+                color: "white",
+                align: "center",
+                valign: icon ? "bottom" : "center",
+                font: icon ? "bold 11px sans-serif" : "bold 15px sans-serif",
+                padding: [9, 4],
+            },
+        ],
     };
 }
 

@@ -9,6 +9,9 @@ import { cleanLayout } from "../test/resolve.mjs";
 // A Home of `keys` under the root defaults -> each resolved key's layer definitions (face "bg",
 // icon and label "fg") per state. Empty slots have no key.
 const layerOf = (spec, layer) => spec?.layers.find(l => l.layer === layer)?.def ?? null;
+// A button-face definition's layer of one type ("svg": the face or icon, "text": the label)
+const layerOfType = (def, type) => def?.layers.find(l => l.type === type);
+const faceSvg = def => layerOfType(def, "svg").svg;
 async function resolveKeys(keys)
 {
     const tree = await cleanLayout({ version: 1, defaults: ROOT_DEFAULTS, home: { keys } });
@@ -49,15 +52,15 @@ const borderStroke = new RegExp(`stroke="${BORDER}" stroke-width="2"`);
 
 test("an icon key gets the border face and the grey pressed fill, no overlay", async () => {
     const [k] = await resolveKeys([{ ...icon("#play", { color: COLORS.orange }), tap: [] }]);
-    assert.match(k.normalBg.svgCode, borderStroke);
-    assert.match(k.normalBg.svgCode, BLACK_FILL);
-    assert.doesNotMatch(k.normalBg.svgCode, /pressed-overlay/);
-    assert.match(k.pressedBg.svgCode, borderStroke);
-    assert.match(k.pressedBg.svgCode, new RegExp(`stop-color="${PRESSED}"`));
-    assert.doesNotMatch(k.pressedBg.svgCode, BLACK_FILL);
-    assert.doesNotMatch(k.pressedBg.svgCode, /pressed-overlay/);
-    assert.equal(k.normalFg.svgScale, 0.9);
-    assert.equal(k.normalFg.svgForeColor, "orange");
+    assert.match(faceSvg(k.normalBg), borderStroke);
+    assert.match(faceSvg(k.normalBg), BLACK_FILL);
+    assert.doesNotMatch(faceSvg(k.normalBg), /pressed-overlay/);
+    assert.match(faceSvg(k.pressedBg), borderStroke);
+    assert.match(faceSvg(k.pressedBg), new RegExp(`stop-color="${PRESSED}"`));
+    assert.doesNotMatch(faceSvg(k.pressedBg), BLACK_FILL);
+    assert.doesNotMatch(faceSvg(k.pressedBg), /pressed-overlay/);
+    assert.equal(layerOfType(k.normalFg, "svg").scale, 0.9);
+    assert.deepEqual(layerOfType(k.normalFg, "svg").colors, { "#848484": "orange" });
 });
 
 test("a label-only key gets the same face; an empty slot has no key", async () => {
@@ -66,7 +69,7 @@ test("a label-only key gets the same face; an empty slot has no key", async () =
     ]);
     const [iconKey, labelKey] = keys;
     assert.equal(keys.length, 2);
-    assert.equal(labelKey.normalBg.svgCode, iconKey.normalBg.svgCode);
-    assert.equal(labelKey.pressedBg.svgCode, iconKey.pressedBg.svgCode);
-    assert.equal(labelKey.normalFg.text, "Steam");
+    assert.equal(faceSvg(labelKey.normalBg), faceSvg(iconKey.normalBg));
+    assert.equal(faceSvg(labelKey.pressedBg), faceSvg(iconKey.pressedBg));
+    assert.equal(layerOfType(labelKey.normalFg, "text").text, "Steam");
 });

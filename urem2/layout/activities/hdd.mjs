@@ -16,7 +16,7 @@ export function hdd(ctx)
 
     // urem numKey: "N" in bold 24px, raised 3 px, sending btnN
     const num = n => irKey(label(String(n), { font: "bold 24px sans-serif", offset: { y: -3 } }), `btn${n}`);
-    // An icon with "CH" under or over it. urem's offsets are from the centre (node-buttonImage's default); ControlBlock
+    // An icon with "CH" under or over it. urem's offsets are from the centre (its renderer's default); ControlBlock
     // puts a label under an icon at the bottom, which pushed "CH" off the key.
     const ch = (iconLook, labelY, code) =>
         irKey({ ...iconLook, ...label("CH", { valign: "center", offset: { y: labelY } }) }, code);

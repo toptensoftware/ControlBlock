@@ -1,5 +1,5 @@
 // The Node image helpers: one CRC-32, one rle565 encode call, layers rendered with
-// node-buttonImage or from SVG, and key images composed over black (protocol v2: every key
+// button-face or from SVG, and key images composed over black (protocol v2: every key
 // image is fully opaque and exactly the key's size).
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -37,14 +37,31 @@ test("encodeImage makes rle565 with the right size", async () => {
 });
 
 test("renderButtonImage returns width x height RGBA (square by default); buttonLayer wraps it as a layer", { timeout: 60000 }, async () => {
-    const def = { backColor: "transparent", svgFile: "#heart", svgForeColor: "red", text: "Hi", textColor: "white" };
+    const def = { layers: [
+        { type: "svg", src: "#heart", colors: { "#848484": "red" } },
+        { type: "text", text: "Hi", color: "white" },
+    ] };
     const rgba = await renderButtonImage(def, 64);
     assert.ok(rgba instanceof Uint8Array);
     assert.equal(rgba.length, 64 * 64 * 4);
     assert.equal((await renderButtonImage(def, 96, 48)).length, 96 * 48 * 4);
+    // something is drawn (a blank render fails), over a transparent background
+    let drawn = 0;
+    for (let i = 3; i < rgba.length; i += 4)
+        drawn += rgba[i] > 0;
+    assert.ok(drawn > 64 * 64 / 10, `only ${drawn} pixels drawn`);
+    assert.equal(pixel(rgba, 64, 0, 0)[3], 0);
 
     const layer = await buttonLayer(def, 64);
     assert.deepEqual(layer, { rgba, width: 64, height: 64 });
+
+    // a fill layer covers everything
+    const filled = await renderButtonImage({ layers: [{ type: "fill", color: "#0000ff" }] }, 8);
+    assert.deepEqual(pixel(filled, 8, 0, 0), [0, 0, 255, 255]);
+});
+
+test("renderButtonImage rejects an old node-buttonImage definition", { timeout: 60000 }, async () => {
+    await assert.rejects(renderButtonImage({ backColor: "transparent", svgFile: "#heart" }, 64), /layers|backColor|convertLegacyDefinition/);
 });
 
 test("svgLayer renders an SVG at the size given", { timeout: 60000 }, async () => {

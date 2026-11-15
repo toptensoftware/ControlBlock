@@ -1,4 +1,4 @@
-// Test server for the hardware test layouts in examples/ (net-test.json, activity-test.mjs, script-test.mjs).
+// Test server for the hardware test layouts in examples/ (net-test.mjs, activity-test.mjs, script-test.mjs).
 //
 // Run on the PC:  node examples/test-server/test-server.mjs
 // HTTP on :8000, UDP listeners on :9 (WoL) and :9999. Allow node.exe through the Windows firewall.

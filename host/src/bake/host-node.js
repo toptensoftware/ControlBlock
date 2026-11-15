@@ -2,18 +2,15 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { icons } from "@toptensoftware/button-face/node";
 import { createLuaChecker } from "./lua.js";
-
-// node-buttonImage's built-in icons ("#name" -> images/name.svg)
-const iconDir = path.join(path.dirname(fileURLToPath(import.meta.resolve("@toptensoftware/node-buttonImage"))), "images");
 
 export async function createNodeHost(baseDir)
 {
     return {
         resolvePath: p => path.resolve(baseDir, p),
         exists: p => fs.existsSync(p),
-        hasIcon: name => fs.existsSync(path.join(iconDir, name + ".svg")),
+        hasIcon: name => Object.hasOwn(icons, name),    // button-face's built-in icons ("#name")
         readText: p => fs.readFileSync(p, "utf8"),
         luaCheck: await createLuaChecker(),
     };

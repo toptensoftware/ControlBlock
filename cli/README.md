@@ -121,7 +121,7 @@ The device's name on the network: its mDNS name (`<name>.local`) and DHCP hostna
 ## Examples
 
 ```sh
-node cli/cli.js bake examples/net-test.json                         # writes examples/net-test.bin
+node cli/cli.js bake examples/net-test.mjs                          # writes examples/net-test.bin
 node cli/cli.js bake examples/activity-test.mjs -o scratch/a.bin
 node cli/cli.js render urem2/urem2.mjs -o scratch/urem2-pages        # page mockups as PNGs
 node cli/cli.js upload examples/activity-test.mjs                   # bake in memory and upload

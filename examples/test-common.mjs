@@ -1,8 +1,11 @@
-// Shared by the hardware test layouts (activity-test.mjs, script-test.mjs): the PC running
+// Shared by the hardware test layouts (net-test.mjs, activity-test.mjs, script-test.mjs): the PC running
 // examples/test-server/test-server.mjs, ops that announce themselves to it, and flat key faces.
 
-// The PC running examples/test-server/test-server.mjs (HTTP :8000, UDP :9999)
-export const SERVER = "10.1.1.126";
+// The PC running examples/test-server/test-server.mjs (HTTP :8000, UDP :9999): set CB_TEST_SERVER to its IP
+// address and CB_TEST_SERVER_NAME to a host name the device can resolve to it (net-test.mjs's by-name requests)
+// when baking. The defaults are the author's test PC.
+export const SERVER = process.env.CB_TEST_SERVER || "10.1.1.126";
+export const SERVER_NAME = process.env.CB_TEST_SERVER_NAME || "braddev";
 export const HTTP = `http://${SERVER}:8000`;
 
 export const udp = data => ({ op: "udpPacket", host: SERVER, port: 9999, data });

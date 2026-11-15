@@ -4,8 +4,8 @@ The file a user writes (by hand now, from a web front end later) to define a sta
 
 **Status:** the proposals below are confirmed and the bake code in the host library ([`host/src/bake/`](../host/src/bake/)) implements this format. Bake a layout with `node cli/cli.js bake layout.json -o out.bin` from the repo root; `node cli/cli.js upload layout.json` sends it to the device ([`cli/README.md`](../cli/README.md), [`protocol.md`](protocol.md#layout-upload)). A sample is `examples/upload-test.json`. Where the tool differs from, or settles, something in this document:
 
-- `image` layers accept `.svg` paths and settings objects only (no `.png` yet).
-- A built-in icon name (`#name`) that node-buttonImage doesn't have is an error. The built-in names are kebab-case (`#play`, `#apple-tv`, `#volume-mute`), not Material names.
+- `image` layers accept `.svg` paths and button-face definitions only (no `.png` path yet).
+- A built-in icon name (`#name`) that [button-face](https://github.com/toptensoftware/button-face#readme) doesn't have is an error. The built-in names are kebab-case (`#play`, `#apple-tv`, `#volume-mute`), not Material names; button-face's `@name` Material Symbols aren't accepted in `icon` (only inside an `image` definition).
 - A `hidKey` chord is modifiers plus **one** key (the packed op has `mode`, `modifiers`, `key`); `hold` is accepted under `press`/`release` only, and in a hook or device list it's an error.
 - Not checked yet (deliberately): device limits (pages, images, blob size, op list length) and the "icon larger than the icon area" warning.
 - The default pressed look is the normal face with a 35% black overlay, unless `pressed` sets its own `color` or `face`.
@@ -26,7 +26,7 @@ The file a user writes (by hand now, from a web front end later) to define a sta
 |---|---|
 | Format | JSON (`.json`) or a JS module (`.js`/`.mjs`) whose default export is the object |
 | Encoding | UTF-8; JSON is strict (no comments, no trailing commas); the JS form allows both |
-| Paths | `svg`, `file` and similar are resolved relative to the **layout file's directory**, not the working directory. A `#name` prefix on an `svg` value means a built-in node-buttonImage icon |
+| Paths | `svg`, `file` and similar are resolved relative to the **layout file's directory**, not the working directory. A `#name` prefix on an `svg` value means a built-in button-face icon |
 | Unknown properties | **Error** (typos like `longPres` must not pass silently). A property starting with `_` or `$` is ignored, for notes and the web front end's own data |
 | Names | Activity, device and action names are case-sensitive strings, unique within their kind, and may not be empty |
 | Order | Arrays keep their order; it matters for pages, keys and `bindings` (every matching binding is enqueued in layout order) |
@@ -130,7 +130,7 @@ The page area holds a grid of 5x3 **cells**, 1U each (144x144 px on the device, 
   - A group has no gestures and no `id` (unknown property), and groups don't nest.
   - Its keys must lie inside the group and not overlap each other. If they don't cover it all, a warning (that part shows black).
   - Pressing a key shows the group's pressed face (by default the overlay) and the key's pressed icon/label on that key only.
-- **The look scales to the key:** the face fills the key's rect less an 8 px black margin each side (128x128 on a 1U key), and the icon and label keep their 1U size in virtual pixels (text doesn't stretch on a wide key; the icon follows the face's height). See [Look properties](#look-properties-proposed).
+- **The look scales to the key:** the face fills the key's rect less an 8 px black margin each side (128x128 on a 1U key), and the icon and label keep their 1U size in virtual pixels (text doesn't stretch on a wide key; the icon follows the face's height). See [Look properties](#look-properties).
 
 `examples/key-shapes.mjs` (Home only; each key types a different HID key, so a text editor shows which one fired):
 
@@ -197,7 +197,7 @@ A button has three parts: how it **looks**, what its **gestures do**, and (rarel
 }
 ```
 
-### Look properties *(proposed)*
+### Look properties
 
 A key's look has **two layers**:
 
@@ -209,21 +209,23 @@ The look properties describe both layers. The pipeline renders them and composes
 | Property | Type | Layer | Description |
 |---|---|---|---|
 | `face` | `"rounded"` \| `"square"` \| `"none"` \| object | bg | The face shape. `"none"` is no face (the icon sits on black). The object form gives the face's own settings (`top`, `bottom`, `border`, `radius`, `padding`), the demo's rounded gradient being the default |
-| `color` | CSS color | bg | The face fill. Shorthand for `face: { top: c, bottom: darker(c) }` |
+| `color` | CSS color | bg | The face fill: a plain `color` (no `face` `top`/`bottom`) fills the face with `c` plus a gentle top-to-bottom shade (black, transparent at the top to 30% at the bottom). With `face: { top, bottom }` the gradient is exactly those colours, no shade; a missing `top` or `bottom` falls back to `c` |
 | `icon` | string | fg | An SVG file path, or `#name` for a built-in icon. Omit for a label-only key |
-| `iconColor` | CSS color | fg | Replaces `#848484` in the SVG (`svgForeColor`). Default white |
-| `iconScale` | number | fg | `svgScale` |
-| `iconOffset` | `{x, y}` | fg | `svgTranslate`, in virtual pixels |
-| `iconText` | string | fg | `svgText`: replaces `$(x)` in the SVG |
+| `iconColor` | CSS color | fg | Replaces `#848484` in the SVG's paint values (and `currentColor` in the built-ins). Default white |
+| `iconScale` | number > 0 | fg | The icon's size as a fraction of the face's height. Default 1 |
+| `iconOffset` | `{x, y}` | fg | Moves the icon, in virtual pixels. Default `{ x: 0, y: -7 }` with a label, else `{ x: 0, y: 0 }` |
+| `iconText` | string | fg | Replaces `$(x)` in the SVG |
 | `label` | string | fg | The text, drawn over the icon. `\n` for multiple lines |
-| `labelColor` | CSS color | fg | `textColor`. Default white |
-| `labelAlign`, `labelVAlign` | as node-buttonImage | fg | `textAlign`, `textVAlign`. `labelVAlign` defaults to `"bottom"` with an icon and `"center"` without |
-| `font` | CSS font string | fg | e.g. `"bold 11px sans-serif"`. Defaults depend on whether there's an icon |
-| `labelPadding`, `labelOffset`, `labelLineSpacing` | as node-buttonImage | fg | `textPadding`, `textTranslate`, `textLineSpacing` |
+| `labelColor` | CSS color | fg | The label's colour. Default white |
+| `labelAlign`, `labelVAlign` | `"left"` \| `"center"` \| `"right"`; `"top"` \| `"center"` \| `"bottom"` | fg | The label's alignment in the face. `labelAlign` defaults to `"center"`; `labelVAlign` to `"bottom"` with an icon and `"center"` without |
+| `font` | CSS font string | fg | e.g. `"bold 11px sans-serif"`. Defaults depend on whether there's an icon (11 px with one, 15 px without) |
+| `labelPadding`, `labelOffset`, `labelLineSpacing` | number or `[tb, lr]` / `[t, r, b, l]`; `{x, y}`; number > 0 | fg | The space kept clear round the label (default `[9, 4]`), a move (virtual pixels) and the line height as a multiple of the font size (default 1) |
 | `pressed` | object | both | Look properties **merged over** the above for the pressed image. Omitted: the normal face with a 35% black overlay |
-| `image` | object | either | Escape hatch: `{ normalBg, normalFg, pressedBg, pressedFg }`, each a raw node-buttonImage settings object (`svgFile`, `svgCode`, `text`, ...), an `.svg` path, or `null` for none. Overrides the generated layer outright (the layers are still composed into one image per state) |
+| `image` | object | either | Escape hatch: `{ normalBg, normalFg, pressedBg, pressedFg }`, each a [button-face](https://github.com/toptensoftware/button-face#readme) definition (`{ virtualSize?, layers: [...] }`), an `.svg` path (one `svg` layer), or `null` for none. Overrides the generated layer outright (the layers are still composed into one image per state), drawn at the face box's size on a transparent background. Example: `"image": { "normalFg": { "layers": [{ "type": "svg", "src": "icons/logo.svg" }, { "type": "text", "text": "Go", "valign": "bottom" }] } }`. An svg layer's `src` that isn't a `#built-in` or `@material` icon is a file relative to the layout file and must exist; the definition is otherwise checked by button-face when it renders. An object without `layers` (such as a settings object from the old renderer, `svgFile`, `svgCode`, ...) is an error |
 
-The sizes are virtual pixels (node-buttonImage's `virtualSize`: 72 across a 128 px face, the face of a 1U key, with the icon area about 80 px). On other key sizes the virtual size scales with the face (72 per 128 px each way), so text, padding and offsets keep their 1U size; the icon's size follows the face's height. The pixel sizes come from the same firmware constants that GET_INFO reports (`host/src/bake/consts.js`, checked against `key_geometry.h`), never from this file.
+The bake turns each layer into a [button-face](https://github.com/toptensoftware/button-face#readme) definition (`host/src/bake/look.js`): the face is one `svg` layer (the generated face SVG), the foreground an `svg` layer for the icon and a `text` layer for the label; button-face renders them (Skia, through `@napi-rs/canvas`).
+
+The sizes are virtual pixels (button-face's `virtualSize`: 72 across a 128 px face, the face of a 1U key, with the icon area about 80 px). On other key sizes the virtual size scales with the face (72 per 128 px each way), so text, padding and offsets keep their 1U size; the icon's size follows the face's height. The pixel sizes come from the same firmware constants that GET_INFO reports (`host/src/bake/consts.js`, checked against `key_geometry.h`), never from this file.
 
 Rules:
 
@@ -343,33 +345,34 @@ Limits: a script that runs 100 ms without waiting is stopped, a run is cancelled
 
 ## Bindings
 
-A button's gestures cover touch keys. Everything else (the 6-key macro pad, the rotary encoder, and later whatever else the second MCU reports) is bound with a `bindings` list on the **activity**:
+A button's gestures cover touch keys. Everything else (the macro pad's keys and encoders, and later whatever else the second MCU reports) is bound with a `bindings` list on the **activity**:
 
 ```jsonc
 "bindings": [
-  { "control": "macro1", "event": "tap",  "do": { "use": "mute" } },
-  { "control": "macro1", "event": "long", "do": [ { "op": "switchActivity", "activity": "Listen" } ] },
-  { "control": "volEnc", "event": "turnLeft",  "do": { "op": "script", "file": "scripts/vol.lua" } },
-  { "control": "volEnc", "event": "turnRight", "do": { "op": "script", "file": "scripts/vol.lua" } }
+  { "control": "key1", "event": "tap",  "do": { "use": "mute" } },
+  { "control": "key1", "event": "long", "do": [ { "op": "switchActivity", "activity": "Listen" } ] },
+  { "control": "enc1", "event": "turn", "do": { "op": "script", "file": "scripts/vol.lua" } }
 ]
 ```
 
+**The macro pad isn't available yet:** its own firmware (an ESP32-C3, `pad/`) is written, but the S3 side that reads it and fires these triggers isn't built, so pad bindings bake and upload but never fire. The names below are the ones the pad will report.
+
 | Property | Description |
 |---|---|
-| `control` | The control's name as the device reports it. Free-form (the device matches exact strings): `macro1`..`macro6`, `volEnc` *(proposed names; the serial format from the second MCU is undecided)* |
-| `event` | `press`, `release`, `tap`, `long` (the device synthesizes `tap`/`long` from raw `press`/`release`), or the control's own events (`turnLeft`, `turnRight`: undecided) |
+| `control` | The control's name as the device reports it. Free-form (the device matches exact strings; the bake only refuses `touch[...]`): the macro pad's keys are `key1`..`key32` and its encoders `enc1`..`enc4` |
+| `event` | For a pad key: `press`, `release`, `tap`, `long` (the device synthesizes `tap`/`long` from raw `press`/`release`). For an encoder: `turn`, one event per movement, with the direction and speed in the param |
 | `do` | An [OpList](#op-lists) |
 
 - Matching is exact on both strings. **No wildcards**; the authoring layer expands any patterns, and this file has none yet.
 - A `control` that looks like a touch key (`touch[...]`) is an error here: touch keys are defined by the buttons themselves, and the pipeline generates their bindings.
 - Several bindings can match one trigger; all are enqueued in file order.
 - Home has no `bindings`. With no activity selected, the pad and encoder do nothing.
-- The encoder's velocity arrives as the trigger's `param` string for a script to read.
+- An encoder's `turn` param is `delta=<signed detents> interval=<µs>` (e.g. `delta=-3 interval=6500`; a smaller interval is a faster turn) for a script to read.
 - A pad key's long-press time and auto repeat are set in the activity's `pad` map ([Auto repeat](#auto-repeat)), not on the binding.
 
 ## Inheritance and defaults
 
-Look properties and `longPressMs` inherit down a fixed chain *(proposed; not yet confirmed in `standalone.md`)*:
+Look properties and `longPressMs` inherit down a fixed chain:
 
 ```
 root.defaults  →  (home | activity).defaults  →  page.defaults  →  button
@@ -485,9 +488,8 @@ Warnings:
         ] }
       ],
       "bindings": [
-        { "control": "macro1", "event": "tap", "do": { "use": "mute" } },
-        { "control": "volEnc", "event": "turnLeft",  "do": { "op": "script", "file": "scripts/vol.lua" } },
-        { "control": "volEnc", "event": "turnRight", "do": { "op": "script", "file": "scripts/vol.lua" } }
+        { "control": "key1", "event": "tap",  "do": { "use": "mute" } },
+        { "control": "enc1", "event": "turn", "do": { "op": "script", "file": "scripts/vol.lua" } }
       ]
     },
     "Listen": {
@@ -516,15 +518,14 @@ The browser run of the pipeline (`sharp`, rle565 encoder, Lua checker) is untest
 
 ## Open points
 
-- **Look properties** (above) are a proposal and need to be checked against what node-buttonImage and the demo's face SVG can produce, especially on spans, fractional keys and groups.
-- **The defaults chain** (root → activity/home → page → key) is proposed and needs a decision.
+- **Look properties** (above) are built in the bake (`host/src/bake/look.js`, as button-face layer definitions since 2026-11-15) and rendered for real on spans, fractional keys and groups (`render-real.test.js`). button-face can also stack several icons and texts per key, tint and fade layers, which the look properties don't expose yet (only through `image`).
 - **Face shade bands:** a plain `color` gets a gentle top-to-bottom shade, which bands visibly in RGB565 on dark
   faces (seen on the hardware, 2026-11-07; flat faces look clean). Options: make a plain `color` flat by default
   (a `face` with `top`/`bottom` still gives a gradient), or dither the face when it is encoded.
-- **Control and event names** for the pad and encoder wait on the second MCU's serial format.
+- **The macro pad** (`key1`..`key32`, `enc1`..`enc4`, `turn`): the names are decided, but the S3 side isn't built, and the bake doesn't check pad control or event names yet (a typo is a binding that never fires).
 - **HID key names** (including consumer/media keys) are decided when HID is built.
 - **Named actions with arguments** are out of scope (a script reads `param` instead).
-- **Wildcard or templated bindings** (e.g. one binding for `macro1..6`) are the authoring layer's job and are not in this format.
+- **Wildcard or templated bindings** (e.g. one binding for `key1..key6`) are the authoring layer's job and are not in this format.
 - **Multiple files:** `$include` for splitting a big layout isn't specified. Reusable pieces are `actions`, `defaults` and, in the JS form, ordinary imports.
 - **Web front end:** the editor probably wants stable ids on buttons and pages to keep diffs sensible; `_`-prefixed properties are reserved for it.
 - **`CLAUDE.md` (a rules file, so only with your OK):** link this document from the Repository Layout's `docs/` list.

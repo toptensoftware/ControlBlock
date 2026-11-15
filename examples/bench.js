@@ -53,8 +53,10 @@ const face = async colour => svgLayer(`<svg xmlns="http://www.w3.org/2000/svg" w
 const faces = [await face("#283c80"), await face("#c0c0d0")];
 const keys = [];
 for (let k = 0; k < 15; k++) {
-    const icon = await buttonLayer({ backColor: "transparent", svgFile: "#star", svgForeColor: "#ffd700", svgTranslate: { y: -7 },
-                                     text: `Key ${k}`, textColor: "white", textVAlign: "bottom", font: "bold 11px sans-serif" }, fw, fh);
+    const icon = await buttonLayer({ layers: [
+        { type: "svg", src: "#star", colors: { "#848484": "#ffd700" }, translate: { x: 0, y: -7 } },
+        { type: "text", text: `Key ${k}`, color: "white", valign: "bottom", font: "bold 11px sans-serif" },
+    ] }, fw, fh);
     for (const f of faces)
         keys.push(await keyImage([f, icon], width, height));
 }

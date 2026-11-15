@@ -1,5 +1,5 @@
 // Key images for the device: RGBA layers in, one fully opaque rle565 image out, with a content
-// ID. Node only (sharp, node-buttonImage, the rle565 encoder). docs/image-assets.md.
+// ID. Node only (sharp, button-face's Node entry, the rle565 encoder). docs/image-assets.md.
 //
 // Protocol v2: each key state is one opaque image exactly the key's size (keyPixelSize in
 // protocol.js: 144x144 for 1U, 288x144 for 2U...), composed by the host over the device's black
@@ -9,7 +9,7 @@
 
 import sharp from "sharp";
 import { packRle } from "rle565";
-import { ButtonImage } from "@toptensoftware/node-buttonImage";
+import { render } from "@toptensoftware/button-face/node";
 import { crc32 } from "./protocol.js";
 // Black round a face in a key image (each side): a 1U cell of 144 holds a 128 face. Defined with
 // the bake's key geometry.
@@ -26,10 +26,10 @@ export function imageId(data)
 const toBuffer = rgba => Buffer.from(rgba.buffer, rgba.byteOffset, rgba.byteLength);
 const toBytes = buf => new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 
-// A node-buttonImage definition (its settings object) rendered to width x height RGBA
+// A button-face definition ({ virtualSize?, layers: [...] }) rendered to width x height straight RGBA
 export async function renderButtonImage(def, width, height = width)
 {
-    return toBytes(await new ButtonImage(def).render(width, height, 4));
+    return (await render(def, width, height, { channels: 4 })).data;
 }
 
 // The same as a layer

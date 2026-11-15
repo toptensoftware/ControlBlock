@@ -361,8 +361,8 @@ export class ControlBlock extends Emitter
     // Save a standalone layout (a BPAK blob from src/bake) in the device's
     // flash. Skipped (resolves { uploaded: false }) if the device already has
     // exactly this blob, unless `force`. onProgress(sent, total) after each
-    // chunk. The device blanks its screen while it writes, and restarts when
-    // it's done: the connection ends, and reconnect() finds it again.
+    // chunk. The device restarts when it's done: the connection ends, and
+    // reconnect() finds it again.
     async uploadLayout(blob, { force = false, onProgress } = {})
     {
         if (!blob.length)

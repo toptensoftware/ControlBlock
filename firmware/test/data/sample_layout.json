@@ -41,7 +41,7 @@
         { "keys": [ { "icon": "#next-track", "label": "N" } ] }
       ],
       "bindings": [
-        { "control": "macro1", "event": "tap", "do": { "op": "hidKey", "keys": "ctrl+c" } },
+        { "control": "key2", "event": "tap", "do": { "op": "hidKey", "keys": "ctrl+c" } },
         { "control": "key1", "event": "press", "do": { "op": "script", "lua": "return param" } }
       ],
       "pad": { "key1": { "repeat": { "initialDelay": 300, "period": 100 } } }

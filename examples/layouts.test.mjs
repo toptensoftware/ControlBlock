@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 // layout file -> the warnings it is expected to bake with (formatted)
 const LAYOUTS = {
     "upload-test.json": [],
-    "net-test.json": [],
+    "net-test.mjs": [],
     "script-test.mjs": [],
     "key-shapes.mjs": [],
     // the "Hold a, long: ..." keys hold on press and switch on long, with no tap on purpose

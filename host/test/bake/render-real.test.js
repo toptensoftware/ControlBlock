@@ -1,4 +1,4 @@
-// The real renderer (node-buttonImage + sharp + rle565 encoder) and the constants shared with the firmware.
+// The real renderer (button-face + sharp + rle565 encoder) and the constants shared with the firmware.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -89,6 +89,22 @@ test("a group's keys are the parts of one picture, pressed per key", { timeout: 
     assert.deepEqual(pixel(l, FACE_MARGIN - 1, 20), [0, 0, 0, 255]);         // the group's outer margin
     // the left key pressed: its half darkens
     assert.notDeepEqual(pixel(lp, 143, 20), pixel(l, 143, 20));
+});
+
+test("an image override (a button-face definition) renders", { timeout: 60000 }, async () => {
+    const render = createRenderer();
+    const k = ok({ version: 1, home: { keys: [{ color: "#336699", image: { normalFg: { layers: [
+        { type: "svg", src: "#heart", colors: { "#848484": "#ff0000" } },
+        { type: "text", text: "Hi", color: "yellow", valign: "bottom" },
+    ] } } }] } }).home.keys[0];
+    const plain = ok({ version: 1, home: { keys: [{ color: "#336699" }] } }).home.keys[0];
+    const img = decode(await render(k.normal)), face = decode(await render(plain.normal));
+    assert.ok(allOpaque(img));
+    let differs = 0;
+    for (let i = 0; i < img.data.length; i += 4)
+        if (img.data[i] !== face.data[i] || img.data[i + 1] !== face.data[i + 1] || img.data[i + 2] !== face.data[i + 2])
+            differs++;
+    assert.ok(differs > 500, `the override draws over the face (${differs} pixels differ)`);
 });
 
 test("the same image renders to identical bytes", { timeout: 60000 }, async () => {

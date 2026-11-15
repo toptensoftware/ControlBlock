@@ -1,4 +1,4 @@
-// Renders key faces and some of node-buttonImage's built-in icons, encodes
+// Renders key faces and some of button-face's built-in icons, encodes
 // them to rle565 (with alpha) and packs them into a blobpack for the
 // firmware's test pages, plus the firmware's built-in UI assets:
 //
@@ -12,13 +12,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
-import { ButtonImage } from "@toptensoftware/node-buttonImage";
+import { render } from "@toptensoftware/button-face/node";
 import { packRle } from "rle565";
 import { blobPack } from "rle565/blobpack.js";
 import { packFont } from "rle565/font.js";
 
 const ICON_SIZE = 80;   // icon area, centred in the 128x128 key cell
-// The built-in icons are padded for Stream Deck keys; render bigger and crop
+// The built-in icons are padded for small keys; render bigger and crop
 // the centre so they fill more of the icon area.
 const RENDER_SIZE = 112;
 
@@ -57,12 +57,12 @@ fs.mkdirSync(pngDir, { recursive: true });
 
 for (const [name, color] of ICONS)
 {
-    const bi = new ButtonImage({});
-    bi.backColor = "transparent";
-    bi.svgFile = "#" + name;
-    bi.svgForeColor = color;
-
-    const big = await bi.render(RENDER_SIZE, RENDER_SIZE, 4);
+    // No fill layer: the background stays transparent. Built-in icons are
+    // drawn in #848484, which `colors` maps to the icon's colour.
+    const { data } = await render(
+        { layers: [{ type: "svg", src: "#" + name, colors: { "#848484": color } }] },
+        RENDER_SIZE, RENDER_SIZE, { channels: 4 });
+    const big = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     const crop = (RENDER_SIZE - ICON_SIZE) >> 1;
     await sharp(big, { raw: { width: RENDER_SIZE, height: RENDER_SIZE, channels: 4 } })
         .extract({ left: crop, top: crop, width: ICON_SIZE, height: ICON_SIZE })

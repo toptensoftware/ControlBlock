@@ -322,8 +322,8 @@ Fact("Standalone ControlTiming Reads The Selected Activity's Controls")
     Assert(r.sa.SelectActivity(0));                     // Watch: key1 repeats, delay 300, period 100
     GestureTiming t = r.sa.ControlTiming("key1");
     Assert(t.long_ms == 0 && t.repeat_delay_ms == 300 && t.repeat_ms == 100 && t.not_before_ms == 0);
-    Assert(IsZero(r.sa.ControlTiming("key2")));
-    Assert(IsZero(r.sa.ControlTiming("macro1")));
+    Assert(IsZero(r.sa.ControlTiming("key2")));         // bound (a tap) but no timing entry
+    Assert(IsZero(r.sa.ControlTiming("enc1")));
     Assert(IsZero(r.sa.ControlTiming("touch[400]")));
     Assert(r.sa.SelectActivity(1));                     // Listen: no controls
     Assert(IsZero(r.sa.ControlTiming("key1")));

@@ -41,11 +41,11 @@ test("binding order: page, key, then press/release/tap/long; the activity's own 
         version: 1, home: {},
         activities: { A: {
             pages: [{ keys: [{ long: delay(4), tap: delay(3), release: delay(2), press: delay(1) }, { tap: delay(5) }] }],
-            bindings: [{ control: "macro1", event: "tap", do: delay(6) }],
+            bindings: [{ control: "key1", event: "tap", do: delay(6) }],
         } },
     });
     assert.deepEqual(t.activities[0].bindings.map(b => `${b.control}/${b.event}`),
-        ["touch[16]/press", "touch[16]/release", "touch[16]/tap", "touch[16]/long", "touch[17]/tap", "macro1/tap"]);
+        ["touch[16]/press", "touch[16]/release", "touch[16]/tap", "touch[16]/long", "touch[17]/tap", "key1/tap"]);
     assert.deepEqual(t.activities[0].bindings.map(b => b.ops[0].duration), [1, 2, 3, 4, 5, 6]);
 });
 
@@ -95,8 +95,8 @@ test("Home has only keys and defaults", () => {
 });
 
 test("activity bindings: control/event/do; touch controls are not allowed", () => {
-    const t = ok({ version: 1, home: {}, activities: { A: act({ bindings: [{ control: "volEnc", event: "turnLeft", do: delay(1) }] }) } });
-    assert.deepEqual(t.activities[0].bindings.map(b => [b.control, b.event]), [["volEnc", "turnLeft"]]);
+    const t = ok({ version: 1, home: {}, activities: { A: act({ bindings: [{ control: "enc1", event: "turn", do: delay(1) }] }) } });
+    assert.deepEqual(t.activities[0].bindings.map(b => [b.control, b.event]), [["enc1", "turn"]]);
     const bad = b => errorText(run({ version: 1, home: {}, activities: { A: act({ bindings: [b] }) } }));
     assert.match(bad({ control: "touch[1,1]", event: "tap", do: delay(1) }), /activities\.A\.bindings\[0\]\.control: .*touch/);
     assert.match(bad({ event: "tap", do: delay(1) }), /control.*required/);

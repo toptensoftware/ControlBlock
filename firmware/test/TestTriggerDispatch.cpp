@@ -2,7 +2,7 @@
 // and bindings", "Actions"). The layout is the sample baked by host/src/bake,
 // relocated in place and read through the generated structs. Home's bindings:
 // touch[1] tap, touch[2] tap + long, touch[3] tap (switchActivity).
-// Activity 0 ("Watch"): touch[16] tap (script), macro1 tap (hidKey).
+// Activity 0 ("Watch"): touch[16] tap (script), key2 tap (hidKey).
 // Activity 1 ("Listen"): none.
 
 #include "UnitTesting.h"
@@ -99,21 +99,21 @@ Fact("Activity Bindings Apply Only While Selected")
 {
     Rig r;
     // No activity at boot: the activity's bindings don't exist
-    Assert(!r.disp.HasBinding("macro1", "tap"));
+    Assert(!r.disp.HasBinding("key2", "tap"));
     Assert(!r.disp.HasBinding("touch[16]", "tap"));
-    Assert(r.disp.Trigger("macro1", "tap", "") == 0);
+    Assert(r.disp.Trigger("key2", "tap", "") == 0);
 
     Assert(r.disp.SetActivity(0));
-    Assert(r.disp.HasBinding("macro1", "tap"));
+    Assert(r.disp.HasBinding("key2", "tap"));
     Assert(r.disp.HasBinding("touch[16]", "tap"));
     Assert(r.disp.HasBinding("touch[1]", "tap"));         // Home's still match
-    Assert(r.disp.Trigger("macro1", "tap", "") == 1);
+    Assert(r.disp.Trigger("key2", "tap", "") == 1);
     r.Drain();
     Assert(r.ran == 1 && r.run[0] == HID);
 
     // Another activity: Watch's bindings go, Home's stay
     Assert(r.disp.SetActivity(1));
-    Assert(!r.disp.HasBinding("macro1", "tap"));
+    Assert(!r.disp.HasBinding("key2", "tap"));
     Assert(r.disp.HasBinding("touch[1]", "tap"));
 
     // Back to none
@@ -128,7 +128,7 @@ Fact("SetActivity Rejects Bad Indices")
     Assert(r.disp.SetActivity(0));
     Assert(!r.disp.SetActivity(2));                 // the sample has two
     Assert(!r.disp.SetActivity(-2));
-    Assert(r.disp.HasBinding("macro1", "tap"));     // unchanged by a rejected call
+    Assert(r.disp.HasBinding("key2", "tap"));     // unchanged by a rejected call
 }
 
 Fact("Op Queue Runs In Order One Per Poll")

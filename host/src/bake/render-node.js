@@ -1,5 +1,5 @@
 // The Node renderer for stage 2: a key image spec ({ width, height, layers }) -> one opaque rle565
-// image, width x height: each layer's node-buttonImage definition rendered at its size, clipped
+// image, width x height: each layer's button-face definition rendered at its size, clipped
 // to the key (a group's picture is larger than each of its keys) and composed over black. Uses
 // sharp, which does not run in a browser: a web front end supplies its own renderer to
 // renderImages() instead.

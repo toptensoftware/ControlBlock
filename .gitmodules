@@ -1,12 +1,9 @@
 [submodule "rle565"]
 	path = rle565
 	url = https://github.com/toptensoftware/rle565.git
-[submodule "node-buttonImage"]
-	path = node-buttonImage
-	url = https://github.com/toptensoftware/node-buttonImage.git
 [submodule "SimpleLib"]
 	path = SimpleLib
-	url = https://github.com/toptensoftware/SimpleLib.git
+	url = https://github.com/toptensoftware/simplelib.git
 [submodule "binpack"]
 	path = binpack
 	url = https://github.com/toptensoftware/binpack
@@ -15,7 +12,7 @@
 	url = https://github.com/lua/lua.git
 [submodule "PacketEncoder"]
 	path = PacketEncoder
-	url = git@github.com:toptensoftware/PacketEncoder
+	url = https://github.com/toptensoftware/PacketEncoder.git
 [submodule "urem2/atvdaemon"]
 	path = urem2/atvdaemon
 	url = https://github.com/toptensoftware/atv-daemon.git

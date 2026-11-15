@@ -1,11 +1,13 @@
 {
   "name": "controlblock-cli",
   "private": true,
+  "license": "MIT",
+  "author": "Topten Software",
   "type": "module",
   "description": "ControlBlock command line: bake, render and upload standalone layouts, set up Wi-Fi and the clock. A thin wrapper over the library in ../host (imported by relative path, so nothing to install).",
   "bin": { "controlblock": "./cli.js" },
   "scripts": {
     "test": "node --test \"test/*.test.js\""
   },
-  "engines": { "node": ">=22" }
+  "engines": { "node": ">=24" }
 }

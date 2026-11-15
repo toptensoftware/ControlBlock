@@ -1,6 +1,6 @@
 # urem2
 
-A port of **urem** (`../urem/`: the Raspberry Pi + Stream Deck + macro pad universal remote) to a ControlBlock
+A port of **urem** (`../urem/`: the Raspberry Pi + USB key pad + macro pad universal remote) to a ControlBlock
 standalone layout. The layout drives the same equipment urem did: a Yamaha receiver (HTTP), an LG TV and a Panasonic
 DVR (IR through the **irtx** blaster), an Apple TV (IR power plus the **Apple TV daemon**), and the HOT PC and its
 slideshow (Wake-on-LAN, HTTP, UDP). It also serves as a worked example of a larger `.mjs` layout.
@@ -92,7 +92,7 @@ activities' local ones, like hdd's `irKey`, `num` and `ch`) each make **one** ke
 helpers that lay out groups of keys. Keys get the bake's default ids (bindings `touch[id]`). The activity tests
 don't pin pages (only meta, the macro pad bindings and a clean resolve with every key drawn), so keys can be moved,
 added or dropped without test changes; the bake test checks the geometry as the device does. Home's test still
-lists its keys (`test/pages.mjs` `assertKeys`, any order and position). Most pages still follow urem's 15-key Stream Deck grid, with urem's
+lists its keys (`test/pages.mjs` `assertKeys`, any order and position). Most pages still follow urem's 15-key 5x3 grid, with urem's
 column 0 navigation keys (Home toggle, pager arrows, clock) left empty: swipe instead.
 
 **Auto-repeat** is ported with urem's settings (`wip/complete-auto-repeat.md`): rewind/forward on Apple TV and Steam
@@ -123,7 +123,7 @@ map (`padControls()` in `layout/pad.mjs`); the physical pad's repeat waits for t
   Vol+/Vol- move 1 step per tap and repeat while held (`VOLUME_REPEAT` in `layout/keys.mjs`: 500 ms, then every
   100 ms).
 
-Look: each key has a grey rounded border on black; pressed, the square fills mid grey. Icons are node-buttonImage
+Look: each key has a grey rounded border on black; pressed, the square fills mid grey. Icons are button-face
 built-ins with urem's colours, scales and offsets, times `ICON_SCALE` (`layout/look.mjs`, 0.9 for now; the glyphs
 come out ~50-83 px, so it may go up after a look on the hardware).
 

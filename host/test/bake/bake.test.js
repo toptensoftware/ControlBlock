@@ -19,7 +19,7 @@ test("the docs example bakes to a valid BPAK file", async () => {
     // Watch TV is the layout's page 1 (Home is 0): Play is id 16, Mute (slot 4) 20, back (slot 5) 21
     const controls = tree.activities[0].bindings.map(b => `${b.control}/${b.event}`);
     assert.deepEqual(controls, ["touch[16]/tap", "touch[17]/tap", "touch[20]/tap", "touch[21]/tap", "touch[21]/long",
-                                "macro1/tap", "volEnc/turnLeft", "volEnc/turnRight"]);
+                                "key1/tap", "enc1/turn"]);
 });
 
 test("the blob reads back (strip the 32-byte header, unpack at offset 32)", async () => {
