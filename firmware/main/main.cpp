@@ -47,6 +47,13 @@ static const char *TAG = "controlblock";
 #define RUN_STRESS  0
 #endif
 
+// Render lab (wip/wip-on-device-render-feasibility.md): times on-device key renders at boot and
+// leaves the results on page 0 (render_lab_run.cpp); with RUN_STRESS too, the stress run adds
+// render cases. Off by default; -DCB_RENDER_LAB=ON (see main/CMakeLists.txt).
+#ifndef RENDER_LAB
+#define RENDER_LAB  0
+#endif
+
 // Backlight cycle: toggle the backlight every this many seconds, to test the
 // hardware (USB behaviour, power) without the host. Goes straight to the
 // display, bypassing the touch gate and the host's backlight state, so don't
@@ -80,6 +87,23 @@ static BLOBPACK *load_pack(const uint8_t *start, const uint8_t *end)
         memcpy(p, start, size);
     return (BLOBPACK *)p;
 }
+
+#if RENDER_LAB
+#include "render_lab_cases.h"       // RENDER_LAB_CASE_* (the stress cases)
+#include "render_lab_run.h"
+
+extern const uint8_t render_lab_start[]   asm("_binary_render_lab_bin_start");
+extern const uint8_t render_lab_end[]     asm("_binary_render_lab_bin_end");
+extern const uint8_t path_vectors_start[] asm("_binary_path_vectors_bin_start");
+extern const uint8_t path_vectors_end[]   asm("_binary_path_vectors_bin_end");
+
+// The lab's assets, as aligned PSRAM copies (the paths need 2-byte, rle565 4-byte alignment)
+static void init_render_lab(void)
+{
+    render_lab_init(load_pack(render_lab_start, render_lab_end), load_pack(path_vectors_start, path_vectors_end),
+                    (size_t)(path_vectors_end - path_vectors_start));
+}
+#endif
 
 // Where late fills were (see screen_stats_t), or "" if none
 #if STATS_LOG || RUN_STRESS
@@ -344,6 +368,11 @@ typedef struct {
     uint32_t       script_errors;
     size_t         script_peak;
     unsigned       script_refused;
+#if RENDER_LAB
+    bool           render_asked;    // STRESS_RENDER: asked for, started, and the churn's numbers
+    bool           render_started;
+    RenderLabChurnStats render;
+#endif
 } stress_result_t;
 
 typedef enum {
@@ -353,7 +382,16 @@ typedef enum {
     STRESS_SCRIPT  = 0x08,      // Lua churning its PSRAM heap on core 0, as a busy script op does
     STRESS_LAYOUT  = 0x10,      // switch the pages in view between the plain and mixed layouts each round
     STRESS_BUILD   = 0x20,      // change every key in view (flushed) and time it until it's on screen
+    STRESS_RENDER  = 0x40,      // render lab: render + encode + put on core 0, back to back (stress_render_t)
 } stress_what_t;
+
+// STRESS_RENDER: which render lab case, onto which image (one the keys in view show), and whether
+// its picture buffer is in PSRAM
+typedef struct {
+    int         index;          // RENDER_LAB_CASE_*
+    uint32_t    id;
+    bool        psram;
+} stress_render_t;
 
 #define STRESS_CASE_US      2000000
 #define STRESS_SETTLE_MS    600     // let the pages in view build before measuring (a full page ~100-300 ms)
@@ -470,13 +508,14 @@ static void timed_build(stress_result_t *r, int first, int last, int round)
 }
 
 static void stress_run(stress_result_t *r, const char *label, int scroll, uint32_t flags,
-                       uint32_t what = STRESS_KEYS)
+                       uint32_t what = STRESS_KEYS, const stress_render_t *render = nullptr)
 {
     // Live, so flicker on the screen can be matched to a case
     ESP_LOGI(TAG, "stress case: %s (%d s)", label, STRESS_CASE_US / 1000000);
     memset(r, 0, sizeof(*r));
     s_layout_refused = false;
-    set_demo_layout((what & STRESS_REPLACE) != 0);     // replaces: every 1U key in view shows image 0
+    // Replaces and renders: every 1U key in view shows image 0 (and every 2U key 2U image 0)
+    set_demo_layout((what & (STRESS_REPLACE | STRESS_RENDER)) != 0);
     screen_set_scroll(scroll);
     vTaskDelay(pdMS_TO_TICKS(STRESS_SETTLE_MS));
 
@@ -487,6 +526,10 @@ static void stress_run(stress_result_t *r, const char *label, int scroll, uint32
     uint32_t runs0 = s_script_runs;
     if (what & STRESS_SCRIPT)
         stress_script(true);
+#if RENDER_LAB
+    if ((what & STRESS_RENDER) && render)
+        r->render_started = render_lab_churn_start(render->index, render->id, render->psram);
+#endif
 
     int first = scroll / SCREEN_PAGE_W;
     int last  = (scroll + SCREEN_PAGE_W - 1) / SCREEN_PAGE_W;
@@ -518,6 +561,11 @@ static void stress_run(stress_result_t *r, const char *label, int scroll, uint32
     }
     int64_t elapsed = esp_timer_get_time() - t0;
     stress_script(false);
+#if RENDER_LAB
+    if (r->render_started)
+        render_lab_churn_stop(&r->render);
+    r->render_asked = (what & STRESS_RENDER) != 0;
+#endif
 
     screen_get_stats(&r->st);
     comp_add_stats(&r->cs);
@@ -556,14 +604,25 @@ static void stress_log(const stress_result_t *r)
         ESP_LOGI(TAG, "       lua: %lu runs, %lu errors, heap peak %u KB, %u allocs refused (totals so far)",
                  (unsigned long)r->script_runs, (unsigned long)r->script_errors,
                  (unsigned)(r->script_peak / 1024), r->script_refused);
+#if RENDER_LAB
+    const RenderLabChurnStats &rs = r->render;
+    if (r->render_asked && !r->render_started)
+        ESP_LOGE(TAG, "       render: NOT STARTED (no memory for the case's buffers?)");
+    else if (r->render_asked)
+        ESP_LOGI(TAG, "       render: %s, %lu runs, %lu failed, %.2f ms a run (render + encode + put), "
+                      "px/scr/ws/out %s",
+                 rs.name, (unsigned long)rs.runs, (unsigned long)rs.failed,
+                 rs.runs ? rs.busy_us / 1000.0 / rs.runs : 0.0, rs.where);
+#endif
 }
 
 static void run_stress(void)
 {
-    static stress_result_t results[20];
+    static stress_result_t results[32];
     int n = 0;
     const int MID = SCREEN_PAGE_W / 2;      // pages 0 (plain) and 1 (mixed) in view
-    ESP_LOGI(TAG, "stress run starting (~50 s): touch, USB and Wi-Fi start after it, results at the end");
+    ESP_LOGI(TAG, "stress run starting (~50 s, ~70 s with the render lab): touch, USB and Wi-Fi start "
+                  "after it, results at the end");
 
     // Every key in view changing every 20 ms
     stress_run(&results[n++], "at rest, incremental",   0, 0);
@@ -594,6 +653,23 @@ static void run_stress(void)
     stress_run(&results[n++], "lua churn, mid-swipe",   MID, 0, STRESS_SCRIPT);
     stress_run(&results[n++], "lua + keys, mid, flush", MID, COMP_FLUSH, STRESS_KEYS | STRESS_SCRIPT);
     s_stress_script.Close();                    // give the Lua heap back
+
+#if RENDER_LAB
+    // Render lab: render + encode + put on core 0 onto the image the keys in view show (1U: internal
+    // buffers; 2U and 720x432: picture in PSRAM, a new heavy PSRAM writer; >256 colours: the
+    // compositor's large-palette decode)
+    static const stress_render_t R_1U    = { RENDER_LAB_CASE_SLIDER, DEMO_1U_ID(0), false };
+    static const stress_render_t R_2U    = { RENDER_LAB_CASE_2U, DEMO_2U_ID(0), true };
+    static const stress_render_t R_LARGE = { RENDER_LAB_CASE_LARGE_PALETTE, DEMO_1U_ID(0), false };
+    static const stress_render_t R_FULL  = { RENDER_LAB_CASE_FULL, 0xFF0000FFu, true };     // not shown
+    stress_run(&results[n++], "render 1U, at rest",     0, 0, STRESS_RENDER, &R_1U);
+    stress_run(&results[n++], "render 1U, mid-swipe",   MID, 0, STRESS_RENDER, &R_1U);
+    stress_run(&results[n++], "render 1U + keys, mid, fl", MID, COMP_FLUSH, STRESS_KEYS | STRESS_RENDER, &R_1U);
+    stress_run(&results[n++], "render 2U PSRAM, mid",   MID, 0, STRESS_RENDER, &R_2U);
+    stress_run(&results[n++], "render 2U PSRAM + keys, fl", MID, COMP_FLUSH, STRESS_KEYS | STRESS_RENDER, &R_2U);
+    stress_run(&results[n++], "render >256 colours, mid", MID, 0, STRESS_RENDER, &R_LARGE);
+    stress_run(&results[n++], "render 720x432 PSRAM, mid", MID, 0, STRESS_RENDER, &R_FULL);
+#endif
 
     screen_set_scroll(0);
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -685,10 +761,16 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(display_enable_backlight(false));
 #endif
 
+#if RENDER_LAB
+    init_render_lab();
+#endif
 #if RUN_STRESS
     load_demo_images();                     // refusals are reported with the results (log_demo_load)
     screen_set_page_count(NUM_PAGES);
     run_stress();
+#endif
+#if RENDER_LAB
+    render_lab_run();                       // after the stress run: its keys stay on page 0
 #endif
     status_set_right(STATUS_TEXT_STANDALONE_RIGHT);     // standalone at boot: the clock (blank until set)
 

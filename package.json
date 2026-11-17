@@ -13,7 +13,7 @@
     "rle565/encoder"
   ],
   "scripts": {
-    "test": "npm test -w host -w cli && npm test --prefix binpack && node --test \"scripts/**/*.test.mjs\" \"urem2/**/*.test.mjs\" \"examples/**/*.test.mjs\""
+    "test": "npm test -w host -w cli && npm test --prefix binpack && node --test \"scripts/**/*.test.mjs\" \"urem2/**/*.test.mjs\" \"examples/**/*.test.mjs\" \"tools/render-lab/*.test.mjs\""
   },
   "engines": {
     "node": ">=24"

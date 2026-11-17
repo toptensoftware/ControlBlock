@@ -8,6 +8,19 @@ if(CB_RUN_STRESS)
     list(APPEND EMBED "../assets/test_keys.bin")
 endif()
 
+# Render lab (wip/wip-on-device-render-feasibility.md): on-device key render experiments, with
+# rle565's C encoder. The encoder and the lab stay out of normal builds. At boot it times every
+# case and leaves the results as keys on page 0 (render_lab_run.cpp); with CB_RUN_STRESS too,
+# the stress run adds render cases.
+#   idf.py --preset debug -DCB_RENDER_LAB=ON build   (OFF turns it off again)
+set(RENDER_LAB_SRCS "")
+if(CB_RENDER_LAB)
+    list(APPEND RENDER_LAB_SRCS "${RLE565_DIR}/rle565enc.c" "render_lab.cpp" "path_raster.cpp" "render_lab_cases.cpp"
+         "render_lab_run.cpp")
+    list(APPEND EMBED "../assets/render_lab.bin")   # render_lab_assets.h
+    list(APPEND EMBED "../test/data/path_vectors.bin")  # the cases' paths (render_lab_cases.h)
+endif()
+
 # Lua 5.4 (submodule ../../lua), the same source list as the host tests (firmware/lua_sources.txt).
 # Default 64-bit numbers. Not libs that need files or the OS (io, os, package, debug, coroutine).
 set(LUA_DIR "${CMAKE_CURRENT_LIST_DIR}/../../lua")
@@ -80,6 +93,7 @@ idf_component_register(
         "waveshare_rgb_lcd_port.cpp"
         "waveshare_touch_port.cpp"
         "${RLE565_DIR}/rle565.c"
+        ${RENDER_LAB_SRCS}
     INCLUDE_DIRS
         "."
         "${RLE565_DIR}"
@@ -115,6 +129,10 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE "LUA_USER_H=\"lua_user.h\"")
 
 if(CB_RUN_STRESS)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE RUN_STRESS=1)
+endif()
+
+if(CB_RENDER_LAB)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE RENDER_LAB=1)
 endif()
 
 # Wi-Fi link diagnostics (wifi.cpp WIFI_DIAG): RSSI and a gateway ping every 5 s while connected.

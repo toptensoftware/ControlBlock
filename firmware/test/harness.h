@@ -38,6 +38,9 @@ private:
 // Read firmware/assets/<name> (a blobpack) into memory; exits if missing
 BLOBPACK *LoadAsset(const char *name);
 
+// Read firmware/test/data/<name> into memory (malloc'd, so 8-byte aligned); exits if missing
+void *LoadTestData(const char *name, size_t *size);
+
 // firmware/assets/test_keys.bin (layout in test_keys.h)
 class TestImages
 {

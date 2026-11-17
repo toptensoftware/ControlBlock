@@ -28,33 +28,42 @@ TestImages::TestImages() : m_pack(LoadAsset("test_keys.bin"))
 {
 }
 
-BLOBPACK *LoadAsset(const char *name)
+// Read the first of dirs[i] + name that exists (`where` names it in the error); exits if none
+static void *LoadFirst(const char *const *dirs, int ndirs, const char *where, const char *name, size_t *size_out)
 {
-    // Run from firmware/test (mk run) or the repository root
-    static const char *dirs[] = {
-        "../assets/",
-        "firmware/assets/",
-        "../../assets/",
-    };
     FILE *f = nullptr;
     char path[256];
-    for (const char *d : dirs) {
-        snprintf(path, sizeof(path), "%s%s", d, name);
-        if ((f = fopen(path, "rb")) != nullptr)
-            break;
+    for (int i = 0; i < ndirs && !f; i++) {
+        snprintf(path, sizeof(path), "%s%s", dirs[i], name);
+        f = fopen(path, "rb");
     }
     if (!f) {
-        fprintf(stderr, "Can't find firmware/assets/%s (run from firmware/test)\n", name);
+        fprintf(stderr, "Can't find %s%s (run from firmware/test)\n", where, name);
         exit(2);
     }
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    BLOBPACK *pack = (BLOBPACK *)malloc(size);
-    if (fread(pack, 1, size, f) != (size_t)size)
+    void *data = malloc(size ? size : 1);
+    if (fread(data, 1, size, f) != (size_t)size)
         exit(2);
     fclose(f);
-    return pack;
+    if (size_out)
+        *size_out = (size_t)size;
+    return data;
+}
+
+BLOBPACK *LoadAsset(const char *name)
+{
+    // Run from firmware/test (mk run) or the repository root
+    static const char *dirs[] = { "../assets/", "firmware/assets/", "../../assets/" };
+    return (BLOBPACK *)LoadFirst(dirs, 3, "firmware/assets/", name, nullptr);
+}
+
+void *LoadTestData(const char *name, size_t *size)
+{
+    static const char *dirs[] = { "data/", "firmware/test/data/", "../test/data/" };
+    return LoadFirst(dirs, 3, "firmware/test/data/", name, size);
 }
 
 // ---------------------------------------------------------------------------

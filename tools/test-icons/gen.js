@@ -5,6 +5,7 @@
 //   firmware/assets/test_keys.bin    128x128 key faces and icons, then opaque 144x144
 //                                    (1U) and 288x144 (2U) keys
 //   firmware/assets/ui.bin           status bar font and pager pills
+//   firmware/assets/render_lab.bin   render lab fonts, face and icon (CB_RENDER_LAB only)
 //
 // Run with `npm install && npm run build` in this folder.
 
@@ -120,8 +121,8 @@ async function addKey(name, rgba, w = KEY_SIZE, h = KEY_SIZE)
                 `rows ${packed.firstRow}..${packed.firstRow + packed.rowCount - 1}`);
 }
 
-// A face, optionally on an opaque background filling the cell
-async function addFace(name, top, bottom, border, opaque)
+// A face's RGBA (KEY_SIZE square), optionally on an opaque background filling the cell
+async function faceRgba(top, bottom, border, opaque)
 {
     const o = (KEY_SIZE - FACE_SIZE) / 2;
     const back = opaque ? `<rect width="${KEY_SIZE}" height="${KEY_SIZE}" fill="${BACKGROUND}"/>` : "";
@@ -133,8 +134,12 @@ async function addFace(name, top, bottom, border, opaque)
         <rect x="${o + 1}" y="${o + 1}" width="${FACE_SIZE - 2}" height="${FACE_SIZE - 2}"
               rx="${FACE_RADIUS}" fill="url(#g)" stroke="${border}" stroke-width="2"/>
     </svg>`;
-    const rgba = await sharp(Buffer.from(svg)).ensureAlpha().raw().toBuffer();
-    await addKey(name, rgba);
+    return await sharp(Buffer.from(svg)).ensureAlpha().raw().toBuffer();
+}
+
+async function addFace(name, top, bottom, border, opaque)
+{
+    await addKey(name, await faceRgba(top, bottom, border, opaque));
 }
 
 console.log("");
@@ -275,3 +280,47 @@ for (const [name, body] of STATUS_ICONS)
 const uiPack = blobPack(uiBlobs);
 fs.writeFileSync(uiOutFile, uiPack);
 console.log(`\n${uiOutFile}: ${uiPack.length} bytes`);
+
+
+// ---------------------------------------------------------------------------
+// Render lab assets: firmware/assets/render_lab.bin
+// (wip/wip-on-device-render-feasibility.md; embedded only with -DCB_RENDER_LAB=ON)
+//
+// Layout (keep in step with firmware/main/render_lab_assets.h):
+//   blobs 0-2  Inter SemiBold, ASCII: 20 px subpixel 1, 27 px subpixel 1, 27 px subpixel 4
+//              (the default key label sizes: bake look.js, 11 and 15 px on a 72 px face at 128 px)
+//   blob 3     a shaded grey key face with alpha, KEY_SIZE square (recolours well)
+//   blob 4     an icon with alpha, ICON_SIZE square
+
+const LAB_FONTS = [
+    { size: 20, subpixel: 1 },
+    { size: 27, subpixel: 1 },
+    { size: 27, subpixel: 4 },
+];
+const LAB_FACE = ["#8c8c94", "#3c3c44", "#c0c0c8"];    // top, bottom, border
+const LAB_ICON = "volume-up";
+
+const labOutFile = path.resolve(here, "../../firmware/assets/render_lab.bin");
+const labBlobs = [];
+
+console.log("");
+for (const { size, subpixel } of LAB_FONTS)
+{
+    const f = packFont(path.join(here, STATUS_FONT.file), { size, subpixel, charset: "32-126" });
+    labBlobs.push(pad4(f.data));
+    console.log(`lab font ${size} px sp${subpixel} ${String(f.data.length).padStart(6)} bytes`);
+}
+
+async function addLabImage(name, rgba, size)
+{
+    const packed = await packRle({ data: rgba, info: { width: size, height: size, channels: 4 } }, {});
+    labBlobs.push(pad4(packed.data));
+    console.log(`lab ${name.padEnd(10)} ${String(packed.packedSize).padStart(6)} bytes, ${size}x${size}`);
+}
+
+await addLabImage("face", await faceRgba(...LAB_FACE, false), KEY_SIZE);
+await addLabImage("icon", await sharp(path.join(pngDir, LAB_ICON + ".png")).ensureAlpha().raw().toBuffer(), ICON_SIZE);
+
+const labPack = blobPack(labBlobs);
+fs.writeFileSync(labOutFile, labPack);
+console.log(`\n${labOutFile}: ${labPack.length} bytes`);

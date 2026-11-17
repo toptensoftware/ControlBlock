@@ -1,6 +1,7 @@
 #include <string.h>
 #include "status_bar.h"
 #include "ui_assets.h"
+#include "text_layout.h"
 
 status_bar_style_t status_bar_style(const BLOBPACK *ui)
 {
@@ -15,14 +16,6 @@ status_bar_style_t status_bar_style(const BLOBPACK *ui)
 
 // ---------------------------------------------------------------------------
 // Drawing
-
-// Baseline that centres capital letters vertically in the bar
-static int text_baseline(const FONT *font)
-{
-    const FONT_GLYPH *cap = font_find_glyph(font, 'H');
-    int cap_h = cap ? -cap->top : font->ascent;
-    return (SCREEN_STATUS_H + cap_h) / 2;
-}
 
 // All drawing is relative to `y0`, the bar row at the top of `buf`
 static void draw_pager(IMAGE_BUFFER *buf, int y0, const status_bar_style_t *style, int selected, int count)
@@ -79,7 +72,7 @@ void status_bar_render_rows(uint16_t *px, int y0, int rows, const status_bar_sty
     init_image_buffer(&buf, SCREEN_W, rows, px, SCREEN_W);
     fill_rect(&buf, 0, 0, SCREEN_W, rows, STATUS_BAR_BACKGROUND);
 
-    int baseline = text_baseline(style->font) - y0;
+    int baseline = font_centre_baseline(style->font, SCREEN_STATUS_H) - y0;
     if (content->left[0])
         draw_text(&buf, style->font, STATUS_BAR_MARGIN, baseline, content->left, -1, STATUS_BAR_TEXT, 255);
     // The right text (the clock) at the margin, the icons just left of it

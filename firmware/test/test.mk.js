@@ -49,7 +49,11 @@ export default async function ()
             "../main/activity_switch.cpp",
             "../main/activity_host.cpp",
             "../main/standalone.cpp",
+            "../main/render_lab.cpp",           // render lab (device: CB_RENDER_LAB only)
+            "../main/path_raster.cpp",          // render lab (device: CB_RENDER_LAB only)
+            "../main/render_lab_cases.cpp",     // render lab (device: CB_RENDER_LAB only)
             "../../rle565/src/rle565.c",
+            "../../rle565/src/rle565enc.c",     // C encoder: the render lab (device: CB_RENDER_LAB only)
             // Lua: the same list as the device build (firmware/lua_sources.txt)
             ...readFileSync(new URL("../lua_sources.txt", import.meta.url), "utf8")
                 .split(/\r?\n/).filter(Boolean).map(f => "../../lua/" + f),

@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "Core.h"
+#include "harness.h"
 #include "layout_blob.h"
 
 #ifdef _WIN32
@@ -49,26 +50,12 @@ namespace layout_env
     // data/sample_layout.bin (run from firmware/test or the repository root)
     inline SimpleLib::List<uint8_t> LoadSample()
     {
-        static const char *dirs[] = { "data/", "firmware/test/data/", "../test/data/" };
-        FILE *f = nullptr;
-        char path[256];
-        for (const char *d : dirs) {
-            snprintf(path, sizeof(path), "%ssample_layout.bin", d);
-            if ((f = fopen(path, "rb")) != nullptr)
-                break;
-        }
-        if (!f) {
-            fprintf(stderr, "Can't find firmware/test/data/sample_layout.bin (run from firmware/test)\n");
-            exit(2);
-        }
-        fseek(f, 0, SEEK_END);
-        long size = ftell(f);
-        fseek(f, 0, SEEK_SET);
+        size_t size = 0;
+        void *data = LoadTestData("sample_layout.bin", &size);
         SimpleLib::List<uint8_t> bytes;
         bytes.SetCount((int)size, 0);
-        if (fread(bytes.GetBuffer(), 1, size, f) != (size_t)size)
-            exit(2);
-        fclose(f);
+        memcpy(bytes.GetBuffer(), data, size);
+        free(data);
         return bytes;
     }
 
