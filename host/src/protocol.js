@@ -65,7 +65,9 @@ export const Msg = Object.freeze({
     CLOCK_SET:      0x52,
     NAME_SET:       0x60,
     NAME_GET:       0x61,
-    KEY:           0x80,       // events
+    DISPLAY_SET:    0x70,
+    DISPLAY_GET:    0x71,
+    KEY:          0x80,       // events
     PAGE_CHANGED:   0x81,
     WAKE:           0x82,
     HEARTBEAT:      0x83,
@@ -336,6 +338,25 @@ export function encodeNameSet(name)
     return new Writer(1 + lower.length).u8(lower.length).raw(new TextEncoder().encode(lower)).done();
 }
 
+// DISPLAY_SET (docs/protocol.md, Display timing): the pixel clock in whole MHz and the total
+// lines a frame; 0 in either is the device's default. The device checks its own limits.
+export function encodeDisplaySet(clockMhz, lines)
+{
+    for (const [name, value, max] of [["clockMhz", clockMhz, 0xFF], ["lines", lines, 0xFFFF]]) {
+        if (typeof value !== "number")
+            throw new TypeError(`${name} must be a number`);
+        if (!Number.isInteger(value) || value < 0 || value > max)
+            throw new RangeError(`${name} must be a whole number from 0 to ${max} (got ${value})`);
+    }
+    return new Writer(3).u8(clockMhz).u16(lines).done();
+}
+
+// Display timing maths, from the figures DISPLAY_GET reports: frames a second (to 0.1), the time
+// between bounce fills (each must finish within it; whole us) and the total lines for a frame rate
+export const displayFps = (clockMhz, lines, hTotal) => Math.round(clockMhz * 1e7 / (hTotal * lines)) / 10;
+export const displayFillBudgetUs = (clockMhz, hTotal, fillLines) => Math.floor(fillLines * hTotal / clockMhz);
+export const displayLinesForFps = (clockMhz, fps, hTotal) => Math.round(clockMhz * 1e6 / (hTotal * fps));
+
 // One PUT_IMAGE chunk
 export function encodePutImage(id, total, offset, chunk)
 {
@@ -531,6 +552,25 @@ export function decodeName(data)
     const r = new Reader(data);
     const isDefault = r.u8() !== 0;
     return { name: r.str(), isDefault };
+}
+
+// DISPLAY_GET response data: the timing set now (clockMhz, lines; isDefault: the build's), the
+// device's limits, the line length and fill size, and from them fps and fillBudgetUs
+export function decodeDisplayTiming(data)
+{
+    const r = new Reader(data);
+    const t = { clockMhz: r.u8(), lines: r.u16(), isDefault: (r.u8() & 1) !== 0 };
+    t.defaultClockMhz = r.u8();
+    t.defaultLines = r.u16();
+    t.minClockMhz = r.u8();
+    t.maxClockMhz = r.u8();
+    t.minLines = r.u16();
+    t.maxLines = r.u16();
+    t.hTotal = r.u16();
+    t.fillLines = r.u16();
+    t.fps = displayFps(t.clockMhz, t.lines, t.hTotal);
+    t.fillBudgetUs = displayFillBudgetUs(t.clockMhz, t.hTotal, t.fillLines);
+    return t;
 }
 
 // QUERY_IMAGES response data: one bool per ID asked about

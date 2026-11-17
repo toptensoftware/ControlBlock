@@ -55,6 +55,22 @@ export function infoPayload({ maxPayload = 8192, pageCount = 1, currentPage = 0,
     return w.done();
 }
 
+// The firmware's display timing limits for its 20 MHz build (display_timing.h DisplayTimingLimitsFor,
+// waveshare_rgb_lcd_port.h: 820 clocks a line, 15-line fills)
+export const DISPLAY = Object.freeze({
+    defaultClockMhz: 20, defaultLines: 500, minClockMhz: 16, maxClockMhz: 20, minLines: 500, maxLines: 1024,
+    hTotal: 820, fillLines: 15,
+});
+
+// DISPLAY_GET's payload (protocol.cpp OnDisplayGet) for a timing (the build's if omitted)
+export function displayPayload({ clockMhz = DISPLAY.defaultClockMhz, lines = DISPLAY.defaultLines } = {})
+{
+    const d = DISPLAY;
+    const isDefault = clockMhz === d.defaultClockMhz && lines === d.defaultLines;
+    return new Writer(17).u8(clockMhz).u16(lines).u8(isDefault ? 1 : 0).u8(d.defaultClockMhz).u16(d.defaultLines)
+        .u8(d.minClockMhz).u8(d.maxClockMhz).u16(d.minLines).u16(d.maxLines).u16(d.hTotal).u16(d.fillLines).done();
+}
+
 // The image's size if the device would take it (a valid rle565 image, 1x1 up to the grid, every
 // pixel opaque: the firmware's check_image with opaque required), else null
 function checkImage(bytes)
@@ -99,6 +115,9 @@ export class FakeDevice
     // clock: emulate the clock messages (docs/protocol.md, Clock): { offset, source, tz, server }.
     //   offset: device time minus Date.now() in ms, null while the time isn't known (the default).
     // name: emulate NAME_SET/NAME_GET (docs/protocol.md, Device name): { name } stored, null (the default) for none.
+    // display: emulate DISPLAY_SET/DISPLAY_GET (docs/protocol.md, Display timing) for a 20 MHz build
+    //   (DISPLAY): { clockMhz, lines } (the defaults if omitted). Without it, they get UNKNOWN_TYPE
+    //   (firmware from before them).
     // The screen requests (RESET, SET_STATUS_TEXT, PUT_IMAGE, FREE_IMAGES, QUERY_IMAGES, SET_PAGE_COUNT,
     //   SET_KEYS, SET_PAGE) run against a model of the firmware's image store and key layout (protocol
     //   v2: opaque images only, keys by id with quarter-unit rects, the same checks and statuses).
@@ -106,12 +125,13 @@ export class FakeDevice
     //   KEY event for a key, as a touch would.
     // handler(msg): if given, asked first about every screen request (and any other type the fake
     //   doesn't know): a { status, data } answers, null stays silent, undefined leaves it to the model.
-    constructor({ maxPayload = 8192, handler, backlight = true, layout, wifi, clock, name, hosted = false, controlStatus = Status.OK, blobVersion = BLOB_VERSION, firmwareVersion = "1.0" } = {})
+    constructor({ maxPayload = 8192, handler, backlight = true, layout, wifi, clock, name, display, hosted = false, controlStatus = Status.OK, blobVersion = BLOB_VERSION, firmwareVersion = "1.0" } = {})
     {
         this.blobVersion = blobVersion;     // GET_INFO's layout_blob_version; null: not reported (older firmware)
         this.firmwareVersion = firmwareVersion;
         this.clock = clock ? { offset: null, source: 0, tz: "UTC0", server: "pool.ntp.org", ...clock } : null;
         this.name = name ? { name: null, ...name } : null;
+        this.display = display ? { clockMhz: DISPLAY.defaultClockMhz, lines: DISPLAY.defaultLines, ...display } : null;
         this.hosted = hosted;
         this.model = hosted ? "empty" : "home";
         this.controlStatus = controlStatus;
@@ -204,6 +224,8 @@ export class FakeDevice
                     ? this._clock(msg)
                 : this.name && (msg.type === Msg.NAME_SET || msg.type === Msg.NAME_GET)
                     ? this._name(msg)
+                : msg.type === Msg.DISPLAY_SET || msg.type === Msg.DISPLAY_GET
+                    ? this._display(msg)
                 : msg.type === Msg.PING
                     ? { status: Status.OK, data: msg.payload }
                     : this._screenRequest(msg);
@@ -521,6 +543,25 @@ export class FakeDevice
         }
         const n = new TextEncoder().encode(this.name.name ?? FAKE_DEFAULT_NAME);
         return { status: Status.OK, data: new Writer(2 + n.length).u8(this.name.name ? 0 : 1).u8(n.length).raw(n).done() };
+    }
+
+    // The display timing messages, as the firmware does them (DisplayConfig; its own tests check the rules)
+    _display(msg)
+    {
+        const reply = (status, data = new Uint8Array(0)) => ({ status, data });
+        const d = this.display;
+        if (!d)
+            return reply(Status.UNKNOWN_TYPE);
+        if (msg.type === Msg.DISPLAY_GET)
+            return reply(Status.OK, displayPayload(d));
+        const p = msg.payload;
+        if (p.length !== 3)
+            return reply(Status.BAD_LENGTH);
+        const clockMhz = p[0] || DISPLAY.defaultClockMhz, lines = (p[1] | p[2] << 8) || DISPLAY.defaultLines;
+        if (clockMhz < DISPLAY.minClockMhz || clockMhz > DISPLAY.maxClockMhz || lines < DISPLAY.minLines || lines > DISPLAY.maxLines)
+            return reply(Status.BAD_ARG);
+        Object.assign(d, { clockMhz, lines });
+        return reply(Status.OK);
     }
 
     // The layout upload, as the firmware does it. Answers (possibly later) itself.

@@ -10,7 +10,7 @@ import {
     BPAK_SIGNATURE, BPAK_HEADER_SIZE,
 } from "../src/protocol.js";
 import { keyImage, encodeImage } from "../src/images.js";
-import { FakeDevice, DEVICE, layoutBlobOf } from "./FakeDevice.js";
+import { FakeDevice, DEVICE, DISPLAY, displayPayload, layoutBlobOf } from "./FakeDevice.js";
 import { BLOB_VERSION } from "../src/bake/consts.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -373,6 +373,22 @@ test("FakeDevice's geometry and wire sizes match the firmware's headers", () => 
     assert.equal(BPAK_HEADER_SIZE, define(blob, "BPAK_HEADER_SIZE"));
     assert.match(blob, new RegExp(`#define\\s+BPAK_SIGNATURE\\s+0x${BPAK_SIGNATURE.toString(16)}u`, "i"));
     assert.match(header("layout_types.gen.h"), /struct layoutRoot\s*\{\s*\/\*\s*0 \*\/\s*uint32_t version;/);   // the root's first field
+    // the display timing limits of the 20 MHz build (display_timing.h)
+    const timing = header("display_timing.h");
+    const constant = name => {
+        const m = timing.match(new RegExp(`constexpr uint32_t ${name}\\s*=\\s*(\\d+);`));
+        assert.ok(m, `${name} not found`);
+        return Number(m[1]);
+    };
+    assert.match(header("waveshare_rgb_lcd_port.h"), /#define DISPLAY_PIXEL_CLOCK_HZ\s+\(20 \* 1000 \* 1000\)/);
+    assert.deepEqual([DISPLAY.defaultClockMhz, DISPLAY.maxClockMhz], [20, 20]);
+    assert.equal(DISPLAY.minClockMhz, constant("DISPLAY_PCLK_MIN_MHZ"));
+    assert.equal(DISPLAY.defaultLines, constant("DISPLAY_TIMING_V_TOTAL"));
+    assert.equal(DISPLAY.minLines, constant("DISPLAY_TIMING_V_TOTAL"));
+    assert.equal(DISPLAY.maxLines, constant("DISPLAY_V_TOTAL_HW_MAX"));
+    assert.equal(DISPLAY.hTotal, constant("DISPLAY_TIMING_H_TOTAL"));
+    assert.equal(DISPLAY.fillLines, constant("DISPLAY_TIMING_FILL_LINES"));
+    assert.equal(displayPayload().length, define(proto, "PROTO_DISPLAY_INFO_SIZE"));
 });
 
 test("connect reads the v2 geometry", async () => {
@@ -991,6 +1007,61 @@ test("connect sends the PC's time only when asked to", async () => {
     assert.equal(info.timeSet, true);
     assert.ok(dev.clock.offset !== null && Math.abs(dev.clock.offset) <= Date.now() - before + 5);
     await cb.close();
+});
+
+test("getDisplayTiming, setDisplayTiming and resetDisplayTiming (experimental)", async () => {
+    const { dev, cb } = await connected({ hosted: false, display: {} });
+    try {
+        const d = await cb.getDisplayTiming();
+        assert.equal(d.clockMhz, 20);
+        assert.equal(d.lines, 500);
+        assert.equal(d.isDefault, true);
+        assert.equal(d.fps, 48.8);
+
+        await cb.setDisplayTiming({ clockMhz: 20, lines: 750 });
+        assert.deepEqual(dev.display, { clockMhz: 20, lines: 750 });
+        const s = await cb.getDisplayTiming();
+        assert.equal(s.fps, 32.5);
+        assert.equal(s.isDefault, false);
+
+        // An omitted field is the device's default
+        await cb.setDisplayTiming({ clockMhz: 16 });
+        assert.deepEqual(dev.display, { clockMhz: 16, lines: 500 });
+
+        await cb.resetDisplayTiming();
+        assert.equal((await cb.getDisplayTiming()).isDefault, true);
+        assert.deepEqual([...dev.requests.filter(m => m.type === Msg.DISPLAY_SET).at(-1).payload], [0, 0, 0]);
+    } finally {
+        await cb.close();
+    }
+});
+
+test("setDisplayTiming refuses a timing outside the device's limits before sending it", async () => {
+    const { dev, cb } = await connected({ hosted: false, display: {} });
+    try {
+        await assert.rejects(cb.setDisplayTiming({ clockMhz: 21, lines: 750 }), /clockMhz must be 16-20/);
+        await assert.rejects(cb.setDisplayTiming({ clockMhz: 12 }), RangeError);
+        await assert.rejects(cb.setDisplayTiming({ lines: 1025 }), /lines must be 500-1024/);
+        await assert.rejects(cb.setDisplayTiming({ lines: 499 }), RangeError);
+        assert.equal(dev.requests.filter(m => m.type === Msg.DISPLAY_SET).length, 0);
+    } finally {
+        await cb.close();
+    }
+});
+
+test("display timing on firmware without it says so", async () => {
+    const { cb } = await connected({ hosted: false });            // no `display`: the fake answers UNKNOWN_TYPE
+    try {
+        await assert.rejects(cb.getDisplayTiming(), err => {
+            assert.ok(err instanceof ControlBlockError);
+            assert.equal(err.status, Status.UNKNOWN_TYPE);
+            assert.match(err.message, /firmware doesn't support display timing/);
+            return true;
+        });
+        await assert.rejects(cb.setDisplayTiming({ lines: 750 }), /firmware doesn't support display timing/);
+    } finally {
+        await cb.close();
+    }
 });
 
 test("setName and getName store and read the device name; empty is the default", async () => {

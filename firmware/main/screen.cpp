@@ -4,6 +4,7 @@
 #include "esp32s3/rom/cache.h"
 #include "color.h"
 #include "compositor.h"
+#include "display_timing.h"
 #include "fill_gap.h"
 #include "fill_px.h"
 #include "screen_view.h"
@@ -30,6 +31,15 @@ static_assert(SCREEN_STATUS_H >= SCREEN_BOUNCE_LINES, "first bounce fill must no
 static_assert(STATUS_BAR_BACKGROUND == COMP_BACKGROUND, "status bar and page area backgrounds differ");
 
 #define BUDGET_CYCLES     (DISPLAY_BOUNCE_BUDGET_US * CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)
+
+// The clock can change at runtime (the stored display timing, screen_set_timing), so the fill
+// spacing (and the budget the stats judge against) is a variable. screen_set_timing() works out
+// the next spacing in task context (display_timing.h); the fill adopts it at the grid restart
+// once the port says that clock is in effect. The frame size doesn't change the spacing.
+static volatile uint32_t s_budget_cycles      = BUDGET_CYCLES;
+static volatile uint32_t s_next_budget_cycles = BUDGET_CYCLES;
+static volatile uint32_t s_next_budget_hz     = DISPLAY_PIXEL_CLOCK_HZ;     // 0 while it changes
+#define FILL_BUDGET_CYCLES  s_budget_cycles
 
 static volatile int s_num_pages;    // latched by the ISR at frame start
 
@@ -87,11 +97,14 @@ IRAM_ATTR static uint32_t fill_start_late(const uint16_t *dest, int y, uint32_t 
         s_buffer_mismatches = s_buffer_mismatches + 1;
 
     if (y == 2 * DISPLAY_BOUNCE_BUFFER_LINES || !s_grid_valid) {
+        // The first fill after VSYNC_END, where a new clock starts
+        if (display_pixel_clock_hz() == s_next_budget_hz)
+            s_budget_cycles = s_next_budget_cycles;
         s_expect_start = start;
         s_grid_valid   = true;
         return 0;
     }
-    s_expect_start += BUDGET_CYCLES;
+    s_expect_start += FILL_BUDGET_CYCLES;
     int32_t late = (int32_t)(start - s_expect_start);
     if (late < 0) {
         s_expect_start = start;
@@ -237,9 +250,9 @@ IRAM_ATTR static bool fill_lines(uint16_t *dest, int y, int count, void *ctx)
         s_max_late_cycles = late;
     if (late + cycles > s_max_end_cycles)
         s_max_end_cycles = late + cycles;
-    if (late + cycles > BUDGET_CYCLES)
+    if (late + cycles > FILL_BUDGET_CYCLES)
         s_missed = s_missed + 1;
-    if (cycles > BUDGET_CYCLES) {
+    if (cycles > FILL_BUDGET_CYCLES) {
         // Where late fills happen, to find what's slowing them
         s_overruns = s_overruns + 1;
         if (y0 + count <= SCREEN_PAGE_TOP)
@@ -309,6 +322,17 @@ const uint16_t *screen_status_bar_shown(void)
 void screen_set_frame_task(TaskHandle_t task)
 {
     s_frame_task = task;
+}
+
+esp_err_t screen_set_timing(uint32_t pclk_hz, uint32_t v_total)
+{
+    // The spacing first (the fill adopts it once the port reports the clock in effect); the clock
+    // reads 0 meanwhile, so the fill never pairs a clock with the other's spacing
+    s_next_budget_hz     = 0;
+    s_next_budget_cycles = DisplayFillSpacingCycles(DISPLAY_BOUNCE_BUFFER_LINES, DISPLAY_H_TOTAL, pclk_hz,
+                                                    CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
+    s_next_budget_hz     = pclk_hz;
+    return display_set_timing(pclk_hz, v_total);
 }
 
 void screen_get_stats(screen_stats_t *stats)

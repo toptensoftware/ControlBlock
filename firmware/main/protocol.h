@@ -23,6 +23,7 @@
 #include "wifi_state.h"
 #include "clock_config.h"
 #include "device_name.h"
+#include "display_config.h"
 #include "clock_text.h"
 
 #define PROTO_VERSION        2              // 2: keys are rects with ids, opaque images
@@ -65,6 +66,8 @@ enum : uint8_t
     MSG_CLOCK_SET      = 0x52,
     MSG_NAME_SET       = 0x60,
     MSG_NAME_GET       = 0x61,
+    MSG_DISPLAY_SET    = 0x70,
+    MSG_DISPLAY_GET    = 0x71,
 
     EVT_KEY            = 0x80,
     EVT_PAGE_CHANGED   = 0x81,
@@ -86,6 +89,12 @@ enum : uint8_t
 #define INFO_FLAG_WIFI_CREDENTIALS 0x0002   // Wi-Fi credentials are stored
 #define INFO_FLAG_HOSTED     0x0004         // a host has taken control (else standalone)
 #define INFO_FLAG_TIME_SET   0x0008         // the clock is set (reads 2025 or later)
+
+// DISPLAY_GET's reply (docs/protocol.md): u8 pclk_mhz, u16 v_total, u8 flags, u8 default_mhz,
+// u16 default_v_total, u8 min_mhz, u8 max_mhz, u16 min_v_total, u16 max_v_total, u16 h_total,
+// u16 fill_lines
+#define PROTO_DISPLAY_INFO_SIZE     17
+#define PROTO_DISPLAY_FLAG_DEFAULT  0x01    // the build's timing (nothing stored)
 
 // Response status
 enum : uint16_t
@@ -189,7 +198,7 @@ class Protocol
 {
 public:
     void Init(ImageStore *store, KeyLayout *keys, LayoutStore *layout_store, WifiConfig *wifi,
-              ClockConfig *clock, DeviceName *name, const ProtocolHost &host);
+              ClockConfig *clock, DeviceName *name, DisplayConfig *display, const ProtocolHost &host);
 
     // Bytes from the host (bulk OUT), in order, in any pieces. Complete
     // messages are handled as they arrive and their responses flushed.
@@ -294,6 +303,8 @@ private:
     void OnClockSet();
     void OnNameSet();
     void OnNameGet();
+    void OnDisplaySet();
+    void OnDisplayGet();
     bool ReadIds(uint16_t *count);
     void PostEvent(const Event &e);
     void DropEvents(bool all);          // all, or just the hosted-only KEY and PAGE_CHANGED
@@ -307,6 +318,7 @@ private:
     WifiConfig  *m_wifi = nullptr;
     ClockConfig *m_clock = nullptr;
     DeviceName  *m_name = nullptr;
+    DisplayConfig *m_display = nullptr;
     ProtocolHost m_host = {};
 
     // Mode (atomics: read from any task)

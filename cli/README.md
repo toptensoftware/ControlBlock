@@ -132,6 +132,26 @@ The device's name on the network: its mDNS name (`<name>.local`) and DHCP hostna
 | `get` (or no action) | show the name, e.g. `name: controlblock-a1b2c3 (default)` |
 | `set <name>` / `set --default` | store a name (`a-z 0-9 -`, up to 32, not starting or ending with `-`; capitals are lowercased), or put back the default `controlblock-` + the MAC's last three bytes |
 
+### `display [--clock MHz] [--lines N | --fps F] | --reset  [--serial S]` (v0.2, unreleased; experimental)
+
+The display's timing ([`docs/protocol.md`](../docs/protocol.md#display-timing)): the pixel clock and the total
+lines a frame, for a lower frame rate than the firmware's own. Stored on the device (it survives a restart) and
+applied at the next frame; changing the lines shows a one-off jump on the screen. Works while standalone.
+
+```
+display: 20 MHz, 750 lines, 32.5 fps, fill budget 615 us
+limits: 16-20 MHz, 500-1024 lines (default 20 MHz, 500 lines)
+```
+
+| Options | |
+|---|---|
+| none | show the timing (`(default)` when it's the firmware's own) and the limits |
+| `--clock MHz` / `--lines N` | set the pixel clock and/or the lines; the one not given stays as it is |
+| `--fps F` | set the lines for a frame rate, at `--clock` or the current clock (`--fps 32.5`: 750 lines at 20 MHz) |
+| `--reset` | back to the firmware's own timing |
+
+Outside the limits it exits 1 without changing anything; firmware without display timing exits 1 and says so.
+
 ### `info [--serial S]`
 
 What the device is (GET_INFO and the device name; works while standalone):
@@ -186,13 +206,14 @@ node cli/cli.js time zone AEST-10AEDT,M10.1.0,M4.1.0/3             # Sydney
 node cli/cli.js time                                                # set the clock from this PC
 node cli/cli.js time get
 node cli/cli.js name set den-tv                                     # den-tv.local
+node cli/cli.js display --fps 32.5                                  # 750 lines at 20 MHz (experimental)
 node cli/cli.js info
 node cli/cli.js --version
 ```
 
 ## Tests
 
-`npm test` in `cli/`, or the root `npm test` for every Node suite (no device: the upload, wifi, time, name and info commands run against the library's
+`npm test` in `cli/`, or the root `npm test` for every Node suite (no device: the upload, wifi, time, name, display and info commands run against the library's
 `FakeDevice`; the bake and render run the real renderer). `cli.js` exports
 `main(argv, { open, reconnect, stdout, stderr })`, which resolves the exit code, and only
 runs itself when executed directly. `args.js` (`parseArgs`, `USAGE`, `UsageError`) is the

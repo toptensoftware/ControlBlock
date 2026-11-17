@@ -60,7 +60,7 @@ void screen_set_frame_task(TaskHandle_t task);
 typedef struct {
     uint32_t frames;           // frames shown so far
     uint32_t max_fill_us;      // slowest bounce fill since the last call
-    uint32_t overruns;         // fills over DISPLAY_BOUNCE_BUDGET_US since the last call
+    uint32_t overruns;         // fills over the budget (the fill spacing at the clock in effect) since the last call
     // ...of which (status + one page + two pages = overruns):
     uint32_t late_status;           // status bar lines only
     uint32_t late_one_page;         // page lines, one page in view
@@ -69,7 +69,7 @@ typedef struct {
     // Fill start timing: max_fill_us and overruns only time the fill itself; a fill that starts late
     // (the ISR held off) can still miss the DMA with a short fill
     uint32_t max_late_us;      // latest fill start, against the evenly spaced fills of the frame
-    uint32_t max_end_us;       // latest fill end, from when it should have started (budget: DISPLAY_BOUNCE_BUDGET_US)
+    uint32_t max_end_us;       // latest fill end, from when it should have started (budget: the fill spacing)
     uint32_t missed;           // fills that ended past the budget that way (includes the overruns)
     // Bounce buffer order (a lasting picture shift would show here)
     uint32_t seq_breaks;       // fills whose line didn't follow the last fill's (the driver resynced)
@@ -78,3 +78,9 @@ typedef struct {
 
 // Read the stats. The max and overrun count reset on each call.
 void screen_get_stats(screen_stats_t *stats);
+
+// The display timing (display_set_timing: the pixel clock, up to the build's, and the total lines
+// a frame). Before screen_init: the timing the panel starts with. After: applied at the next
+// VSYNC. The fill timing stats (late, missed, overruns) follow the clock from the first frame at
+// it. The fill gaps' deadline (fill_gap.h) stays at the build's clock (conservative below it).
+esp_err_t screen_set_timing(uint32_t pclk_hz, uint32_t v_total);

@@ -13,13 +13,15 @@
 // uploadLayout() saves a standalone layout in the device's flash (docs/protocol.md).
 // setTime() / getTime() / setClock() run the device's clock (docs/protocol.md, Clock).
 // setName() / getName() set the device name (mDNS/DHCP hostname; docs/protocol.md, Device name).
+// getDisplayTiming() / setDisplayTiming() / resetDisplayTiming() set the display's pixel clock and
+// frame size (experimental; docs/protocol.md, Display timing).
 
 import { Emitter } from "./Emitter.js";
 import {
     USB_VID, USB_PID, INTERFACE, ENDPOINT, USB_PACKET_SIZE, PROTOCOL_VERSION, REQ_RESET_STREAM,
     PUT_IMAGE_PREFIX, LAYOUT_DATA_PREFIX, KEYDEF_SIZE, Flags, Msg, Status, StatusText, encodeStatusText,
     encodeWifiSet, decodeWifiCredentials, decodeWifiStatus, WifiState, encodeTimeSet, decodeTime, encodeClockSet, encodeNameSet, decodeName,
-    encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeLayoutBegin, encodeLayoutData, crc32,
+    encodeDisplaySet, decodeDisplayTiming, encodeMessage, MessageParser, encodeIds, encodePutImage, encodeKeys, encodeLayoutBegin, encodeLayoutData, crc32,
     decodeInfo, decodeQuery, decodeEvent, statusName, HEARTBEAT_INTERVAL_MS, layoutBlobVersion,
 } from "./protocol.js";
 
@@ -58,9 +60,9 @@ function typeName(type)
 
 export class ControlBlockError extends Error
 {
-    constructor(type, status)
+    constructor(type, status, message = `${typeName(type)} failed: ${statusName(status)}`)
     {
-        super(`${typeName(type)} failed: ${statusName(status)}`);
+        super(message);
         this.type = type;
         this.status = status;
     }
@@ -344,6 +346,50 @@ export class ControlBlock extends Emitter
     async getName()
     {
         return decodeName(await this.call(Msg.NAME_GET));
+    }
+
+    // Display timing (docs/protocol.md, Display timing; experimental). Independent of the operating mode.
+    // { clockMhz, lines, isDefault, fps, fillBudgetUs, defaultClockMhz, defaultLines, minClockMhz,
+    // maxClockMhz, minLines, maxLines, hTotal, fillLines }: the pixel clock and the total lines a
+    // frame set now, and the device's limits.
+    async getDisplayTiming()
+    {
+        return decodeDisplayTiming(await this._displayCall(Msg.DISPLAY_GET));
+    }
+
+    // Store the pixel clock (whole MHz) and the total lines a frame; the device switches at its next
+    // frame and keeps it over a restart. An omitted one is the device's default (both omitted: the
+    // defaults; see resetDisplayTiming). Throws RangeError before sending anything outside the
+    // device's limits (getDisplayTiming).
+    async setDisplayTiming({ clockMhz, lines } = {})
+    {
+        const t = await this.getDisplayTiming();
+        const check = (name, value, min, max, unit) => {
+            if (value !== undefined && !(Number.isInteger(value) && value >= min && value <= max))
+                throw new RangeError(`${name} must be ${min}-${max}${unit} (got ${value})`);
+            return value ?? 0;
+        };
+        const payload = encodeDisplaySet(check("clockMhz", clockMhz, t.minClockMhz, t.maxClockMhz, " MHz"),
+                                         check("lines", lines, t.minLines, t.maxLines, ""));
+        await this._displayCall(Msg.DISPLAY_SET, payload);
+    }
+
+    // Back to the firmware's own timing (and nothing stored)
+    async resetDisplayTiming()
+    {
+        await this.setDisplayTiming();
+    }
+
+    // A display timing request; firmware from before them answers UNKNOWN_TYPE, which says so
+    async _displayCall(type, payload)
+    {
+        try {
+            return await this.call(type, payload);
+        } catch (err) {
+            if (err instanceof ControlBlockError && err.status === Status.UNKNOWN_TYPE)
+                throw new ControlBlockError(type, err.status, `${typeName(type)} failed: the device's firmware doesn't support display timing (update it to v0.2 or later)`);
+            throw err;
+        }
     }
 
     // Upload (or replace) an rle565 image under `id`, in pipelined chunks

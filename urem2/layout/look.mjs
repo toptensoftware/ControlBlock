@@ -1,12 +1,12 @@
 // urem2's look: the root defaults (a bordered black face, a grey pressed fill) and the icon/label helpers that turn
 // urem's image props (colour, scale, offset, font, alignment) into ControlBlock look properties.
 
-export const BORDER = "#606060";
+export const BORDER = "#080808";
 export const PRESSED = "#202020";
 
 // Opaque black with a border; an explicit pressed face (no 35% overlay) in mid grey, the border kept
 export const ROOT_DEFAULTS = {
-    face: { top: "#000000", bottom: "#000000", border: BORDER, radius: 14 },
+    face: { top: "#080808", bottom: "#080808", /*border: BORDER, */ radius: 14 },
     pressed: { face: { top: PRESSED, bottom: PRESSED } },
 };
 

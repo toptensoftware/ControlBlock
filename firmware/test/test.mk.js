@@ -33,6 +33,7 @@ export default async function ()
             "../main/wifi_state.cpp",
             "../main/clock_config.cpp",
             "../main/device_name.cpp",
+            "../main/display_config.cpp",
             "../main/touch_router.cpp",
             "../main/touch_gate.cpp",
             "../main/key_gesture.cpp",

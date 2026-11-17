@@ -127,6 +127,31 @@ test("args: name mistakes are reported with the usage", () => {
     usage(["name", "get", "--default"], /--default/);
 });
 
+test("args: display shows, sets (clock, lines or fps) and resets", () => {
+    const base = { command: "display", serial: undefined, reset: false, clockMhz: undefined, lines: undefined, fps: undefined };
+    assert.deepEqual(parseArgs(["display"]), base);
+    assert.deepEqual(parseArgs(["display", "--serial", "S1"]), { ...base, serial: "S1" });
+    assert.deepEqual(parseArgs(["display", "--clock", "20", "--lines", "750"]), { ...base, clockMhz: 20, lines: 750 });
+    assert.deepEqual(parseArgs(["display", "--lines", "900"]), { ...base, lines: 900 });
+    assert.deepEqual(parseArgs(["display", "--clock", "16"]), { ...base, clockMhz: 16 });
+    assert.deepEqual(parseArgs(["display", "--fps", "32.5"]), { ...base, fps: 32.5 });
+    assert.deepEqual(parseArgs(["display", "--clock", "16", "--fps", "30"]), { ...base, clockMhz: 16, fps: 30 });
+    assert.deepEqual(parseArgs(["display", "--reset"]), { ...base, reset: true });
+});
+
+test("args: display mistakes are reported with the usage", () => {
+    usage(["display", "x"], /display takes no arguments/);
+    usage(["display", "--clock"], /--clock needs a value/);
+    usage(["display", "--clock", "abc"], /--clock takes a whole number/);
+    usage(["display", "--clock", "19.5"], /--clock takes a whole number/);
+    usage(["display", "--lines", "0"], /--lines takes a whole number/);
+    usage(["display", "--fps", "0"], /--fps takes a number/);
+    usage(["display", "--fps", "x"], /--fps takes a number/);
+    usage(["display", "--lines", "750", "--fps", "30"], /--lines or --fps, not both/);
+    usage(["display", "--reset", "--lines", "750"], /--reset takes no other option/);
+    usage(["display", "--default"], /unknown option --default/);
+});
+
 test("args: render, with its options and the default output folder", () => {
     assert.deepEqual(parseArgs(["render", "dir/living-room.mjs"]),
                      { command: "render", input: "dir/living-room.mjs", out: "living-room-pages", state: "normal", page: undefined, grid: true });

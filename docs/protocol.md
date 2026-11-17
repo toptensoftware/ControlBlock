@@ -130,6 +130,8 @@ Any data specific to that response follows these two fields.
 | `0x52` | CLOCK_SET | Set the time zone and/or the NTP server |
 | `0x60` | NAME_SET | Set the device name (mDNS/DHCP hostname) |
 | `0x61` | NAME_GET | Read the device name |
+| `0x70` | DISPLAY_SET | Set the display timing: pixel clock and lines a frame (experimental) |
+| `0x71` | DISPLAY_GET | Read the display timing and its limits (experimental) |
 
 ### `0x00` PING
 
@@ -567,6 +569,46 @@ The device's name on the network: its mDNS name (`<name>.local`) and DHCP hostna
 | u8 | is_default | `1` if no name is stored (the MAC-based default is in use) |
 | u8 | len | Followed by `name`: the name in use (lowercase) |
 
+## Display timing
+
+**Experimental.** The panel's pixel clock and the total lines a frame, for a lower frame rate than the firmware's own (e.g. 32.5 fps: 20 MHz, 750 lines). The extra lines go to the vertical front porch (blanking after the 480 visible lines), so the bounce fills within a frame keep their spacing; a lower clock spaces them further apart. Frame rate = clock / (`h_total` × lines). Stored in NVS (namespace `cb_display`), so it survives a restart; at boot the panel starts with the stored timing (no switch). A change applies at the next frame; a change of the lines shows a one-off jump on the panel (seen on the hardware), a clock change alone doesn't. These messages work in every mode (no `TAKE_CONTROL` needed), and `RESET`, `RESET_STREAM`, taking control and releasing leave the timing alone.
+
+The limits are the firmware build's (`DISPLAY_GET` reports them): the clock from 16 MHz (the panel shows a self-test colour below it) up to the build's own clock (20 MHz; never above: the compositor's fill-gap deadline assumes it), the lines from the build's 500 up to 1024 (the LCD controller's 10-bit field). A stored timing outside a later build's limits is dropped at boot. Firmware without these messages answers `UNKNOWN_TYPE`.
+
+### `0x70` DISPLAY_SET
+
+**Request:**
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | pclk_mhz | The pixel clock in whole MHz. 0 = the build's |
+| u16 | v_total | Total lines a frame (480 visible + 20 sync and porches at the build's 500). 0 = the build's |
+
+- `BAD_LENGTH` unless the payload is exactly 3 bytes.
+- `BAD_ARG` outside the limits above. Nothing changes.
+- `IO_ERROR` if the NVS write fails. The previous timing stays.
+- The build's timing (`0, 0`, or its values spelled out) isn't stored: the stored one is erased. Setting the timing in use does nothing (no flash write) and responds `OK`.
+
+### `0x71` DISPLAY_GET
+
+**Request:** No payload (any payload is ignored).
+
+**Response** (after the status field; 17 bytes):
+
+| Type | Field | Notes |
+|---|---|---|
+| u8 | pclk_mhz | The timing set now (in effect from the next frame) |
+| u16 | v_total | |
+| u8 | flags | Bit 0: the build's timing (nothing stored) |
+| u8 | default_mhz | The build's timing |
+| u16 | default_v_total | |
+| u8 | min_mhz | The limits `DISPLAY_SET` accepts |
+| u8 | max_mhz | |
+| u16 | min_v_total | |
+| u16 | max_v_total | |
+| u16 | h_total | Clocks a line (820) |
+| u16 | fill_lines | Lines a bounce fill (15): a fill must finish within `fill_lines` × `h_total` / clock |
+
 ## Device → host events
 
 Events have the `EVENT` flag set, and `seq` is the device's event counter.
@@ -678,7 +720,7 @@ And for a host-controlled session:
 
 ## Version history
 
-- **v2** (2026-11): keys are rects in quarter units on a grid of 144 px cells (`key_w`/`key_h` went from 128 to 144; `grid_*`, `quarter`, `max_image_*` and `max_keys` appended to `GET_INFO`), each with a u16 id and one fully opaque image per state, the size of the key (was four 128×128 images with alpha: background and foreground, normal and pressed). `SET_KEYS` edits keys by id (`REMOVE` replaced `EMPTY`); `KEY` events carry the id (12 bytes, was 8: page and slot); `PUT_IMAGE` refuses images that aren't opaque. A v1 host gets `BAD_ARG`/`BAD_LENGTH` from `SET_KEYS` and should check `protocol_version` first. Later (2026-11-15, still v2, since payloads can grow): `layout_blob_version` appended to `GET_INFO`.
+- **v2** (2026-11): keys are rects in quarter units on a grid of 144 px cells (`key_w`/`key_h` went from 128 to 144; `grid_*`, `quarter`, `max_image_*` and `max_keys` appended to `GET_INFO`), each with a u16 id and one fully opaque image per state, the size of the key (was four 128×128 images with alpha: background and foreground, normal and pressed). `SET_KEYS` edits keys by id (`REMOVE` replaced `EMPTY`); `KEY` events carry the id (12 bytes, was 8: page and slot); `PUT_IMAGE` refuses images that aren't opaque. A v1 host gets `BAD_ARG`/`BAD_LENGTH` from `SET_KEYS` and should check `protocol_version` first. Later (2026-11-15, still v2, since payloads can grow): `layout_blob_version` appended to `GET_INFO`. Later (2026-11-17, still v2: new requests only, older firmware answers `UNKNOWN_TYPE`): `DISPLAY_SET` / `DISPLAY_GET` (experimental).
 - **v1:** the first version.
 
 ## Open questions

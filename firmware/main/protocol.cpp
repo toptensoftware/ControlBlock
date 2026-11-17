@@ -151,11 +151,12 @@ namespace
 }
 
 void Protocol::Init(ImageStore *store, KeyLayout *keys, LayoutStore *layout_store, WifiConfig *wifi,
-                    ClockConfig *clock, DeviceName *name, const ProtocolHost &host)
+                    ClockConfig *clock, DeviceName *name, DisplayConfig *display, const ProtocolHost &host)
 {
     m_wifi   = wifi;
     m_clock  = clock;
     m_name   = name;
+    m_display = display;
     m_store  = store;
     m_keys   = keys;
     m_layout_store = layout_store;
@@ -411,6 +412,8 @@ void Protocol::Dispatch()
     case MSG_CLOCK_SET:      OnClockSet();     break;
     case MSG_NAME_SET:       OnNameSet();      break;
     case MSG_NAME_GET:       OnNameGet();      break;
+    case MSG_DISPLAY_SET:    OnDisplaySet();   break;
+    case MSG_DISPLAY_GET:    OnDisplayGet();   break;
     default:                 Respond(ST_UNKNOWN_TYPE); break;
     }
 }
@@ -887,6 +890,40 @@ void Protocol::OnNameGet()
     Writer w = { out, sizeof(out), 0 };
     w.U8(m_name->IsDefault() ? 1 : 0);
     w.Str(m_name->Get());
+    Respond(ST_OK, out, w.len);
+}
+
+// u8 pclk_mhz, u16 v_total; 0 in a field is its default. Applied at the next
+// VSYNC (DisplayConfig's changed callback) and stored.
+void Protocol::OnDisplaySet()
+{
+    if (m_len != 3)
+        return Respond(ST_BAD_LENGTH);
+    Reader r = { m_buf, m_len, 0 };
+    uint32_t mhz = r.U8();
+    uint32_t lines = r.U16();
+    Respond(status_of(m_display->Set(mhz, lines)));
+}
+
+// The timing set now, whether it is the build's, and the build's limits
+// (PROTO_DISPLAY_INFO_SIZE)
+void Protocol::OnDisplayGet()
+{
+    const DisplayTimingSetting &t = m_display->Get();
+    const DisplayTimingLimits &l = m_display->Limits();
+    uint8_t out[PROTO_DISPLAY_INFO_SIZE];
+    Writer w = { out, sizeof(out), 0 };
+    w.U8(t.mhz);
+    w.U16(t.lines);
+    w.U8(m_display->IsDefault() ? PROTO_DISPLAY_FLAG_DEFAULT : 0);
+    w.U8(l.default_mhz);
+    w.U16(l.default_lines);
+    w.U8(l.min_mhz);
+    w.U8(l.max_mhz);
+    w.U16(l.min_lines);
+    w.U16(l.max_lines);
+    w.U16(DISPLAY_TIMING_H_TOTAL);
+    w.U16(DISPLAY_TIMING_FILL_LINES);
     Respond(ST_OK, out, w.len);
 }
 

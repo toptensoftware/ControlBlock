@@ -58,6 +58,119 @@ IRAM_ATTR static bool on_frame_buf_complete(esp_lcd_panel_handle_t panel,
     return false;
 }
 
+#include "hal/lcd_ll.h"
+#include "display_timing.h"
+#if PCLK_CYCLE
+#include "esp_timer.h"
+#endif
+
+static_assert(DISPLAY_TIMING_V_TOTAL == DISPLAY_V_TOTAL, "display_timing.h has the build's frame size");
+static_assert(DISPLAY_TIMING_H_TOTAL == DISPLAY_H_TOTAL, "display_timing.h has the build's line length");
+static_assert(DISPLAY_TIMING_FILL_LINES == DISPLAY_BOUNCE_BUFFER_LINES, "display_timing.h has the build's fill");
+
+// The display timing at runtime (display_set_timing): the pending clock or frame size change. The
+// driver calls on_vsync and then applies a clock asked for by esp_lcd_rgb_panel_set_pclk() in the
+// same interrupt, so a change is applied at the first VSYNC_END that sees it pending. A new frame
+// size is written here, in on_vsync: the driver has no runtime API for it. The frame rate
+// experiment (PCLK_CYCLE) also stamps each VSYNC_END.
+static portMUX_TYPE      s_vsync_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t          s_req_hz    = DISPLAY_PIXEL_CLOCK_HZ;  // the last asked for (before init: the panel's start)
+static uint32_t          s_req_lines = DISPLAY_V_TOTAL;
+static uint32_t          s_pending_hz;      // 0: none
+static uint32_t          s_pending_lines;   // 0: none
+static volatile uint32_t s_pclk_hz = DISPLAY_PIXEL_CLOCK_HZ;
+#if PCLK_CYCLE
+static display_vsync_t   s_vsync = { 0, 0, 0, DISPLAY_PIXEL_CLOCK_HZ, DISPLAY_V_TOTAL, 0, 0, 0 };
+#endif
+
+// The LCD_CAM's vertical timing, as the driver sets it at init (esp_lcd_panel_rgb.c rgb_panel_init)
+// but with the front porch that makes `lines` in all. lcd_update latches the new values (as
+// lcd_ll_start does); at VSYNC_END the line counter is at a frame boundary, so a shorter total
+// can't cut under it.
+IRAM_ATTR static void set_vertical_total(uint32_t lines)
+{
+    lcd_ll_set_vertical_timing(&LCD_CAM, DISPLAY_VSYNC_PULSE, DISPLAY_VSYNC_BACK_PORCH, DISPLAY_V_RES,
+                               DisplayVfpForTotal(lines, DISPLAY_VSYNC_PULSE, DISPLAY_VSYNC_BACK_PORCH, DISPLAY_V_RES));
+    LCD_CAM.lcd_user.lcd_update = 1;
+}
+
+IRAM_ATTR static bool on_vsync(esp_lcd_panel_handle_t panel, const esp_lcd_rgb_panel_event_data_t *edata,
+                               void *user_ctx)
+{
+#if PCLK_CYCLE
+    int64_t now = esp_timer_get_time();
+#endif
+    portENTER_CRITICAL_ISR(&s_vsync_lock);
+#if PCLK_CYCLE
+    s_vsync.count++;
+    s_vsync.prev_us = s_vsync.last_us;
+    s_vsync.last_us = now;
+    if (s_pending_lines || s_pending_hz) {
+        s_vsync.applied_count   = s_vsync.count;
+        s_vsync.applied_us      = now;
+        s_vsync.applied_prev_us = s_vsync.prev_us;
+    }
+    if (s_pending_lines)
+        s_vsync.v_total = s_pending_lines;
+    if (s_pending_hz)
+        s_vsync.pclk_hz = s_pending_hz;
+#endif
+    if (s_pending_lines) {
+        set_vertical_total(s_pending_lines);
+        s_pending_lines = 0;
+    }
+    if (s_pending_hz) {
+        s_pclk_hz    = s_pending_hz;
+        s_pending_hz = 0;
+    }
+    portEXIT_CRITICAL_ISR(&s_vsync_lock);
+    return false;
+}
+
+esp_err_t display_set_timing(uint32_t pclk_hz, uint32_t v_total)
+{
+    if (!pclk_hz || pclk_hz > DISPLAY_PIXEL_CLOCK_HZ || v_total < DISPLAY_V_TOTAL || v_total > DISPLAY_V_TOTAL_HW_MAX)
+        return ESP_ERR_INVALID_ARG;
+    esp_err_t err = ESP_OK;
+    portENTER_CRITICAL(&s_vsync_lock);
+    if (!s_panel) {
+        // Not running yet: display_init_common creates the panel with this timing
+        s_pclk_hz = pclk_hz;
+#if PCLK_CYCLE
+        s_vsync.pclk_hz = pclk_hz;
+        s_vsync.v_total = v_total;
+#endif
+    } else {
+        if (pclk_hz != s_req_hz) {
+            err = esp_lcd_rgb_panel_set_pclk(s_panel, pclk_hz);
+            if (err == ESP_OK)
+                s_pending_hz = pclk_hz;
+        }
+        if (err == ESP_OK && v_total != s_req_lines)
+            s_pending_lines = v_total;
+    }
+    if (err == ESP_OK) {
+        s_req_hz    = pclk_hz;
+        s_req_lines = v_total;
+    }
+    portEXIT_CRITICAL(&s_vsync_lock);
+    return err;
+}
+
+IRAM_ATTR uint32_t display_pixel_clock_hz(void)
+{
+    return s_pclk_hz;
+}
+
+#if PCLK_CYCLE
+void display_get_vsync(display_vsync_t *v)
+{
+    portENTER_CRITICAL(&s_vsync_lock);
+    *v = s_vsync;
+    portEXIT_CRITICAL(&s_vsync_lock);
+}
+#endif
+
 // Shared setup for both modes. With fill_cb set, the panel runs without
 // frame buffers and fill_cb supplies every line. Otherwise the driver
 // allocates two PSRAM frame buffers.
@@ -67,14 +180,17 @@ static esp_err_t display_init_common(PFNBUFFERREADY ready_cb, PFNFILLLINES fill_
     s_fill_cb   = fill_cb;
     s_fill_ctx  = fill_ctx;
 
-    ESP_LOGI(TAG, "Install RGB LCD panel driver: pixel clock %d MHz (~%d.%d fps), fill budget %d us",
-             DISPLAY_PIXEL_CLOCK_HZ / 1000000,
-             DISPLAY_PIXEL_CLOCK_HZ / (DISPLAY_H_TOTAL * DISPLAY_V_TOTAL),
-             DISPLAY_PIXEL_CLOCK_HZ / (DISPLAY_H_TOTAL * DISPLAY_V_TOTAL / 10) % 10,
-             DISPLAY_BOUNCE_BUDGET_US);
+    // The timing display_set_timing() asked for before init (the stored setting), else the build's
+    uint32_t fps_x10 = DisplayTimingFpsX10(s_req_hz, DISPLAY_H_TOTAL, s_req_lines);
+    ESP_LOGI(TAG, "Install RGB LCD panel driver: pixel clock %lu.%03lu MHz, %lu lines (~%lu.%lu fps), "
+                  "fill budget %lu us (build: %d MHz, %d lines)",
+             (unsigned long)(s_req_hz / 1000000), (unsigned long)(s_req_hz / 1000 % 1000), (unsigned long)s_req_lines,
+             (unsigned long)(fps_x10 / 10), (unsigned long)(fps_x10 % 10),
+             (unsigned long)DisplayFillSpacingUs(DISPLAY_BOUNCE_BUFFER_LINES, DISPLAY_H_TOTAL, s_req_hz),
+             DISPLAY_PIXEL_CLOCK_HZ / 1000000, DISPLAY_V_TOTAL);
     esp_lcd_rgb_panel_config_t panel_config = {};
     panel_config.clk_src                        = LCD_CLK_SRC_DEFAULT;
-    panel_config.timings.pclk_hz                = DISPLAY_PIXEL_CLOCK_HZ;
+    panel_config.timings.pclk_hz                = s_req_hz;
     panel_config.timings.h_res                  = DISPLAY_H_RES;
     panel_config.timings.v_res                  = DISPLAY_V_RES;
     panel_config.timings.hsync_pulse_width       = DISPLAY_HSYNC_PULSE;
@@ -82,7 +198,8 @@ static esp_err_t display_init_common(PFNBUFFERREADY ready_cb, PFNFILLLINES fill_
     panel_config.timings.hsync_front_porch       = DISPLAY_HSYNC_FRONT_PORCH;
     panel_config.timings.vsync_pulse_width       = DISPLAY_VSYNC_PULSE;
     panel_config.timings.vsync_back_porch        = DISPLAY_VSYNC_BACK_PORCH;
-    panel_config.timings.vsync_front_porch       = DISPLAY_VSYNC_FRONT_PORCH;
+    panel_config.timings.vsync_front_porch       = DisplayVfpForTotal(s_req_lines, DISPLAY_VSYNC_PULSE,
+                                                                      DISPLAY_VSYNC_BACK_PORCH, DISPLAY_V_RES);
     panel_config.timings.flags.pclk_active_neg   = 1;
     panel_config.data_width                      = DISPLAY_DATA_WIDTH;
     panel_config.bounce_buffer_size_px           = DISPLAY_BOUNCE_BUFFER_SIZE;
@@ -135,6 +252,7 @@ static esp_err_t display_init_common(PFNBUFFERREADY ready_cb, PFNFILLLINES fill_
         cbs.on_bounce_empty = on_bounce_empty;
     else
         cbs.on_frame_buf_complete = on_frame_buf_complete;
+    cbs.on_vsync = on_vsync;            // runtime timing changes (display_set_timing)
     ESP_RETURN_ON_ERROR(esp_lcd_rgb_panel_register_event_callbacks(s_panel, &cbs, NULL), TAG, "RGB panel callbacks failed");
 
     ESP_LOGI(TAG, "Initialize RGB LCD panel");

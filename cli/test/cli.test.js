@@ -73,14 +73,14 @@ test("cli: --version prints the product version", () => {
 
 // Commands that don't bake or render must not load the image stack (sharp, button-face's native
 // canvas, wasmoon): lazy-child.mjs runs them under a hook that refuses those modules.
-test("cli: --version, info, wifi, time, name and upload <.bin> don't load the image stack", () => {
+test("cli: --version, info, wifi, time, name, display and upload <.bin> don't load the image stack", () => {
     const r = spawnSync(process.execPath, ["--import", pathToFileURL(path.join(here, "block-image-stack.mjs")).href, path.join(here, "lazy-child.mjs")],
                         { encoding: "utf8", timeout: 60000 });
     assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
     const results = JSON.parse(r.stdout);
     for (const { argv, code, err } of results.commands)
         assert.equal(code, 0, `${argv.join(" ")}: ${err.join("\n")}`);
-    assert.deepEqual(results.commands.map(c => c.argv[0]), ["--version", "info", "wifi", "time", "name", "upload"]);
+    assert.deepEqual(results.commands.map(c => c.argv[0]), ["--version", "info", "wifi", "time", "name", "display", "upload"]);
     assert.match(results.blocked, /blocked: (sharp|@toptensoftware\/button-face|wasmoon|#rle565)/);   // the hook works
 });
 
@@ -282,6 +282,58 @@ test("cli: name shows the device name, set stores one or puts back the default",
     assert.equal(dev.hosted, false);                            // no takeover
     assert.deepEqual((await run(["name", "get"], { open })).out, ["name: den-tv"]);
     assert.deepEqual((await run(["name", "set", "--default"], { open })).out, ["name: controlblock-a1b2c3 (default)"]);
+});
+
+// --- display (experimental) ---
+
+const DISPLAY_LIMITS = "limits: 16-20 MHz, 500-1024 lines (default 20 MHz, 500 lines)";
+
+test("cli: display shows the timing, standalone", async () => {
+    const dev = new FakeDevice({ display: {} });
+    const r = await run(["display"], { open: fakeOpener(dev) });
+    assert.equal(r.code, 0, r.err.join("\n"));
+    assert.deepEqual(r.out, ["display: 20 MHz, 500 lines, 48.8 fps, fill budget 615 us (default)", DISPLAY_LIMITS]);
+    assert.equal(dev.hosted, false);                            // no takeover
+});
+
+test("cli: display sets the clock and lines; one alone keeps the other; --reset", async () => {
+    const dev = new FakeDevice({ display: {} });
+    const open = fakeOpener(dev);
+    const set = async (...argv) => {
+        const r = await run(["display", ...argv], { open });
+        assert.equal(r.code, 0, r.err.join("\n"));
+        return r.out[0];
+    };
+    assert.equal(await set("--clock", "20", "--lines", "750"), "display: 20 MHz, 750 lines, 32.5 fps, fill budget 615 us");
+    assert.equal(await set("--clock", "16"), "display: 16 MHz, 750 lines, 26.0 fps, fill budget 768 us");
+    assert.equal(await set("--lines", "600"), "display: 16 MHz, 600 lines, 32.5 fps, fill budget 768 us");
+    assert.deepEqual(dev.display, { clockMhz: 16, lines: 600 });
+    assert.equal(await set("--reset"), "display: 20 MHz, 500 lines, 48.8 fps, fill budget 615 us (default)");
+});
+
+test("cli: display --fps picks the lines at the given or current clock", async () => {
+    const dev = new FakeDevice({ display: { clockMhz: 16 } });
+    const open = fakeOpener(dev);
+    assert.equal((await run(["display", "--fps", "32.5"], { open })).out[0], "display: 16 MHz, 600 lines, 32.5 fps, fill budget 768 us");
+    assert.equal((await run(["display", "--clock", "20", "--fps", "32.5"], { open })).out[0], "display: 20 MHz, 750 lines, 32.5 fps, fill budget 615 us");
+
+    // Beyond what the device allows: exit 1, nothing sent
+    const before = dev.requests.filter(m => m.type === Msg.DISPLAY_SET).length;
+    const r = await run(["display", "--fps", "10"], { open });
+    assert.equal(r.code, 1);
+    assert.match(r.err[0], /10 fps at 20 MHz would take 2439 lines; the device allows 500-1024 \(23\.8-48\.8 fps\)/);
+    assert.equal(dev.requests.filter(m => m.type === Msg.DISPLAY_SET).length, before);
+});
+
+test("cli: display outside the limits, or on firmware without it, exits 1", async () => {
+    const dev = new FakeDevice({ display: {} });
+    const r = await run(["display", "--clock", "12"], { open: fakeOpener(dev) });
+    assert.equal(r.code, 1);
+    assert.match(r.err[0], /clockMhz must be 16-20 MHz/);
+
+    const old = await run(["display"], { open: fakeOpener(new FakeDevice()) });
+    assert.equal(old.code, 1);
+    assert.match(old.err[0], /firmware doesn't support display timing/);
 });
 
 test("cli: a bad name exits 1 without sending it", async () => {

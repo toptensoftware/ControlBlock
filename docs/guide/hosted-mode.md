@@ -421,7 +421,7 @@ await cb.setStatusText({ left: "" });          // clears the left text; the righ
 
 - Two texts, left and right aligned. Only the ones you pass change.
 - `{clock}` shows the device's clock (`2:05`), kept current; it's blank until the device knows the time (see
-  [Wi-Fi, clock and name](#wi-fi-clock-and-name)).
+  [Wi-Fi, clock, name and display timing](#wi-fi-clock-name-and-display-timing)).
 - Each text is at most 47 bytes of UTF-8, and the font has ASCII characters only for now. A text that's too long
   throws before anything is sent; it's never cut.
 - Taking control clears both texts. Releasing control puts back the device's own (the clock on the right).
@@ -444,7 +444,7 @@ being investigated), so the firmware keeps it lit and `setBacklight(false)` leav
 Everything else behaves as if it were off: `info.backlight` reports `false`, and touches send `wake` instead of
 key events until you turn it on again. See [`docs/backlight.md`](../backlight.md).
 
-## Wi-Fi, clock and name
+## Wi-Fi, clock, name and display timing
 
 These work in either mode and are the same settings the CLI changes
 ([Getting started](./getting-started.md#wi-fi)).
@@ -476,6 +476,19 @@ after each power-up.
 **Name:** `setName(name)` stores the device's network name (`<name>.local`, and its DHCP host name): lowercase
 letters, digits and `-`, up to 32; `""` puts back the default (`controlblock-` and part of its MAC address).
 `getName()` returns `{ name, isDefault }`.
+
+**Display timing (v0.2, unreleased; experimental):** a lower frame rate than the firmware's own (about 48.8 fps).
+The device stores it and keeps it over a restart; a change applies at the next frame (changing the lines shows a
+one-off jump on the screen).
+
+| Call | Does |
+|---|---|
+| `getDisplayTiming()` | `{ clockMhz, lines, isDefault, fps, fillBudgetUs }` (the pixel clock and total lines a frame set now), plus the device's limits: `minClockMhz`, `maxClockMhz`, `minLines`, `maxLines`, `defaultClockMhz`, `defaultLines`, and `hTotal`, `fillLines` |
+| `setDisplayTiming({ clockMhz, lines })` | Stores a timing (e.g. `{ clockMhz: 20, lines: 750 }`: 32.5 fps); an omitted one is the device's default. Outside the limits (16-20 MHz, 500-1024 lines on the current firmware) it throws `RangeError` before sending |
+| `resetDisplayTiming()` | Back to the firmware's own timing |
+
+`displayLinesForFps(clockMhz, fps, hTotal)` and `displayFps(clockMhz, lines, hTotal)` convert between lines and
+frame rate. Firmware without display timing makes these calls throw a `ControlBlockError` that says so.
 
 Values the device would refuse (a long SSID, a time before 2025, a bad time zone or name) throw before anything
 is sent.

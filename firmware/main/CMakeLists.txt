@@ -36,6 +36,7 @@ idf_component_register(
         "main.cpp"
         "screen.cpp"
         "screen_view.cpp"
+        "pclk_cycle.cpp"
         "status_bar.cpp"
         "status_icons.cpp"
         "log_ring.cpp"
@@ -44,6 +45,8 @@ idf_component_register(
         "diag_collect.cpp"
         "diag_http.cpp"
         "device_name.cpp"
+        "display_config.cpp"
+        "display_settings.cpp"
         "clock_text.cpp"
         "status.cpp"
         "fill_gap.cpp"
@@ -161,6 +164,24 @@ endif()
 #   idf.py --preset release -DCB_PIXEL_CLOCK_MHZ=20 build   (-DCB_PIXEL_CLOCK_MHZ= goes back to 25)
 if(CB_PIXEL_CLOCK_MHZ)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE PIXEL_CLOCK_MHZ=${CB_PIXEL_CLOCK_MHZ})
+endif()
+
+# Frame rate experiment (pclk_cycle.cpp, waveshare_rgb_lcd_port.h PCLK_CYCLE): steps the pixel
+# clock at runtime (display_timing.h PCLK_SCHEDULE) and logs each switch and each rate's fill
+# stats (wip/wip-frame-rate-experiment.md).
+#   idf.py --preset release -DCB_PCLK_CYCLE=ON build   (OFF turns it off again)
+if(CB_PCLK_CYCLE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE PCLK_CYCLE=1)
+endif()
+
+# Frame rate experiment, phase 2: the same machinery stepping the frame size (vertical front
+# porch, written to the LCD_CAM at VSYNC) at 20 and 16 MHz (display_timing.h VBLANK_SCHEDULE).
+#   idf.py --preset release -DCB_VBLANK_CYCLE=ON build   (OFF turns it off again)
+if(CB_VBLANK_CYCLE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE VBLANK_CYCLE=1)
+    if(NOT CB_PCLK_CYCLE)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE PCLK_CYCLE=1)
+    endif()
 endif()
 
 # Once-a-second stats line (main.cpp STATS_LOG): fps, fill, compositor, images, usb rx, net.

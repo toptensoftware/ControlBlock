@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 // The device API only (no images): every command that doesn't bake or render needs no more,
 // and starts without loading sharp, button-face or wasmoon (a test checks it)
-import { ControlBlock, WifiState, ClockSource } from "../host/browser.js";
+import { ControlBlock, WifiState, ClockSource, displayFps, displayLinesForFps } from "../host/browser.js";
 import { uploadBlob } from "../host/src/bake/upload.js";
 import { parseArgs, UsageError } from "./args.js";
 import { cliVersion, firmwareVersionNote } from "./version.js";
@@ -92,6 +92,7 @@ const COMMANDS = {
     wifi: (a, io) => runAction(WIFI, a, io),
     time: (a, io) => runAction(TIME, a, io),
     name: (a, io) => runAction(NAME, a, io),
+    display: (a, io) => runAction(DISPLAY, { ...a, action: "run" }, io),
     info: (a, io) => runAction(INFO, { ...a, action: "show" }, io),
 
     version(a, io)
@@ -214,6 +215,39 @@ const NAME = {
     {
         await cb.setName(a.value);
         return showName(cb, io);
+    },
+};
+
+// display (docs/protocol.md, Display timing; experimental): shows the timing, or sets it and then
+// shows it. An option not given keeps its current value (the library's would be the default);
+// --fps picks the lines at the given or current clock. Standalone is fine.
+const fpsText = fps => fps.toFixed(1);
+const DISPLAY = {
+    async run(cb, a, io)
+    {
+        if (a.reset)
+            await cb.resetDisplayTiming();
+        else if (a.clockMhz !== undefined || a.lines !== undefined || a.fps !== undefined)
+        {
+            const t = await cb.getDisplayTiming();
+            const clockMhz = a.clockMhz ?? t.clockMhz;
+            let lines = a.lines ?? t.lines;
+            if (a.fps !== undefined)
+            {
+                lines = displayLinesForFps(clockMhz, a.fps, t.hTotal);
+                if (lines < t.minLines || lines > t.maxLines)
+                    throw new Error(`${a.fps} fps at ${clockMhz} MHz would take ${lines} lines; the device allows `
+                        + `${t.minLines}-${t.maxLines} (${fpsText(displayFps(clockMhz, t.maxLines, t.hTotal))}-`
+                        + `${fpsText(displayFps(clockMhz, t.minLines, t.hTotal))} fps)`);
+            }
+            await cb.setDisplayTiming({ clockMhz, lines });
+        }
+        const t = await cb.getDisplayTiming();
+        io.stdout(`display: ${t.clockMhz} MHz, ${t.lines} lines, ${fpsText(t.fps)} fps, fill budget ${t.fillBudgetUs} us`
+                  + (t.isDefault ? " (default)" : ""));
+        io.stdout(`limits: ${t.minClockMhz}-${t.maxClockMhz} MHz, ${t.minLines}-${t.maxLines} lines `
+                  + `(default ${t.defaultClockMhz} MHz, ${t.defaultLines} lines)`);
+        return 0;
     },
 };
 

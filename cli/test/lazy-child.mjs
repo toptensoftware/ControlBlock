@@ -13,9 +13,9 @@ try
 {
     const bin = path.join(dir, "baked.bin");
     fs.writeFileSync(bin, layoutBlobOf(3000));
-    const dev = new FakeDevice({ name: {}, clock: {}, wifi: {}, layout: { restartMs: 30 } });
+    const dev = new FakeDevice({ name: {}, clock: {}, wifi: {}, display: {}, layout: { restartMs: 30 } });
     const io = { open: fakeOpener(dev), reconnect: { timeoutMs: 3000, intervalMs: 10 } };
-    for (const argv of [["--version"], ["info"], ["wifi", "status"], ["time", "get"], ["name"], ["upload", bin]])
+    for (const argv of [["--version"], ["info"], ["wifi", "status"], ["time", "get"], ["name"], ["display", "--fps", "32.5"], ["upload", bin]])
     {
         const err = [];
         const code = await main(argv, { ...io, stdout: () => { }, stderr: l => err.push(l) });

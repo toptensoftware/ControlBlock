@@ -65,6 +65,9 @@ namespace
         FakeBlobStorage name_storage;
         DeviceName name;
         int  name_changes = 0;
+        FakeBlobStorage display_storage;
+        DisplayConfig display;
+        int  display_changes = 0;
         Protocol   proto;
 
         List<uint8_t> out;
@@ -98,6 +101,8 @@ namespace
             static const uint8_t mac[6] = { 1, 2, 3, 0xa1, 0xb2, 0xc3 };
             name.Init(name_storage.Host(), mac);
             name.SetChangedCallback([](const char *, void *c) { ((Fixture *)c)->name_changes++; }, this);
+            display.Init(display_storage.Host(), DisplayTimingLimitsFor(20));      // as the device's 20 MHz build
+            display.SetChangedCallback([](const DisplayTimingSetting &, void *c) { ((Fixture *)c)->display_changes++; }, this);
 
             store.Init(env.Host(), capacity, KEY_GRID_W, KEY_GRID_H, true);
             store.SetListener(&layout);
@@ -146,7 +151,7 @@ namespace
             h.fw_version       = "1.2.3";
             h.serial           = "ABCDEF";
             h.ctx              = this;
-            proto.Init(&store, &layout, &layout_store, &wifi, &clock, &name, h);
+            proto.Init(&store, &layout, &layout_store, &wifi, &clock, &name, &display, h);
 
             if (hosted) {
                 Request(MSG_TAKE_CONTROL);
@@ -2191,4 +2196,114 @@ Fact("Protocol Name Allowed While Standalone")
     Fixture f(1u << 20, false);
     Assert(f.Request(MSG_NAME_SET, NameSet("den")).Status() == ST_OK);
     Assert(!strcmp(NameGet(f).name, "den"));
+}
+
+// ===========================================================================
+// Display timing (DISPLAY_SET, DISPLAY_GET)
+// ===========================================================================
+
+namespace
+{
+    Bytes DisplaySet(uint32_t mhz, uint32_t lines)
+    {
+        Bytes p;
+        p.U8(mhz).U16(lines);
+        return p;
+    }
+
+    // DISPLAY_GET read back: u8 pclk_mhz, u16 v_total, u8 flags, u8 default_mhz,
+    // u16 default_v_total, u8 min_mhz, u8 max_mhz, u16 min_v_total, u16 max_v_total,
+    // u16 h_total, u16 fill_lines
+    struct DisplayInfo
+    {
+        uint32_t mhz, lines, flags, default_mhz, default_lines, min_mhz, max_mhz, min_lines, max_lines,
+                 h_total, fill_lines;
+    };
+
+    DisplayInfo DisplayGet(Fixture &f)
+    {
+        Msg m = f.Request(MSG_DISPLAY_GET);
+        Check(m.Status() == ST_OK);
+        Check(m.len == 4 + PROTO_DISPLAY_INFO_SIZE);
+        const int b = 4;                // after u16 status, u16 reserved
+        DisplayInfo d;
+        d.mhz           = m.U8At(b + 0);
+        d.lines         = m.U16At(b + 1);
+        d.flags         = m.U8At(b + 3);
+        d.default_mhz   = m.U8At(b + 4);
+        d.default_lines = m.U16At(b + 5);
+        d.min_mhz       = m.U8At(b + 7);
+        d.max_mhz       = m.U8At(b + 8);
+        d.min_lines     = m.U16At(b + 9);
+        d.max_lines     = m.U16At(b + 11);
+        d.h_total       = m.U16At(b + 13);
+        d.fill_lines    = m.U16At(b + 15);
+        return d;
+    }
+}
+
+Fact("Protocol Display Message Types")
+{
+    Assert(MSG_DISPLAY_SET == 0x70 && MSG_DISPLAY_GET == 0x71);
+    Assert(PROTO_DISPLAY_INFO_SIZE == 17);
+}
+
+Fact("Protocol Display Get Is The Default At First, With The Limits")
+{
+    Fixture f;
+    DisplayInfo d = DisplayGet(f);
+    Assert(d.mhz == 20 && d.lines == 500 && (d.flags & PROTO_DISPLAY_FLAG_DEFAULT));
+    Assert(d.default_mhz == 20 && d.default_lines == 500);
+    Assert(d.min_mhz == 16 && d.max_mhz == 20 && d.min_lines == 500 && d.max_lines == 1024);
+    Assert(d.h_total == 820 && d.fill_lines == 15);
+}
+
+Fact("Protocol Display Set Stores And Applies")
+{
+    Fixture f;
+    Assert(f.Request(MSG_DISPLAY_SET, DisplaySet(20, 750)).Status() == ST_OK);
+    DisplayInfo d = DisplayGet(f);
+    Assert(d.mhz == 20 && d.lines == 750 && !(d.flags & PROTO_DISPLAY_FLAG_DEFAULT));
+    Assert(f.display_changes == 1 && f.display_storage.present);
+
+    Assert(f.Request(MSG_DISPLAY_SET, DisplaySet(16, 0)).Status() == ST_OK);    // 0: the default lines
+    d = DisplayGet(f);
+    Assert(d.mhz == 16 && d.lines == 500);
+
+    Assert(f.Request(MSG_DISPLAY_SET, DisplaySet(0, 0)).Status() == ST_OK);     // back to the defaults
+    d = DisplayGet(f);
+    Assert(d.mhz == 20 && d.lines == 500 && (d.flags & PROTO_DISPLAY_FLAG_DEFAULT));
+    Assert(!f.display_storage.present);
+}
+
+Fact("Protocol Display Set Errors Change Nothing")
+{
+    Fixture f;
+    f.Request(MSG_DISPLAY_SET, DisplaySet(20, 750));
+    int changes = f.display_changes;
+    Assert(f.Request(MSG_DISPLAY_SET, DisplaySet(15, 750)).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_DISPLAY_SET, DisplaySet(21, 750)).Status() == ST_BAD_ARG);   // above the build's clock
+    Assert(f.Request(MSG_DISPLAY_SET, DisplaySet(20, 499)).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_DISPLAY_SET, DisplaySet(20, 1025)).Status() == ST_BAD_ARG);
+    Assert(f.Request(MSG_DISPLAY_SET).Status() == ST_BAD_LENGTH);
+    Bytes shortSet;
+    shortSet.U8(20).U8(0xEE);
+    Assert(f.Request(MSG_DISPLAY_SET, shortSet).Status() == ST_BAD_LENGTH);
+    Bytes longSet = DisplaySet(20, 600);
+    longSet.U8(0);
+    Assert(f.Request(MSG_DISPLAY_SET, longSet).Status() == ST_BAD_LENGTH);
+    DisplayInfo d = DisplayGet(f);
+    Assert(d.mhz == 20 && d.lines == 750);
+    Assert(f.display_changes == changes);
+
+    f.display_storage.fail_save = true;
+    Assert(f.Request(MSG_DISPLAY_SET, DisplaySet(16, 750)).Status() == ST_IO_ERROR);
+    Assert(DisplayGet(f).mhz == 20);
+}
+
+Fact("Protocol Display Allowed While Standalone")
+{
+    Fixture f(1u << 20, false);
+    Assert(f.Request(MSG_DISPLAY_SET, DisplaySet(20, 900)).Status() == ST_OK);
+    Assert(DisplayGet(f).lines == 900);
 }

@@ -11,6 +11,7 @@
 #include "esp_timer.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "clock.h"
+#include "display_settings.h"
 #include "compositor.h"
 #include "layout_boot.h"
 #include "layout_flash.h"
@@ -233,7 +234,7 @@ esp_err_t host_link_init(void)
     layout_flash_open(&cf);
     cf.busy = cf_busy;
     s_layout_store.Init(cf);
-    s_proto.Init(model_store(), model_layout(), &s_layout_store, wifi_config(), clock_config(), device_name(), h);
+    s_proto.Init(model_store(), model_layout(), &s_layout_store, wifi_config(), clock_config(), device_name(), display_config(), h);
     s_proto.SetHome(layout_summary(), layout_blob());
 
     if (xTaskCreatePinnedToCore(protocol_task, "protocol", PROTOCOL_TASK_STACK, nullptr,

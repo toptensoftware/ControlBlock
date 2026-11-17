@@ -223,6 +223,20 @@ controlblock name                 # show the current name
 controlblock name set den-panel   # now den-panel.local
 ```
 
+## Display timing (v0.2, unreleased; experimental)
+
+The screen refreshes about 49 times a second. To try a lower frame rate (it gives the device more time per frame),
+set the display timing; the device keeps it over a restart:
+
+```sh
+controlblock display              # show the timing and its limits
+controlblock display --fps 32.5   # 750 lines a frame at 20 MHz
+controlblock display --reset      # back to the firmware's own
+```
+
+Changing the frame rate shows a one-off jump on the screen. The options are in
+[`cli/README.md`](../../cli/README.md#display---clock-mhz---lines-n----fps-f----reset----serial-s-v02-unreleased-experimental).
+
 ## Diagnostics page
 
 While the device is on Wi-Fi, it serves a small status page at `http://<name>.local/` (for example

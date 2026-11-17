@@ -28,6 +28,11 @@ export const USAGE = `usage: node cli/cli.js <command> ...
       the device's network name (<name>.local, DHCP hostname): get (the default)
       shows it; set stores one (a-z 0-9 -, up to 32); --default puts back
       controlblock-xxxxxx
+  display [--clock MHz] [--lines N | --fps F] | --reset  [--serial S]
+      the display's timing (experimental): no option shows it; --clock sets the pixel
+      clock and --lines the total lines a frame (the one not given stays as it is),
+      --fps picks the lines for a frame rate; --reset puts back the firmware's own.
+      Stored on the device, applied at once
   info [--serial S]
       the device's firmware, protocol and layout blob versions, name and key grid;
       warns if the firmware is older than this command line
@@ -192,6 +197,35 @@ const parseName = actionCommand("name", {
     set: setting("name set", "a name"),
 }, { scanOptions: DEFAULT_FLAG, defaultAction: "get" });
 
+// A positive number option's value (undefined if not given): `whole` wants an integer
+function positive(opts, name, option, whole)
+{
+    const text = opts[name];
+    if (text === undefined)
+        return undefined;
+    const n = Number(text);
+    if (!(n > 0) || !Number.isFinite(n) || (whole && !Number.isInteger(n)))
+        throw new UsageError(`${option} takes ${whole ? "a whole number" : "a number"} (more than 0)`);
+    return n;
+}
+
+// display [--clock MHz] [--lines N | --fps F] | --reset: the display timing (experimental)
+function parseDisplay(argv)
+{
+    const { opts, pos } = scan(argv, { values: { ...SERIAL, "--clock": "clock", "--lines": "lines", "--fps": "fps" },
+                                       flags: { "--reset": "reset" } });
+    if (pos.length)
+        throw new UsageError("display takes no arguments, only options");
+    const a = { command: "display", serial: opts.serial, reset: !!opts.reset,
+                clockMhz: positive(opts, "clock", "--clock", true), lines: positive(opts, "lines", "--lines", true),
+                fps: positive(opts, "fps", "--fps", false) };
+    if (a.lines !== undefined && a.fps !== undefined)
+        throw new UsageError("display takes --lines or --fps, not both");
+    if (a.reset && (a.clockMhz ?? a.lines ?? a.fps) !== undefined)
+        throw new UsageError("display --reset takes no other option");
+    return a;
+}
+
 // --version: the CLI's own version
 function parseVersion(argv)
 {
@@ -210,7 +244,7 @@ function parseInfo(argv)
 }
 
 const COMMANDS = { bake: parseBake, upload: parseUpload, render: parseRender, wifi: parseWifi, time: parseTime, name: parseName,
-                   info: parseInfo, "--version": parseVersion };
+                   display: parseDisplay, info: parseInfo, "--version": parseVersion };
 
 export function parseArgs(argv)
 {

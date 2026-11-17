@@ -27,9 +27,11 @@
 #include "swipe.h"
 #include "status.h"
 #include "clock.h"
+#include "display_settings.h"
 #include "protocol.h"
 #include "log_capture.h"
 #include "diag_collect.h"
+#include "pclk_cycle.h"
 
 static const char *TAG = "controlblock";
 
@@ -741,6 +743,7 @@ extern "C" void app_main(void)
 
     init_nvs();
     clock_init();                           // the time zone, before the status bar reads the clock
+    display_settings_init();                // the stored display timing: the panel starts with it
     log_heap(TAG, "after NVS");
     i2c_init();
     ESP_ERROR_CHECK(ch422g_init());
@@ -806,6 +809,9 @@ extern "C" void app_main(void)
         }
 #endif
         diag_sample_second(&st, &cs);       // the one reader of the screen and compositor stats (/status)
+#if PCLK_CYCLE
+        pclk_cycle_second(&st);             // frame rate experiment: per-clock stats, may switch the clock
+#endif
 #if !STATS_LOG
         const char *net = net_counts();
         if (strcmp(net, last_net) != 0) {

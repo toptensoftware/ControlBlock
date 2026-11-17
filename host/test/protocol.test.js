@@ -9,10 +9,11 @@ import {
     encodeWifiSet, decodeWifiCredentials, decodeWifiStatus,
     ClockSource, TIME_VALID_FROM_MS, CLOCK_FIELD_MAX_BYTES, encodeTimeSet, decodeTime, encodeClockSet,
     DEVICE_NAME_MAX_BYTES, encodeNameSet, decodeName,
+    encodeDisplaySet, decodeDisplayTiming, displayFps, displayFillBudgetUs, displayLinesForFps,
     KEY_EVENT_SIZE, keySlot, keyPixelSize, layoutBlobVersion, BPAK_SIGNATURE, BPAK_HEADER_SIZE,
 } from "../src/protocol.js";
 import { BLOB_VERSION } from "../src/bake/consts.js";
-import { infoPayload, layoutBlobOf } from "./FakeDevice.js";
+import { infoPayload, layoutBlobOf, displayPayload } from "./FakeDevice.js";
 
 test("a message survives being split anywhere", () => {
     const a = encodeMessage(Msg.PING, 7, Uint8Array.of(1, 2, 3));
@@ -447,6 +448,42 @@ test("name set refuses what the device would refuse", () => {
     assert.throws(() => encodeNameSet("a".repeat(DEVICE_NAME_MAX_BYTES + 1)), RangeError);
     for (const name of ["-den", "den-", "a.b", "a_b", "a b", "é"])
         assert.throws(() => encodeNameSet(name), RangeError, name);
+});
+
+test("display set is u8 MHz and u16 lines; 0 is a field's default", () => {
+    assert.equal(Msg.DISPLAY_SET, 0x70);
+    assert.equal(Msg.DISPLAY_GET, 0x71);
+    assert.deepEqual([...encodeDisplaySet(20, 750)], [20, 750 & 0xFF, 750 >> 8]);
+    assert.deepEqual([...encodeDisplaySet(0, 0)], [0, 0, 0]);
+    assert.deepEqual([...encodeDisplaySet(16, 1024)], [16, 0, 4]);
+    for (const [mhz, lines] of [[-1, 500], [256, 500], [20, -1], [20, 65536], [19.5, 500], [20, 750.5]])
+        assert.throws(() => encodeDisplaySet(mhz, lines), RangeError, `${mhz} ${lines}`);
+    assert.throws(() => encodeDisplaySet("20", 500), TypeError);
+});
+
+test("display get decodes the timing, the limits, the frame rate and the fill budget", () => {
+    // As the firmware's DISPLAY_GET (protocol.cpp OnDisplayGet), 20 MHz build, 750 lines stored
+    const t = decodeDisplayTiming(displayPayload({ clockMhz: 20, lines: 750 }));
+    assert.deepEqual(t, {
+        clockMhz: 20, lines: 750, isDefault: false,
+        defaultClockMhz: 20, defaultLines: 500, minClockMhz: 16, maxClockMhz: 20, minLines: 500, maxLines: 1024,
+        hTotal: 820, fillLines: 15, fps: 32.5, fillBudgetUs: 615,
+    });
+    const d = decodeDisplayTiming(displayPayload({}));
+    assert.equal(d.isDefault, true);
+    assert.equal(d.fps, 48.8);
+    assert.equal(decodeDisplayTiming(displayPayload({ clockMhz: 16, lines: 1024 })).fillBudgetUs, 768);
+});
+
+test("display maths: fps, fill budget and lines for a frame rate", () => {
+    assert.equal(displayFps(20, 500, 820), 48.8);
+    assert.equal(displayFps(16, 1024, 820), 19.1);
+    assert.equal(displayFps(16, 750, 820), 26);
+    assert.equal(displayFillBudgetUs(20, 820, 15), 615);
+    assert.equal(displayFillBudgetUs(16, 820, 15), 768);       // 768.75
+    assert.equal(displayLinesForFps(20, 32.5, 820), 750);
+    assert.equal(displayLinesForFps(16, 32.5, 820), 600);
+    assert.equal(displayLinesForFps(20, 30, 820), 813);
 });
 
 test("name get decodes is_default and the name", () => {

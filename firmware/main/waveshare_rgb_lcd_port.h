@@ -87,6 +87,49 @@ typedef bool (*PFNFILLLINES)(uint16_t *dest, int y, int count, void *ctx);
 // apply in this mode.
 esp_err_t display_init_bounce(PFNFILLLINES fill_cb, void *ctx);
 
+// The display timing at runtime (the stored setting, display_settings.h; docs/protocol.md
+// DISPLAY_SET): the pixel clock, up to DISPLAY_PIXEL_CLOCK_HZ (the fill gaps' deadline assumes
+// at least the build's spacing), and the total lines a frame, DISPLAY_V_TOTAL ..
+// display_timing.h DISPLAY_V_TOTAL_HW_MAX (the most the LCD_CAM holds; the front porch takes the
+// extra, so the active lines, the bounce fills and their spacing within a frame don't change).
+// Before display_init*: the timing the panel starts with (no switch at boot). After: applied at
+// the next VSYNC_END (the clock rounded to the driver's divider; the lines written to the LCD_CAM
+// there, as the driver has no runtime API for them). Only what differs from the last call
+// changes. Use screen_set_timing(), which also moves the fill timing stats.
+esp_err_t display_set_timing(uint32_t pclk_hz, uint32_t v_total);
+
+// The clock in effect (ISR safe)
+uint32_t display_pixel_clock_hz(void);
+
+// Frame rate experiment (wip/wip-frame-rate-experiment.md): steps the timing on a schedule.
+// Off by default; -DCB_PCLK_CYCLE=ON (main/CMakeLists.txt).
+#ifndef PCLK_CYCLE
+#define PCLK_CYCLE  0
+#endif
+
+// Phase 2 (-DCB_VBLANK_CYCLE=ON, which turns PCLK_CYCLE on too): the frame size (vertical front
+// porch) changes at runtime as well, on display_timing.h's VBLANK_SCHEDULE.
+#ifndef VBLANK_CYCLE
+#define VBLANK_CYCLE 0
+#endif
+
+#if PCLK_CYCLE
+
+// VSYNC_END stamps (esp_timer us: comparable across cores, unlike the cycle counter)
+typedef struct {
+    uint32_t count;             // VSYNC_ENDs so far
+    int64_t  last_us;           // the last one
+    int64_t  prev_us;           // the one before
+    uint32_t pclk_hz;           // the clock in effect (as asked for; the driver rounds)
+    uint32_t v_total;           // the total lines a frame in effect
+    uint32_t applied_count;     // `count` at the VSYNC_END that applied the last change (0: boot)
+    int64_t  applied_us;        // that VSYNC_END
+    int64_t  applied_prev_us;   // the one before it (the last frame at the old clock ended there)
+} display_vsync_t;
+
+void display_get_vsync(display_vsync_t *v);
+#endif
+
 // Backlight on/off (CH422G line, no PWM). Needs ch422g_init(). Does nothing unless built
 // with BACKLIGHT_SWITCH (the light stays on: docs/backlight.md, Hardware).
 esp_err_t display_enable_backlight(bool enable);
