@@ -1,6 +1,14 @@
 # Frame rate experiment
 
-Status: Implement
+Status: Complete (idea abandoned 2026-11-18; kept for reference)
+
+## Conclusion
+
+The dynamic frame rate idea (slow refresh at rest, full rate while swiping) is **abandoned**:
+- **Pixel clock:** changes at runtime are clean, but the panel's floor is ~16 MHz (self-test colours below it), so a clock change alone only buys 48.8 -> 39 fps.
+- **Frame size (vertical blanking):** the panel accepts any frame down to ~19 fps, but **every switch to a longer frame shows a visible jump**, and every switch back is clean. That holds for front and back porch alike, for steps as small as 1.1x (500 -> 550 lines), and for a 25-line-a-frame ramp. `lcd_update` itself is innocent (re-latching the same values never jumped), and it is required (unlatched writes never apply). Likely the panel's timing controller reacts when a frame runs past the previous frame's line count; not confirmed.
+- **User's floor:** 32.5 fps is as low as the user would go at rest (borderline), so even a clean switch would only have bought ~1.5x.
+- **Untried:** a longer *line* (horizontal front porch, `lcd_ht_width` 12 bits) keeping the line count fixed, like the clean clock change (would also grow the fill budget); a 1-line-a-frame ramp. VSYNC_END fires at the start of the sync pulse, after the front porch (phase 4).
 
 ## Description
 
@@ -85,6 +93,21 @@ Goal: the user sets the clock and the frame size by hand (no reflash), it surviv
 - **Host:** `encodeDisplaySet`, `decodeDisplayTiming` (adds `fps`, `fillBudgetUs`), `displayLinesForFps`; `ControlBlock.getDisplayTiming()`, `setDisplayTiming({ clockMhz, lines })` (both or either; an omitted one is the device's default; checks the range from `getDisplayTiming` first and throws `RangeError`), `resetDisplayTiming()`. An `UNKNOWN_TYPE` reply becomes "the device's firmware doesn't support display timing (needs v0.2)". FakeDevice `display` option.
 - **CLI:** `display [--clock MHZ] [--lines N | --fps F] [--reset] [--serial S]`: no option shows it; `--clock` alone keeps the lines, `--lines` alone keeps the clock, `--fps` picks the lines at the (given or current) clock. Uses only `host/browser.js` (lazy loading test covers it).
 
+### Phase 4 investigation (2026-11-18): a clean change of the frame size
+
+- **Why:** phase 2's line changes showed a jump, but phase 1's clock changes (20 <-> 16 MHz, which also change the frame period) were clean. Both are applied in the same VSYNC_END interrupt. The difference is that the driver's clock update (`lcd_rgb_panel_try_update_pclk`, `esp_lcd_panel_rgb.c:1209`) never sets `lcd_update`, while our `set_vertical_total` does (flagged in phase 2). Second idea (user): grow the **back porch** instead of the front.
+- **The back porch's limit:** `lcd_vb_front` (vsw + vbp - 1) is an **8-bit** field (`lcd_cam_struct.h:279`), so vsw + vbp <= 256: with the 8-line front porch, at most **744 lines** (32.8 fps at 20 MHz; 750 = 32.5 fps would need the front porch at 14).
+- **DE is wired** (GPIO5), so the panel should take the first DE line as row 0: a longer back porch shouldn't move the picture (if it does, the panel counts lines from VSYNC).
+- **Where VSYNC_END fires** is unknown. The driver's comment (`esp_lcd_panel_rgb.c:1123`) says the interrupt "has the entirety of the VBlank time", which suggests the end of the active lines. If it fires after the sync pulse instead, shortening the back porch there could cut under the line counter. Measured: the time from VSYNC_END to the y = 30 fill (bounce buffer 0's EOF, once lines 0-14 are out) is the blanking after VSYNC_END plus ~15 lines.
+- **The driver restarts the DMA in every VSYNC_END** (`LCD_RGB_RESTART_IN_VSYNC`: `lcd_rgb_panel_try_restart_transmission`, FIFO and GDMA reset), but never calls `lcd_ll_start`, so nothing else sets `lcd_update` while running. Without it, the vertical registers may not apply at all (the log's frame periods say: `after ... (old)`), or only some fields may.
+
+### Phase 4 design (`-DCB_PORCH_CYCLE=ON` -> `PORCH_CYCLE=1`, and `PCLK_CYCLE=1` with it)
+
+- `display_timing.h` (pure, tested): `DISPLAY_PORCH_BACK` / `DISPLAY_PORCH_NO_LATCH` (variant bits; 0 = phase 2's front porch, latched), `DISPLAY_VB_FRONT_HW_MAX` 256, `DisplayPorchesForTotal(total, vsw, vbp, vfp, v_res, back)`, `DisplayVTotalMaxBackPorch(vfp, v_res)` (744), `DisplayLinesFromUs`, `PclkStep.variant`, `PORCH_SCHEDULE`.
+- Port: `set_vertical_total` writes the porches for the variant (normal builds: always variant 0, as before), `lcd_update` unless `NO_LATCH`; a back porch that won't fit falls back to the front. Experiment only: `display_set_porch_variant()`, and the fill ISR stamps the y = 30 fill against the last VSYNC_END (`display_vsync_t.vsync_to_y30_us`).
+- `pclk_cycle.cpp`: sets the variant before each step; a step that changes only the variant (at 500 lines, where all variants write the same registers) switches nothing; logs the porches and variant per switch, and per hold also `VSYNC_END to y30 fill N lines`. Status bar: `back unlatched 744 ln vbp 252 vfp 8 32.8 fps`.
+- `CMakeLists.txt`: `PCLK_CYCLE=1` if any of `CB_PCLK_CYCLE`, `CB_VBLANK_CYCLE`, `CB_PORCH_CYCLE`.
+
 ## Flagged assumptions
 
 - Status bar left text is used to show the rate (overwrites the standalone left text until the next activity switch). Harmless for an experiment.
@@ -114,7 +137,7 @@ Goal: the user sets the clock and the frame size by hand (no reflash), it surviv
 - [x] 7. Tests first: `TestDisplayTiming.cpp` (front porch for a total, fps from clock and lines, lines for a target fps, lines from measured periods, phase 1's schedule keeps 500 lines, `VBLANK_SCHEDULE`: one change a step, 16-20 MHz, 500..1024 lines, toggles).
 - [x] 8. `display_timing.h` maths and `VBLANK_SCHEDULE`; port `display_set_vertical_total` (written in `on_vsync`, `v_total` in `display_vsync_t`); `pclk_cycle.cpp` steps either schedule and logs clock and lines; `CB_VBLANK_CYCLE` in `main/CMakeLists.txt`. `screen.cpp` unchanged (Notes).
 - [x] 9. Build: `mk run` debug + release (equal counts); firmware debug + release with the switches off and on; leave the caches OFF.
-- [ ] 10. HW: user runs it (see *Hardware run, phase 2* below).
+- [x] 10. HW: user ran it (*Phase 2 hardware results*) (see *Hardware run, phase 2* below).
 
 ### Phase 3: display timing as a stored setting (approved 2026-11-17)
 - [x] 11. Investigate and design (Notes: *Phase 3 investigation*, *Phase 3 design*).
@@ -124,7 +147,25 @@ Goal: the user sets the clock and the frame size by hand (no reflash), it surviv
 - [x] 15. Tests first, host: `protocol.test.js` (encode/decode, lines for fps), `ControlBlock.test.js` (get/set/reset against FakeDevice, range errors, old firmware), FakeDevice `display`; then `protocol.js`, `ControlBlock.js`.
 - [x] 16. Tests first, CLI: `args.test.js`, `cli.test.js` (show, set, keep the other field, --fps, --reset, old firmware), `lazy-child.mjs` runs `display`; then `args.js`, `cli.js`. Root `npm test`.
 - [x] 17. Docs: `docs/protocol.md` (requests, history), `docs/guide/hosted-mode.md`, `cli/README.md`, `docs/guide` mention, marked "(v0.2, unreleased)" and experimental; CLAUDE.md proposals in Notes.
-- [ ] 18. HW: user checks it (see *Hardware run, phase 3* below).
+- [x] 18. HW: user used it (settled on 32.5 fps as the borderline floor; the full checklist was not run) (see *Hardware run, phase 3* below).
+
+### Phase 4: front vs back porch, with and without lcd_update (approved 2026-11-18)
+- [x] 19. Investigate and design (Notes: *Phase 4 investigation*, *Phase 4 design*).
+- [x] 20. Tests first: `TestDisplayTiming.cpp` (porches for a total either way, the 744-line back porch limit, lines from us, `PORCH_SCHEDULE`: 20 MHz, 500/744 only, variants change only at 500 lines, >= 8 switches each).
+- [x] 21. `display_timing.h`, port (variant, y30 stamp), `pclk_cycle.cpp/.h`, `CB_PORCH_CYCLE`. `mk run` debug + release: 852 each. Firmware: release with `CB_PORCH_CYCLE=ON` (app 0x12fac0), debug with it OFF (0x141dd0); no new warnings.
+- [x] 22. HW: user ran it (*Phase 4 hardware results*). Visual: unlatched never jumped (nothing applied); front and back latched both "often jump, but not always" (hard to tell which).
+
+### Phase 5: does the latch alone cause the jump? (approved 2026-11-18)
+- [x] 23. Tests first: the porch schedule test rewritten for phase 5 (blocks: latch only, front, back; `PORCH_BLOCK_EVENTS` 10 each; 6 s rest before each; variants change only at 500 lines; latch only never changes the lines).
+- [x] 24. `DISPLAY_PORCH_RELATCH`, `PORCH_SCHEDULE` replaced (phase 4's is in this doc), port `display_relatch()` (the same values rewritten and latched at the next VSYNC_END, counted as applied), `pclk_cycle.cpp` (re-latch events, `#n/10` counter on the status bar and in the switch log). `mk run` debug + release 852; firmware release `CB_PORCH_CYCLE=ON` (0x12fc40), debug normal (0x141dd0, unchanged).
+- [x] 25. HW: user ran it (2026-11-18): **latch only 0/10, front 5/10, back 5/10, every second switch** (one direction only; which one not yet known). So `lcd_update` is innocent, the porch doesn't matter, and the jump comes from the change of frame length in one direction. Phase 1's clock changes (20 <-> 16 MHz, a 1.25x period change) were clean; 500 <-> 744 lines is 1.49x: the panel may tolerate only small steps (next: step-size sweep and a gradual ramp).
+  - Phase 5's schedule (replaced by phase 6's): a 6 s rest then 10 re-latches of the same 500 lines (`latch only`), then the same rest and 10 switches 500 <-> 744 with the front porch, then with the back porch; 2 s apart.
+
+### Phase 6: step-size sweep and a ramp (approved 2026-11-18, option 3)
+- [x] 26. Tests first: `DisplayRampNext` (a step a frame toward the target, never past it; 500 -> 744 in 10 frames at `DISPLAY_RAMP_LINES_PER_FRAME` 25), the schedule test rewritten (rests at 500 lines; blocks of 10 switches to 550, 600, 650, 700 in one step, then 744 ramped).
+- [x] 27. `DISPLAY_PORCH_RAMP`, `DisplayRampNext`, `PORCH_SCHEDULE` replaced; port: a lines change in ramp mode sets a target that `on_vsync` approaches 25 lines a frame (each step written and latched; counted as applied at the last step); `pclk_cycle.cpp` names the blocks `step` / `ramp`. `mk run` debug + release 853; firmware release `CB_PORCH_CYCLE=ON` (0x12fe50), debug normal (0x141dd0, unchanged).
+- [x] 28. HW: user ran it (see *Hardware run, phase 6* below). First report (2026-11-18): **the odd events jump**, i.e. the switch to the longer frame; going back to 500 lines is clean. Then: **none of the odd events was clean, in any block**: even 500 -> 550 (1.1x) and the ramp (25 lines, ~5% a frame) jump. Every switch back to 500 is clean.
+  - **Reading:** a longer frame always jumps, a shorter one never does, and a longer frame from a lower clock (phase 1, 20 -> 16 MHz, 1.25x) never did. The clock change keeps the lines a frame and the clocks a line; a lines change doesn't. Likely the panel's timing controller counts lines (HSYNCs) per frame and misbehaves for one frame when one runs past the last frame's count (an early frame is fine). Not confirmed. Next options (1-3-1 to the user): a much finer ramp (1-5 lines a frame, to find any tolerance), or a longer *line* (horizontal front porch, `lcd_ht_width` 12 bits) so the line count never changes, like a clock change (it also grows the fill budget, like a slower clock).
 
 ## Hardware results (2026-11-17, user)
 
@@ -269,3 +310,88 @@ Then, from the repo root in another terminal:
 What to watch: the jump at each change of the lines (only then), any lasting shift or tearing, swipe feel per rate, page builds after a switch (fewer gaps a second at a lower rate: a page of keys draws a little slower), and the monitor for `LCD underrun`, errors or warnings.
 
 **Report back:** the swipe feel at each rate (and the lowest you'd live with), whether the boot with a stored timing shows any jump, whether clock-only changes are clean, the `display:` and driver log lines, and any errors. Leave the timing at whatever you want to live with, or `--reset`.
+
+## Phase 4 hardware results (2026-11-18, log only; the visual result is still to come)
+
+- **`lcd_update` is required:** both unlatched ways never applied (every switch to 744 lines logged `after ... (old)`, holds measured 500 lines at 48.8 fps). So unlatched isn't an option, and the latch can't be what tells phase 1's clean clock changes from phase 2's jumpy line changes (the clock isn't a latched register).
+- **VSYNC_END fires after the front porch, at the start of the sync pulse:** VSYNC_END to the y = 30 fill was 27 lines at 500 lines (4 pulse + 8 back porch + 15), still 27 at 744 with the front porch, and 271 at 744 with the back porch (4 + 252 + 15). So a front porch written there applies to the *next* frame's end, and a back porch to the one about to run (the counter is inside the 4-line pulse, below any new back porch, so shortening it is safe too). The driver's VSYNC restart therefore has only pulse + back porch (12 lines, ~490 us at 20 MHz) before the first active line, not the whole blanking as its comment suggests.
+- **Both latched ways applied on the first VSYNC, frame periods exact** (old then new each time); 0 missed, 0 over, 0 seq breaks, 0 buffer mismatches throughout; fill max 138-182 us.
+
+## Hardware run, phase 4
+
+Power from the native USB port as well as the UART port. Reset any stored timing first (`node cli/cli.js display --reset`): the schedule assumes 20 MHz.
+
+```powershell
+Remove-Item Env:MSYSTEM -ErrorAction SilentlyContinue
+. C:\Espressif\tools\Microsoft.v6.0.PowerShell_profile.ps1
+cd C:\Users\Brad\Projects\ControlBlock\firmware
+idf.py --preset release -DCB_PORCH_CYCLE=ON -p COM4 flash monitor
+```
+
+(Check for `Hash of data verified.`) Schedule (`PORCH_SCHEDULE`), starting 10 s after boot, 80 s a cycle, repeating. Four ways of writing the change, in order; each starts with a 4 s rest at 500 lines, then toggles 500 <-> 744 lines (48.8 <-> 32.8 fps) every 2 s, 8 switches:
+1. `front latched` (phase 2's way: expect the jump again, as the baseline)
+2. `front unlatched`
+3. `back latched`
+4. `back unlatched`
+
+The status bar shows the way and the timing (`back unlatched 744 ln vbp 252 vfp 8 32.8 fps`).
+
+What to watch, for each way (at least two cycles):
+- **A jump/flicker at the switches**, as in phase 2: none, the same, or different (e.g. only going up, or only going down).
+- **The picture moving down** at 744 lines in the `back` ways (the panel counting from VSYNC rather than DE).
+- Any lasting shift by a 15-line band, tearing, or a self-test colour.
+
+Log lines (tag `pclk`):
+- Per switch: `20 MHz 500 lines (vbp 8, vfp 8) -> 20 MHz 744 lines (vbp 252, vfp 8, back unlatched): applied ...; frame before A us (old), after B us (new) = ...`. **`after ... (old)` means that way didn't apply the new frame size** (expected possibly for the unlatched ones); `neither` means only part of it applied.
+- Per hold: `... VSYNC_END to y30 fill N lines`. Where VSYNC_END fires: if at the end of the active lines, expect ~35 at 500 lines and ~279 at 744 (either porch); if after the front porch (at the sync pulse), ~27 at 500, ~27 at 744 front, ~271 at 744 back. (A line or two less is the DMA running ahead through the FIFO.)
+- Per hold: the fill stats line as before (expect 0 missed, 0 buffer mismatches).
+
+**Paste back:** every `pclk:` line from at least one full cycle (from the `frame rate experiment (porch)` line on), any `LCD underrun` / error lines, and per way: jump or not, picture moved or not.
+
+Turn it off afterwards (the switch sticks in the CMake cache):
+
+```powershell
+idf.py --preset release -DCB_PORCH_CYCLE=OFF -p COM4 flash
+```
+
+## Hardware run, phase 5
+
+Same build switch as phase 4 (the schedule changed), timing reset first (`node cli/cli.js display --reset`):
+
+```powershell
+idf.py --preset release -DCB_PORCH_CYCLE=ON -p COM4 flash monitor
+```
+
+Schedule, starting 10 s after boot, 78 s a cycle, repeating. Three blocks; each starts with a 6 s rest at 500 lines (`#0/10`), then 10 events, 2 s apart:
+1. `latch only #n/10`: the same 500-line values rewritten and latched (`lcd_update`); the frame never changes.
+2. `front latched #n/10`: 500 <-> 744 lines with the front porch.
+3. `back latched #n/10`: the same with the back porch.
+
+**Count the jumps per block** (e.g. "latch only 0/10, front 6/10, back 5/10"); one or two cycles is enough. If the latch-only block jumps too, `lcd_update` itself is the glitch; if it never does, the frame length change is.
+
+The log as phase 4 (each switch now carries `#n`; a re-latch logs as `500 lines -> 500 lines (..., latch only #n)` with both frames `(new)`).
+
+Turn it off afterwards: `idf.py --preset release -DCB_PORCH_CYCLE=OFF -p COM4 flash`.
+
+## Hardware run, phase 6
+
+Same build switch (the schedule changed), timing reset first (`node cli/cli.js display --reset`):
+
+```powershell
+idf.py --preset release -DCB_PORCH_CYCLE=ON -p COM4 flash monitor
+```
+
+Schedule, starting 10 s after boot, ~140 s a cycle, repeating. Five blocks, each after a 6 s rest at 500 lines (`#0/10`), 10 switches each:
+1. `step #n/10 550 ln`: 500 <-> 550 lines in one step (48.8 <-> 44.3 fps, 1.1x), 2 s apart
+2. `step ... 600 ln`: 500 <-> 600 (40.7 fps, 1.2x)
+3. `step ... 650 ln`: 500 <-> 650 (37.5 fps, 1.3x)
+4. `step ... 700 ln`: 500 <-> 700 (34.8 fps, 1.4x)
+5. `ramp #n/10`: 500 <-> 744 (32.8 fps) over 10 frames (~0.3 s) each way, 3 s apart
+
+Odd events (#1, #3 ...) go to the longer frame, even ones (#2, #4 ...) back to 500.
+
+**Report per block:** jumps out of 10, and whether they come on the odd events (to the long frame) or the even ones (back to 500). E.g. "550: 0, 600: 0, 650: 3 odd, 700: 5 odd, ramp: 0".
+
+Log: ramp switches log the frame before the last step as `(neither)` (it's a ramp step, not the old timing); that's expected.
+
+Turn it off afterwards: `idf.py --preset release -DCB_PORCH_CYCLE=OFF -p COM4 flash`.

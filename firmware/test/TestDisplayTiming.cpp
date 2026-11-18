@@ -166,6 +166,88 @@ Fact("DisplayTiming Vblank Schedule Changes One Thing A Step")
     Assert(VblankScheduleStep(VBLANK_SCHEDULE_LEN + 2).lines == VblankScheduleStep(2).lines);
 }
 
+// Phase 4: the front porch or the back porch takes the extra lines, with or without lcd_update
+
+Fact("DisplayTiming Porches For A Total: Front Or Back")
+{
+    // The panel's 4-line pulse, 8-line porches, 480 lines
+    DisplayVPorches f = DisplayPorchesForTotal(744, 4, 8, 8, 480, false);
+    Assert(f.vbp == 8 && f.vfp == 252);
+    DisplayVPorches b = DisplayPorchesForTotal(744, 4, 8, 8, 480, true);
+    Assert(b.vbp == 252 && b.vfp == 8);
+    // At the build's 500 lines both are the build's porches (a variant change there writes nothing new)
+    DisplayVPorches f0 = DisplayPorchesForTotal(500, 4, 8, 8, 480, false);
+    DisplayVPorches b0 = DisplayPorchesForTotal(500, 4, 8, 8, 480, true);
+    Assert(f0.vbp == 8 && f0.vfp == 8 && b0.vbp == 8 && b0.vfp == 8);
+    // Too short a total leaves the porch 0
+    Assert(DisplayPorchesForTotal(480, 4, 8, 8, 480, true).vbp == 0);
+    Assert(DisplayPorchesForTotal(480, 4, 8, 8, 480, false).vfp == 0);
+}
+
+Fact("DisplayTiming Back Porch Total Limited By The 8-Bit Field")
+{
+    // lcd_vb_front (vsw + vbp - 1) is 8 bits: vsw + vbp <= 256
+    Assert(DISPLAY_VB_FRONT_HW_MAX == 256);
+    Assert(DisplayVTotalMaxBackPorch(8, 480) == 744);
+    Assert(DisplayTimingFpsX10(20000000, H_TOTAL, 744) == 328);    // 32.78
+}
+
+Fact("DisplayTiming Lines From Microseconds")
+{
+    // 41 us a line at 20 MHz (820 clocks)
+    Assert(DisplayLinesFromUs(41 * 35, 20000000, H_TOTAL) == 35);
+    Assert(DisplayLinesFromUs(41 * 35 + 20, 20000000, H_TOTAL) == 35);   // rounded
+    Assert(DisplayLinesFromUs(41 * 35 + 21, 20000000, H_TOTAL) == 36);
+    Assert(DisplayLinesFromUs(1000, 0, H_TOTAL) == 0);
+}
+
+Fact("DisplayTiming Ramp Moves Toward The Target A Step At A Time")
+{
+    Assert(DisplayRampNext(500, 744, 25) == 525);
+    Assert(DisplayRampNext(730, 744, 25) == 744);      // never past the target
+    Assert(DisplayRampNext(744, 500, 25) == 719);
+    Assert(DisplayRampNext(510, 500, 25) == 500);
+    Assert(DisplayRampNext(600, 600, 25) == 600);
+    Assert(DisplayRampNext(500, 744, 0) == 744);       // no step: straight there
+    // 500 -> 744 takes 10 frames at the experiment's step
+    uint32_t lines = 500;
+    int frames = 0;
+    while (lines != 744) {
+        lines = DisplayRampNext(lines, 744, DISPLAY_RAMP_LINES_PER_FRAME);
+        frames++;
+    }
+    Assert(frames == 10);
+}
+
+// Phase 6: blocks of PORCH_BLOCK_EVENTS switches, each after a rest at the build's 500 lines: a
+// step-size sweep (500 <-> 550, 600, 650, 700 in one step), then 500 <-> 744 ramped
+Fact("DisplayTiming Porch Schedule Sweeps Step Sizes Then Ramps")
+{
+    Assert(PORCH_BLOCK_EVENTS == 10);
+    const uint16_t targets[5] = { 550, 600, 650, 700, 744 };
+    int events[5] = {}, block = -1;
+    for (int i = 0; i < PORCH_SCHEDULE_LEN; i++) {
+        PclkStep s = PorchScheduleStep(i);
+        PclkStep p = PorchScheduleStep(i + PORCH_SCHEDULE_LEN - 1);     // the step before (wraps)
+        Assert(s.mhz == 20 && s.hold_s >= 1);
+        Assert(!(s.variant & (DISPLAY_PORCH_NO_LATCH | DISPLAY_PORCH_RELATCH | DISPLAY_PORCH_BACK)));
+        if (s.lines == p.lines) {
+            // A rest: at the build's lines, after a block that ended there, long enough to see
+            Assert(s.lines == DISPLAY_TIMING_V_TOTAL && s.hold_s >= 6);
+            block++;
+            continue;
+        }
+        Assert(block >= 0 && block < 5);
+        Assert(s.lines == DISPLAY_TIMING_V_TOTAL || s.lines == targets[block]);
+        // Only the last block ramps, and it ramps both ways
+        Assert(((s.variant & DISPLAY_PORCH_RAMP) != 0) == (block == 4));
+        events[block]++;
+    }
+    Assert(block == 4);
+    for (int b = 0; b < 5; b++)
+        Assert(events[b] == PORCH_BLOCK_EVENTS);
+}
+
 // Phase 3: the timing as a setting (DISPLAY_SET)
 
 Fact("DisplayTiming Limits For The Build's Clock")

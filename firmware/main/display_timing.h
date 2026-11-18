@@ -119,12 +119,62 @@ constexpr bool DisplayTimingValid(const DisplayTimingLimits &l, uint32_t mhz, ui
     return mhz >= l.min_mhz && mhz <= l.max_mhz && lines >= l.min_lines && lines <= l.max_lines;
 }
 
-// A step of an experiment's schedule: a clock and a frame size, held `hold_s` seconds
+// Phase 4: which porch takes a longer frame's extra lines, and whether lcd_update latches the
+// write (phase 2 wrote the front porch and latched it: variant 0)
+inline constexpr uint8_t DISPLAY_PORCH_BACK     = 1;    // the back porch grows (else the front)
+inline constexpr uint8_t DISPLAY_PORCH_NO_LATCH = 2;    // don't set lcd_update after the write
+inline constexpr uint8_t DISPLAY_PORCH_RELATCH  = 4;    // phase 5: a step that changes nothing re-latches
+inline constexpr uint8_t DISPLAY_PORCH_RAMP     = 8;    // phase 6: move the lines a step a frame
+
+// Phase 6: a ramp's step (500 -> 744 lines in 10 frames, each at most ~5% longer or shorter)
+inline constexpr uint32_t DISPLAY_RAMP_LINES_PER_FRAME = 25;
+
+// The lines for the next frame of a ramp from `cur` to `target` (`step` 0: straight there)
+constexpr uint32_t DisplayRampNext(uint32_t cur, uint32_t target, uint32_t step)
+{
+    return !step                ? target
+           : target > cur       ? (target - cur > step ? cur + step : target)
+                                : (cur - target > step ? cur - step : target);
+}
+
+// lcd_vb_front (vsw + vbp - 1) is an 8-bit field: the sync pulse and back porch hold 256 lines at most
+inline constexpr uint32_t DISPLAY_VB_FRONT_HW_MAX = 256;
+
+struct DisplayVPorches
+{
+    uint32_t vbp, vfp;
+};
+
+// The porches that make `v_total` lines: one porch keeps its build value, the other takes the rest
+// (0 if the total doesn't even hold the rest)
+constexpr DisplayVPorches DisplayPorchesForTotal(uint32_t v_total, uint32_t vsw, uint32_t vbp, uint32_t vfp,
+                                                 uint32_t v_res, bool back)
+{
+    return back ? DisplayVPorches{ v_total > vsw + vfp + v_res ? v_total - vsw - vfp - v_res : 0, vfp }
+                : DisplayVPorches{ vbp, DisplayVfpForTotal(v_total, vsw, vbp, v_res) };
+}
+
+// The longest frame a back porch alone can make (the front porch kept at `vfp`): vsw + vbp <= 256
+constexpr uint32_t DisplayVTotalMaxBackPorch(uint32_t vfp, uint32_t v_res)
+{
+    return DISPLAY_VB_FRONT_HW_MAX + v_res + vfp;
+}
+
+// Whole lines (rounded) in `us` at `pclk_hz`, `h_total` clocks a line
+inline uint32_t DisplayLinesFromUs(uint64_t us, uint32_t pclk_hz, uint32_t h_total)
+{
+    uint64_t div = (uint64_t)h_total * 1000000u;
+    return pclk_hz && h_total ? (uint32_t)((us * pclk_hz + div / 2) / div) : 0;
+}
+
+// A step of an experiment's schedule: a clock and a frame size, held `hold_s` seconds; `variant`
+// (DISPLAY_PORCH_*) says how a change of the lines is written (phase 4)
 struct PclkStep
 {
     uint8_t  mhz;
     uint8_t  hold_s;
     uint16_t lines = DISPLAY_TIMING_V_TOTAL;
+    uint8_t  variant = 0;
 };
 
 // Phase 1's schedule: steps down from 20 MHz and back up (8 s each), then a quick
@@ -151,6 +201,25 @@ inline constexpr PclkStep VBLANK_SCHEDULE[] = {
 };
 inline constexpr int VBLANK_SCHEDULE_LEN = (int)(sizeof(VBLANK_SCHEDULE) / sizeof(VBLANK_SCHEDULE[0]));
 
+// Phase 6's schedule (PORCH_CYCLE; phases 4 and 5 are in the job doc: the latch is innocent, the
+// porch doesn't matter, and 500 <-> 744 in one step jumps on every second switch): at 20 MHz, front
+// porch, latched, blocks of PORCH_BLOCK_EVENTS switches, each after a 6 s rest at 500 lines:
+//   1-4. one-step switches 500 <-> 550, 600, 650, 700 lines (1.1x to 1.4x the frame): the biggest
+//        clean step, and which direction jumps
+//   5.   500 <-> 744 ramped (DISPLAY_PORCH_RAMP: DISPLAY_RAMP_LINES_PER_FRAME a frame, 10 frames)
+inline constexpr int PORCH_BLOCK_EVENTS = 10;
+#define PORCH_TOGGLES(l, v, s) { 20, s, l, v }, { 20, s, 500, v }
+#define PORCH_BLOCK(e) e, e, e, e, e
+#define PORCH_SWEEP(l) { 20, 6, 500, 0 }, PORCH_BLOCK(PORCH_TOGGLES(l, 0, 2))
+inline constexpr PclkStep PORCH_SCHEDULE[] = {
+    PORCH_SWEEP(550), PORCH_SWEEP(600), PORCH_SWEEP(650), PORCH_SWEEP(700),
+    { 20, 6, 500, DISPLAY_PORCH_RAMP }, PORCH_BLOCK(PORCH_TOGGLES(744, DISPLAY_PORCH_RAMP, 3)),
+};
+#undef PORCH_SWEEP
+#undef PORCH_BLOCK
+#undef PORCH_TOGGLES
+inline constexpr int PORCH_SCHEDULE_LEN = (int)(sizeof(PORCH_SCHEDULE) / sizeof(PORCH_SCHEDULE[0]));
+
 // Step `i` of a schedule (any i >= 0: schedules repeat)
 inline PclkStep PclkScheduleStep(int i)
 {
@@ -160,6 +229,11 @@ inline PclkStep PclkScheduleStep(int i)
 inline PclkStep VblankScheduleStep(int i)
 {
     return VBLANK_SCHEDULE[i % VBLANK_SCHEDULE_LEN];
+}
+
+inline PclkStep PorchScheduleStep(int i)
+{
+    return PORCH_SCHEDULE[i % PORCH_SCHEDULE_LEN];
 }
 
 // One hold's fill stats, from the once-a-second samples (screen_stats_t)

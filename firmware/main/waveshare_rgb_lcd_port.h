@@ -113,6 +113,12 @@ uint32_t display_pixel_clock_hz(void);
 #define VBLANK_CYCLE 0
 #endif
 
+// Phase 4 (-DCB_PORCH_CYCLE=ON, which turns PCLK_CYCLE on too): the frame size toggles with the
+// front or the back porch, with or without lcd_update, on display_timing.h's PORCH_SCHEDULE.
+#ifndef PORCH_CYCLE
+#define PORCH_CYCLE 0
+#endif
+
 #if PCLK_CYCLE
 
 // VSYNC_END stamps (esp_timer us: comparable across cores, unlike the cycle counter)
@@ -125,9 +131,18 @@ typedef struct {
     uint32_t applied_count;     // `count` at the VSYNC_END that applied the last change (0: boot)
     int64_t  applied_us;        // that VSYNC_END
     int64_t  applied_prev_us;   // the one before it (the last frame at the old clock ended there)
+    int64_t  vsync_to_y30_us;   // the last VSYNC_END to the y = 30 fill (phase 4: where VSYNC_END fires)
 } display_vsync_t;
 
 void display_get_vsync(display_vsync_t *v);
+
+// Phase 4: how later changes of the lines are written (display_timing.h DISPLAY_PORCH_*: back
+// porch instead of front, no lcd_update). Normal builds always write the front porch, latched.
+void display_set_porch_variant(uint8_t variant);
+
+// Phase 5: at the next VSYNC_END, rewrite the vertical timing in effect and latch it (lcd_update)
+// though nothing changed: shows whether the latch alone glitches the output
+void display_relatch(void);
 #endif
 
 // Backlight on/off (CH422G line, no PWM). Needs ch422g_init(). Does nothing unless built

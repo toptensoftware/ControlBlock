@@ -170,7 +170,7 @@ endif()
 # clock at runtime (display_timing.h PCLK_SCHEDULE) and logs each switch and each rate's fill
 # stats (wip/wip-frame-rate-experiment.md).
 #   idf.py --preset release -DCB_PCLK_CYCLE=ON build   (OFF turns it off again)
-if(CB_PCLK_CYCLE)
+if(CB_PCLK_CYCLE OR CB_VBLANK_CYCLE OR CB_PORCH_CYCLE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE PCLK_CYCLE=1)
 endif()
 
@@ -179,9 +179,13 @@ endif()
 #   idf.py --preset release -DCB_VBLANK_CYCLE=ON build   (OFF turns it off again)
 if(CB_VBLANK_CYCLE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE VBLANK_CYCLE=1)
-    if(NOT CB_PCLK_CYCLE)
-        target_compile_definitions(${COMPONENT_LIB} PRIVATE PCLK_CYCLE=1)
-    endif()
+endif()
+
+# Frame rate experiment, phase 4: 500 <-> 744 line toggles at 20 MHz, with the front or the back
+# porch, with or without lcd_update (display_timing.h PORCH_SCHEDULE).
+#   idf.py --preset release -DCB_PORCH_CYCLE=ON build   (OFF turns it off again)
+if(CB_PORCH_CYCLE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE PORCH_CYCLE=1)
 endif()
 
 # Once-a-second stats line (main.cpp STATS_LOG): fps, fill, compositor, images, usb rx, net.

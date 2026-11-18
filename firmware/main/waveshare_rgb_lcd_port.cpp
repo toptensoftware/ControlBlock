@@ -31,9 +31,16 @@ static_assert(DISPLAY_V_RES % DISPLAY_BOUNCE_BUFFER_LINES == 0,
 // Called from the LCD DMA ISR each time a bounce buffer needs refilling.
 // The bounce buffer is always a whole number of lines, so convert the
 // driver's pixel position into a line number.
+#if PCLK_CYCLE
+static void note_fill(int y);               // the frame rate experiment's VSYNC_END position
+#endif
+
 IRAM_ATTR static bool on_bounce_empty(esp_lcd_panel_handle_t panel, void *bounce_buf,
                                       int pos_px, int len_bytes, void *user_ctx)
 {
+#if PCLK_CYCLE
+    note_fill(pos_px / DISPLAY_H_RES);
+#endif
     return s_fill_cb((uint16_t *)bounce_buf,
                      pos_px / DISPLAY_H_RES,
                      len_bytes / (DISPLAY_H_RES * (int)sizeof(uint16_t)),
@@ -80,18 +87,55 @@ static uint32_t          s_pending_hz;      // 0: none
 static uint32_t          s_pending_lines;   // 0: none
 static volatile uint32_t s_pclk_hz = DISPLAY_PIXEL_CLOCK_HZ;
 #if PCLK_CYCLE
-static display_vsync_t   s_vsync = { 0, 0, 0, DISPLAY_PIXEL_CLOCK_HZ, DISPLAY_V_TOTAL, 0, 0, 0 };
+static display_vsync_t   s_vsync = { 0, 0, 0, DISPLAY_PIXEL_CLOCK_HZ, DISPLAY_V_TOTAL, 0, 0, 0, 0 };
+#endif
+
+// How a change of the lines is written (DISPLAY_PORCH_*): only the phase 4 experiment changes it
+#if PCLK_CYCLE
+static volatile uint8_t s_porch_variant = 0;
+static volatile int64_t s_vsync_stamp_us;           // the last VSYNC_END, for the fill ISR
+static volatile int64_t s_vsync_to_y30_us;          // from it to the y = 30 fill
+void display_set_porch_variant(uint8_t variant)
+{
+    s_porch_variant = variant;
+}
+
+static bool     s_pending_relatch;  // under s_vsync_lock
+static uint32_t s_ramp_target;      // phase 6: the lines a ramp is heading for (0: none); under s_vsync_lock
+
+void display_relatch(void)
+{
+    portENTER_CRITICAL(&s_vsync_lock);
+    s_pending_relatch = true;
+    portEXIT_CRITICAL(&s_vsync_lock);
+}
+
+// The y = 30 fill comes once lines 0-14 have gone out: its time from VSYNC_END is the blanking
+// after VSYNC_END plus ~15 lines, which says where in the blanking VSYNC_END fires
+IRAM_ATTR static void note_fill(int y)
+{
+    if (y == 2 * DISPLAY_BOUNCE_BUFFER_LINES)
+        s_vsync_to_y30_us = esp_timer_get_time() - s_vsync_stamp_us;
+}
+#else
+static const uint8_t s_porch_variant = 0;
 #endif
 
 // The LCD_CAM's vertical timing, as the driver sets it at init (esp_lcd_panel_rgb.c rgb_panel_init)
-// but with the front porch that makes `lines` in all. lcd_update latches the new values (as
-// lcd_ll_start does); at VSYNC_END the line counter is at a frame boundary, so a shorter total
-// can't cut under it.
+// but with the front porch (or, in the phase 4 experiment, the back porch) that makes `lines` in
+// all. lcd_update latches the new values (as lcd_ll_start does; the experiment can leave it out);
+// at VSYNC_END the line counter is at a frame boundary, so a shorter total can't cut under it.
 IRAM_ATTR static void set_vertical_total(uint32_t lines)
 {
-    lcd_ll_set_vertical_timing(&LCD_CAM, DISPLAY_VSYNC_PULSE, DISPLAY_VSYNC_BACK_PORCH, DISPLAY_V_RES,
-                               DisplayVfpForTotal(lines, DISPLAY_VSYNC_PULSE, DISPLAY_VSYNC_BACK_PORCH, DISPLAY_V_RES));
-    LCD_CAM.lcd_user.lcd_update = 1;
+    DisplayVPorches p = DisplayPorchesForTotal(lines, DISPLAY_VSYNC_PULSE, DISPLAY_VSYNC_BACK_PORCH,
+                                               DISPLAY_VSYNC_FRONT_PORCH, DISPLAY_V_RES,
+                                               s_porch_variant & DISPLAY_PORCH_BACK);
+    if (DISPLAY_VSYNC_PULSE + p.vbp > DISPLAY_VB_FRONT_HW_MAX)       // more than the back porch holds
+        p = DisplayPorchesForTotal(lines, DISPLAY_VSYNC_PULSE, DISPLAY_VSYNC_BACK_PORCH,
+                                   DISPLAY_VSYNC_FRONT_PORCH, DISPLAY_V_RES, false);
+    lcd_ll_set_vertical_timing(&LCD_CAM, DISPLAY_VSYNC_PULSE, p.vbp, DISPLAY_V_RES, p.vfp);
+    if (!(s_porch_variant & DISPLAY_PORCH_NO_LATCH))
+        LCD_CAM.lcd_user.lcd_update = 1;
 }
 
 IRAM_ATTR static bool on_vsync(esp_lcd_panel_handle_t panel, const esp_lcd_rgb_panel_event_data_t *edata,
@@ -105,7 +149,24 @@ IRAM_ATTR static bool on_vsync(esp_lcd_panel_handle_t panel, const esp_lcd_rgb_p
     s_vsync.count++;
     s_vsync.prev_us = s_vsync.last_us;
     s_vsync.last_us = now;
-    if (s_pending_lines || s_pending_hz) {
+    s_vsync_stamp_us = now;
+    if (s_pending_lines && (s_porch_variant & DISPLAY_PORCH_RAMP)) {
+        s_ramp_target   = s_pending_lines;      // phase 6: reached a step a frame, below
+        s_pending_lines = 0;
+    }
+    bool applied = s_pending_lines || s_pending_hz || s_pending_relatch;
+    if (s_ramp_target) {
+        s_vsync.v_total = DisplayRampNext(s_vsync.v_total, s_ramp_target, DISPLAY_RAMP_LINES_PER_FRAME);
+        set_vertical_total(s_vsync.v_total);
+        if (s_vsync.v_total == s_ramp_target) {
+            s_ramp_target = 0;
+            applied = true;                     // the ramp's last step counts as the change
+        }
+    } else if (s_pending_relatch && !s_pending_lines) {
+        set_vertical_total(s_vsync.v_total);    // the same values, latched again (phase 5)
+    }
+    s_pending_relatch = false;
+    if (applied) {
         s_vsync.applied_count   = s_vsync.count;
         s_vsync.applied_us      = now;
         s_vsync.applied_prev_us = s_vsync.prev_us;
@@ -167,6 +228,7 @@ void display_get_vsync(display_vsync_t *v)
 {
     portENTER_CRITICAL(&s_vsync_lock);
     *v = s_vsync;
+    v->vsync_to_y30_us = s_vsync_to_y30_us;
     portEXIT_CRITICAL(&s_vsync_lock);
 }
 #endif
